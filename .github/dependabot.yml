@@ -1,5 +1,5 @@
-# Keeps SHA-pinned GitHub Actions up to date. Updates are grouped into one weekly PR
-# whose title ("chore(ci): bump the actions group ...") passes the pr-title check.
+# Keeps SHA-pinned GitHub Actions up to date, grouped into one weekly PR.
+# Its long titles are exempt from the pr-title length limit (pr-metadata.yml).
 # Add the gomod ecosystem when go.mod exists.
 version: 2
 updates:
@@ -7,6 +7,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Only propose releases that are at least two weeks old: new releases get time
+    # to surface bugs or a compromise before they reach CI.
+    cooldown:
+      default-days: 14
     commit-message:
       prefix: chore(ci)
     groups:
