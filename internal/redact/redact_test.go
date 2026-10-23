@@ -9,7 +9,7 @@ import (
 
 // AC-06 (header level; the record test scans the cassette file's bytes)
 func TestRulesHeaders(t *testing.T) {
-	r := NewRules([]string{"X-Tenant"})
+	r := NewRules([]string{"X-Tenant"}, nil)
 	in := http.Header{
 		"Authorization":   {"Bearer sk-secret"},
 		"X-Api-Key":       {"sk-ant-123"},
@@ -46,7 +46,7 @@ func TestRulesHeaders(t *testing.T) {
 }
 
 func TestRulesHeaderNames(t *testing.T) {
-	got := strings.Join(NewRules([]string{"X-Tenant"}).HeaderNames(), ",")
+	got := strings.Join(NewRules([]string{"X-Tenant"}, nil).HeaderNames(), ",")
 	want := "*-key,*-secret,*-token,authorization,cookie,proxy-authorization,set-cookie,x-api-key,x-tenant"
 	if got != want {
 		t.Errorf("HeaderNames() = %s, want %s", got, want)
@@ -55,7 +55,7 @@ func TestRulesHeaderNames(t *testing.T) {
 
 // spec §3.5: credentials in URLs
 func TestRulesQueryAndURL(t *testing.T) {
-	r := NewRules(nil)
+	r := NewRules(nil, nil)
 	m := mask("s3cr3t")
 	tests := []struct{ in, want string }{
 		{"", ""},

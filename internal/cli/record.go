@@ -52,6 +52,7 @@ type recordOptions struct {
 	listenUnsafe bool
 	anthropic    *url.URL
 	redactHeader []string
+	redactBody   []redact.Path
 	labels       map[string]string
 	force        bool
 	command      []string
@@ -88,6 +89,14 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL")
 	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", func(v string) error {
 		opts.redactHeader = append(opts.redactHeader, v)
+		return nil
+	})
+	fs.Func("redact", "redact the values this `jsonpath` selects in stored JSON bodies (repeatable)", func(v string) error {
+		p, err := redact.ParsePath(v)
+		if err != nil {
+			return err
+		}
+		opts.redactBody = append(opts.redactBody, p)
 		return nil
 	})
 	fs.Func("label", "attach a `key=value` label to the session (repeatable)", func(v string) error {
@@ -163,7 +172,8 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 	}
 	defer ln.Close()
 
-	c, id, err := createCassette(ctx, env, opts)
+	rules := redact.NewRules(opts.redactHeader, opts.redactBody)
+	c, id, err := createCassette(ctx, env, opts, rules)
 	if err != nil {
 		log.Error("cannot create the cassette", "error", err)
 		return ExitError
@@ -181,7 +191,6 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		return failed("cannot record into the cassette", err)
 	}
 
-	rules := redact.NewRules(opts.redactHeader)
 	routes := []proxy.Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: opts.anthropic}}
 	for _, s := range opts.mcp {
 		target, _ := absoluteHTTPURL(s.URL) // validated by the flag
@@ -260,7 +269,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 }
 
 // createCassette creates the session's cassette and its session row.
-func createCassette(ctx context.Context, env *Env, opts recordOptions) (*cassette.Cassette, string, error) {
+func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *redact.Rules) (*cassette.Cassette, string, error) {
 	dir := env.Globals.Dir
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, "", fmt.Errorf("creating %s: %w", dir, err)
@@ -293,14 +302,13 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions) (*cassett
 		_ = c.Close()
 		return nil, "", fmt.Errorf("reading the working directory: %w", err)
 	}
-	rules := redact.NewRules(opts.redactHeader)
 	servers := make([]mcpServer, len(opts.mcp))
 	for i, sv := range opts.mcp {
 		u, _ := absoluteHTTPURL(sv.URL)                          // validated by the flag
 		servers[i] = mcpServer{Name: sv.Name, URL: rules.URL(u)} // spec §3.5: no credentials from the URL
 	}
 	serversJSON, _ := json.Marshal(servers)
-	redaction, _ := json.Marshal(map[string]any{"headers": rules.HeaderNames()})
+	redaction, _ := json.Marshal(map[string]any{"headers": rules.HeaderNames(), "body": rules.BodyRules()})
 	err = c.Write(ctx, func(tx *cassette.Tx) error {
 		return tx.InsertSession(ctx, cassette.Session{
 			ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
