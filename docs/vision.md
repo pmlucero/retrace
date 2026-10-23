@@ -1,5 +1,8 @@
 # Vision
 
+- Status: Approved
+- Last updated: 2026-10-23
+
 > Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.
 
 ## 1. Problem statement
