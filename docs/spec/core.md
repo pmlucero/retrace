@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.2
+- Version: 0.3
 - Last updated: 2026-10-23
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -220,7 +220,7 @@ The schema version is held in `PRAGMA user_version`.
 | `ttfb_ms`, `duration_ms` | INTEGER NULL | Time to first byte, and total time |
 | `provenance` | TEXT | `recorded` (record mode), `replayed` or `live` |
 | `source_interaction_id` | INTEGER NULL | For `replayed`: the interaction id in the parent cassette |
-| `error` | TEXT NULL | Transport-level error (connection reset, timeout) |
+| `error` | TEXT NULL | Transport-level error (connection reset, timeout), or why the recording of the interaction is incomplete (e.g. records dropped because the cassette writer could not keep up). Recording never delays the proxy to avoid this |
 
 **`chunks`**: `(interaction_id, idx, offset_ms, data BLOB)`. Each row holds one raw SSE event as received, including its framing.
 
