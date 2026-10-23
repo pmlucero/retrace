@@ -73,8 +73,7 @@ type SessionEnd struct {
 // PutBlob stores data once, keyed by its SHA-256, and returns the key. Storing
 // the same content again is a no-op (ADR 0005).
 func (t *Tx) PutBlob(ctx context.Context, data []byte) (string, error) {
-	sum := sha256.Sum256(data)
-	key := hex.EncodeToString(sum[:])
+	key := BlobKey(data)
 	_, err := t.tx.ExecContext(ctx,
 		`INSERT INTO blobs (sha256, size, data) VALUES (?, ?, ?) ON CONFLICT (sha256) DO NOTHING`,
 		key, len(data), data)
@@ -82,6 +81,12 @@ func (t *Tx) PutBlob(ctx context.Context, data []byte) (string, error) {
 		return "", fmt.Errorf("storing blob %s: %w", key, err)
 	}
 	return key, nil
+}
+
+// BlobKey returns the key that PutBlob stores data under: its SHA-256, in hex.
+func BlobKey(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // BeginInteraction inserts an in-flight interaction when its request arrives.
