@@ -2,11 +2,11 @@
 
 [![docs](https://github.com/pmlucero/retrace/actions/workflows/docs.yml/badge.svg)](https://github.com/pmlucero/retrace/actions/workflows/docs.yml)
 [![License: Apache 2.0](https://img.shields.io/github/license/pmlucero/retrace)](LICENSE)
-[![Status: phase 0 (design)](https://img.shields.io/badge/status-phase%200%20%28design%29-orange)](#project-status)
+[![Status: MVP in progress](https://img.shields.io/badge/status-MVP%20in%20progress-yellow)](#project-status)
 
 **Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.**
 
-> **Status: phase 0, design only.** There is no code yet. This repository currently holds the vision, the specification and the architecture decisions. Implementation starts once the design is approved. See [Project status](#project-status).
+> **Status: MVP in progress.** The design (phase 0) is approved, and implementation has started. There is no usable release yet. See [Project status](#project-status).
 
 ## What is retrace
 
@@ -68,8 +68,8 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Vision, core spec, ADRs, repo conventions | **In review** |
-| MVP | Record (LLM + MCP), exact replay, swap-model with `strict`, terminal diff, demo agent with two MCP servers | Not started |
+| 0 | Vision, core spec, ADRs, repo conventions | Done |
+| MVP | Record (LLM + MCP), exact replay, swap-model with `strict`, terminal diff, demo agent with two MCP servers | **In progress** |
 | Later | Web UI (sequence view, tool topology, model diff), more divergence strategies, more providers and transports | Planned |
 
 ## Documentation
