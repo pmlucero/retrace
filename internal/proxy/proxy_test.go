@@ -420,6 +420,36 @@ func TestProxyRedactsBodiesOnlyInTheCassette(t *testing.T) {
 	}
 }
 
+// spec §3.5: a body that cannot be redacted is forwarded but never stored.
+func TestProxyDoesNotStoreBodiesItCannotRedact(t *testing.T) {
+	deep := `{"email":"x@example.com","n":` + strings.Repeat("[", 2000) + strings.Repeat("]", 2000) + `}`
+	email, _ := redact.ParsePath("$..email")
+	var gotReq string
+	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotReq = string(b)
+		_, _ = io.WriteString(w, deep)
+	}), 0, redact.NewRules(nil, []redact.Path{email}))
+
+	resp, err := post(h.server.URL+"/llm/anthropic/v1/messages", deep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(got) != deep || gotReq != deep {
+		t.Fatal("the agent or the upstream did not get the original body")
+	}
+
+	in := h.interactions()[0]
+	if in.RequestBlob != nil || in.ResponseBlob != nil {
+		t.Errorf("blobs %v, %v; want neither body stored", in.RequestBlob, in.ResponseBlob)
+	}
+	if in.Error == nil || strings.Count(*in.Error, "forwarded but not recorded") != 2 {
+		t.Errorf("error = %v, want both bodies explained", in.Error)
+	}
+}
+
 func TestProxyRejectsUnknownRoutes(t *testing.T) {
 	h := newHarness(t, http.NotFoundHandler())
 	for _, path := range []string{"/", "/llm/anthropicx/v1", "/mcp/orders"} {

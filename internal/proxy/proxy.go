@@ -117,14 +117,18 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Channel: rt.Channel, Upstream: rt.Upstream, HTTPMethod: r.Method, Path: path,
 		RequestHeaders: p.headersJSON(r.Header), StartedAt: start, Provenance: "recorded",
 	}
+	ex := &exchange{p: p, start: start}
 	var blobs [][]byte
 	if len(body) > 0 {
-		stored := p.redact.Body(body) // spec §3.5; the upstream gets body itself
-		key := cassette.BlobKey(stored)
-		in.RequestBlob = &key
-		blobs = append(blobs, stored)
+		// spec §3.5: only the stored copy is redacted; the upstream gets body.
+		if stored, err := p.redact.Body(body); err != nil {
+			ex.notes = append(ex.notes, "the request body was forwarded but not recorded: "+err.Error())
+		} else {
+			key := cassette.BlobKey(stored)
+			in.RequestBlob = &key
+			blobs = append(blobs, stored)
+		}
 	}
-	ex := &exchange{p: p, start: start}
 	ex.id = p.writer.BeginInteraction(in, blobs...)
 
 	out := r.Clone(context.WithValue(r.Context(), exchangeKey{}, ex))
@@ -200,7 +204,8 @@ type exchange struct {
 	sse      sseSplitter
 	chunkIdx int
 	body     bytes.Buffer // the response body when not streamed
-	tooLarge bool         // the body, or one SSE event, exceeded maxBody: stop recording it
+	stopped  bool         // the rest of the response is forwarded but not recorded
+	notes    []string     // why the recording is incomplete, for the interaction's error
 	eof      bool
 	readErr  error
 	once     sync.Once
@@ -208,13 +213,12 @@ type exchange struct {
 
 // observe records bytes of the response as they pass to the agent.
 func (ex *exchange) observe(b []byte) {
-	if ex.tooLarge {
+	if ex.stopped {
 		return
 	}
 	if !ex.streamed {
 		if int64(ex.body.Len()+len(b)) > ex.p.maxBody {
-			ex.tooLarge = true
-			ex.body = bytes.Buffer{} // release it; the agent still gets every byte
+			ex.stop(fmt.Sprintf("the response body exceeded %d bytes; it was forwarded but not recorded", ex.p.maxBody))
 			return
 		}
 		ex.body.Write(b)
@@ -222,22 +226,34 @@ func (ex *exchange) observe(b []byte) {
 	}
 	for _, event := range ex.sse.feed(b) {
 		if int64(len(event)) > ex.p.maxBody {
-			ex.tooLarge = true
-			ex.sse = sseSplitter{}
+			ex.stop(fmt.Sprintf("an SSE event exceeded %d bytes; the rest of the stream was forwarded but not recorded", ex.p.maxBody))
 			return
 		}
 		ex.appendChunk(event)
 	}
 	if int64(len(ex.sse.rest())) > ex.p.maxBody {
-		ex.tooLarge = true // no event boundary in sight: a malformed or binary stream
-		ex.sse = sseSplitter{}
+		// No event boundary in sight: a malformed or binary stream.
+		ex.stop(fmt.Sprintf("an SSE event exceeded %d bytes; the rest of the stream was forwarded but not recorded", ex.p.maxBody))
 	}
 }
 
+// stop gives up recording the rest of the response, for reason. The agent
+// still gets every byte.
+func (ex *exchange) stop(reason string) {
+	ex.stopped = true
+	ex.notes = append(ex.notes, reason)
+	ex.body, ex.sse = bytes.Buffer{}, sseSplitter{}
+}
+
 func (ex *exchange) appendChunk(event []byte) {
+	data, err := ex.p.redact.SSEEvent(event)
+	if err != nil {
+		ex.stop("an SSE event could not be redacted; the rest of the stream was forwarded but not recorded: " + err.Error())
+		return
+	}
 	ex.p.writer.AppendChunk(cassette.Chunk{
 		InteractionID: ex.id, Index: ex.chunkIdx,
-		OffsetMillis: time.Since(ex.respStart).Milliseconds(), Data: ex.p.redact.SSEEvent(event),
+		OffsetMillis: time.Since(ex.respStart).Milliseconds(), Data: data,
 	})
 	ex.chunkIdx++
 }
@@ -252,30 +268,30 @@ func (ex *exchange) finish() {
 		}
 		var blobs [][]byte
 		switch {
-		case ex.tooLarge:
+		case ex.stopped:
 		case ex.streamed:
 			if rest := ex.sse.rest(); len(rest) > 0 {
 				ex.appendChunk(rest) // an unterminated last event, kept as received
 			}
 		default:
-			stored := ex.p.redact.Body(ex.body.Bytes())
-			key := cassette.BlobKey(stored)
-			done.ResponseBlob = &key
-			blobs = append(blobs, stored)
+			if stored, err := ex.p.redact.Body(ex.body.Bytes()); err != nil {
+				ex.notes = append(ex.notes, "the response body was forwarded but not recorded: "+err.Error())
+			} else {
+				key := cassette.BlobKey(stored)
+				done.ResponseBlob = &key
+				blobs = append(blobs, stored)
+			}
 		}
-		var msg string
+		msgs := ex.notes
 		switch {
-		case ex.tooLarge && ex.streamed:
-			msg = fmt.Sprintf("an SSE event exceeded %d bytes; the rest of the stream was forwarded but not recorded", ex.p.maxBody)
-		case ex.tooLarge:
-			msg = fmt.Sprintf("the response body exceeded %d bytes; it was forwarded but not recorded", ex.p.maxBody)
 		case errors.Is(ex.readErr, context.Canceled), ex.readErr == nil && !ex.eof:
 			// The server cancels the upstream request when the agent leaves.
-			msg = "the agent closed the connection before the response ended"
+			msgs = append(msgs, "the agent closed the connection before the response ended")
 		case ex.readErr != nil:
-			msg = "reading the upstream response: " + ex.readErr.Error()
+			msgs = append(msgs, "reading the upstream response: "+ex.readErr.Error())
 		}
-		if msg != "" {
+		if len(msgs) > 0 {
+			msg := strings.Join(msgs, "; ")
 			done.Error = &msg
 		}
 		ex.p.writer.CompleteInteraction(ex.id, done, blobs...)
@@ -285,8 +301,9 @@ func (ex *exchange) finish() {
 // fail completes the interaction with no response.
 func (ex *exchange) fail(msg string) {
 	ex.once.Do(func() {
+		full := strings.Join(append(ex.notes, msg), "; ")
 		ex.p.writer.CompleteInteraction(ex.id, cassette.Completion{
-			DurationMillis: time.Since(ex.start).Milliseconds(), Error: &msg,
+			DurationMillis: time.Since(ex.start).Milliseconds(), Error: &full,
 		})
 	})
 }
