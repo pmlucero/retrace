@@ -1,0 +1,8 @@
+# Changes to the specification and architecture decisions require maintainer review.
+# See CLAUDE.md (Workflow: Spec-Driven Development).
+
+/docs/spec/          @pmlucero
+/docs/adr/           @pmlucero
+
+# Protect this file so ownership cannot be changed without review.
+/.github/CODEOWNERS  @pmlucero
