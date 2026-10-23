@@ -10,6 +10,7 @@ import (
 	"reflect"
 	"strconv"
 	"testing"
+	"testing/fstest"
 	"time"
 )
 
@@ -328,4 +329,158 @@ func setUserVersion(t *testing.T, path string, v int) {
 	if _, err := db.ExecContext(context.Background(), "PRAGMA user_version = "+strconv.Itoa(v)); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestOpenRejectsFilesThatAreNotCassettes(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+
+	foreign := filepath.Join(dir, "app.db")
+	db, err := sql.Open("sqlite", foreign)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "CREATE TABLE users (id INTEGER)"); err != nil {
+		t.Fatal(err)
+	}
+	_ = db.Close()
+
+	empty := filepath.Join(dir, "empty.cassette") // e.g. left by a Create that crashed
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{foreign, empty} {
+		if _, err := Open(ctx, path); !errors.Is(err, ErrNotCassette) {
+			t.Errorf("Open(%s): err = %v, want ErrNotCassette", filepath.Base(path), err)
+		}
+	}
+	if got := tableNames(t, foreign); !reflect.DeepEqual(got, []string{"users"}) {
+		t.Errorf("foreign database was modified: tables = %v, want [users]", got)
+	}
+}
+
+func TestOpenReturnsCrashedRecordingToSingleFile(t *testing.T) {
+	ctx := context.Background()
+	c, path := newCassette(t)
+	write(t, c, func(tx *Tx) error { return tx.InsertSession(ctx, testSession()) })
+	// Simulate a crash: the connection goes away without Close's checkpoint
+	// and journal mode switch, so the file stays in (persistent) WAL mode.
+	if err := c.db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := journalMode(t, path); got != "wal" {
+		t.Fatalf("precondition: journal_mode = %q, want wal", got)
+	}
+
+	r, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if got := journalMode(t, path); got != "delete" {
+		t.Errorf("journal_mode after Open/Close = %q, want delete (ADR 0005)", got)
+	}
+}
+
+func TestCassettesAreOpenedWithUntrustedSchema(t *testing.T) {
+	c, _ := newCassette(t)
+	var trusted int
+	if err := c.db.QueryRowContext(context.Background(), "PRAGMA trusted_schema").Scan(&trusted); err != nil {
+		t.Fatal(err)
+	}
+	if trusted != 0 {
+		t.Errorf("trusted_schema = %d, want 0 (cassettes are untrusted input)", trusted)
+	}
+}
+
+func TestSessionHasExactlyOneRow(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	write(t, c, func(tx *Tx) error { return tx.InsertSession(ctx, testSession()) })
+
+	second := testSession()
+	second.ID = "another"
+	if err := c.Write(ctx, func(tx *Tx) error { return tx.InsertSession(ctx, second) }); err == nil {
+		t.Error("second InsertSession: want error, a cassette has exactly one session")
+	}
+}
+
+func TestSetMCPServersUpdatesSessionMetadata(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	servers := json.RawMessage(`[{"name":"orders","url":"http://localhost:9001/mcp","protocol_version":"2025-06-18"}]`)
+	write(t, c, func(tx *Tx) error {
+		if err := tx.InsertSession(ctx, testSession()); err != nil {
+			return err
+		}
+		return tx.SetMCPServers(ctx, servers)
+	})
+
+	s, err := c.Session(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(s.MCPServers) != string(servers) {
+		t.Errorf("mcp_servers = %s, want %s", s.MCPServers, servers)
+	}
+}
+
+func TestEmbeddedMigrationsAreValid(t *testing.T) {
+	if _, err := loadMigrations(migrationFiles); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLoadMigrationsRejectsGapsAndDuplicates(t *testing.T) {
+	sqlFile := &fstest.MapFile{Data: []byte("SELECT 1")}
+	tests := map[string]fstest.MapFS{
+		"gap":       {"migrations/0001_a.sql": sqlFile, "migrations/0003_c.sql": sqlFile},
+		"duplicate": {"migrations/0001_a.sql": sqlFile, "migrations/0001_b.sql": sqlFile},
+		"no zero":   {"migrations/0000_a.sql": sqlFile},
+	}
+	for name, fsys := range tests {
+		if _, err := loadMigrations(fsys); err == nil {
+			t.Errorf("%s: want error", name)
+		}
+	}
+}
+
+func tableNames(t *testing.T, path string) []string {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	rows, err := db.QueryContext(context.Background(), "SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		names = append(names, n)
+	}
+	return names
+}
+
+func journalMode(t *testing.T, path string) string {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var mode string
+	if err := db.QueryRowContext(context.Background(), "PRAGMA journal_mode").Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	return mode
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"sort"
+	"strings"
 )
 
 //go:embed migrations/*.sql
@@ -17,20 +18,34 @@ var migrationFiles embed.FS
 var migrations = mustLoadMigrations(migrationFiles)
 
 func mustLoadMigrations(fsys fs.FS) []string {
+	out, err := loadMigrations(fsys)
+	if err != nil {
+		panic(err) // a broken migration set is a build defect; TestEmbeddedMigrationsAreValid catches it
+	}
+	return out
+}
+
+// loadMigrations reads migrations/NNNN_*.sql in order. The number in each name
+// must equal its position (0001, 0002, ...): a gap or duplicate would silently
+// shift every later schema version, which is a compatibility contract (spec §7.6).
+func loadMigrations(fsys fs.FS) ([]string, error) {
 	names, err := fs.Glob(fsys, "migrations/*.sql")
 	if err != nil {
-		panic(err) // impossible: the pattern is a constant
+		return nil, err
 	}
-	sort.Strings(names) // files are numbered: 0001_initial.sql, 0002_..., ...
+	sort.Strings(names)
 	out := make([]string, len(names))
 	for i, name := range names {
+		if want := fmt.Sprintf("migrations/%04d_", i+1); !strings.HasPrefix(name, want) {
+			return nil, fmt.Errorf("migration %s: want name prefix %s (numbers must be sequential from 0001)", name, want)
+		}
 		b, err := fs.ReadFile(fsys, name)
 		if err != nil {
-			panic(err) // impossible: the files are embedded
+			return nil, err
 		}
 		out[i] = string(b)
 	}
-	return out
+	return out, nil
 }
 
 // migrate applies the migrations the file has not seen yet, each in its own

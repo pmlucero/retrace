@@ -26,6 +26,9 @@ var (
 	ErrAlreadyCompleted = errors.New("interaction already completed")
 	// ErrNotFound is returned when a referenced row does not exist.
 	ErrNotFound = errors.New("not found")
+	// ErrNotCassette is returned by Open for a file that was never a cassette:
+	// schema version 0, such as a foreign SQLite database or an empty file.
+	ErrNotCassette = errors.New("not a retrace cassette")
 )
 
 // Cassette is an open cassette file.
@@ -33,7 +36,7 @@ type Cassette struct {
 	db       *sql.DB
 	path     string
 	schema   int  // schema version of the file
-	walMode  bool // set by Create: the file is switched back to a single file on Close
+	walMode  bool // the file is in WAL mode: Close switches it back to a single file
 	writable bool // false when the file's schema is newer than this build's
 }
 
@@ -72,7 +75,8 @@ func Create(ctx context.Context, path string) (*Cassette, error) {
 
 // Open opens an existing cassette. Older schemas are migrated forward (spec
 // §7.6). A cassette with a newer schema can be read, but writes to it fail
-// with ErrNewerSchema.
+// with ErrNewerSchema. A file with schema version 0 is not a cassette (v1 is
+// the initial schema) and is rejected with ErrNotCassette, untouched.
 func Open(ctx context.Context, path string) (*Cassette, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -81,10 +85,22 @@ func Open(ctx context.Context, path string) (*Cassette, error) {
 	if err != nil {
 		return nil, err
 	}
+	if c.schema == 0 {
+		_ = c.db.Close()
+		return nil, fmt.Errorf("opening %s: %w", path, ErrNotCassette)
+	}
 	if c.schema > len(migrations) {
 		c.writable = false
 		return c, nil
 	}
+	// A recording that crashed leaves the file in WAL mode, which persists.
+	// Let Close return it to a single file (ADR 0005).
+	var journal string
+	if err := c.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil {
+		_ = c.db.Close()
+		return nil, fmt.Errorf("reading journal mode of %s: %w", path, err)
+	}
+	c.walMode = strings.EqualFold(journal, "wal")
 	if err := c.migrate(ctx, migrations); err != nil {
 		_ = c.db.Close()
 		return nil, err
@@ -97,7 +113,9 @@ func open(ctx context.Context, path string) (*Cassette, error) {
 		// The driver reads connection options after '?'.
 		return nil, fmt.Errorf("opening %s: path must not contain '?'", path)
 	}
-	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_txlock=immediate"
+	// trusted_schema(0): cassettes are untrusted input (SECURITY.md, Scope), so
+	// views, triggers and defaults in the file may not call application functions.
+	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=trusted_schema(0)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -120,8 +138,9 @@ func (c *Cassette) SchemaVersion() int { return c.schema }
 // Path returns the file path of the cassette.
 func (c *Cassette) Path() string { return c.path }
 
-// Close closes the cassette. A cassette created by Create is checkpointed and
-// switched back from WAL, so no -wal or -shm files remain next to it.
+// Close closes the cassette. A cassette in WAL mode (created by Create, or
+// left by a crashed recording) is checkpointed and switched back to a single
+// file, so no -wal or -shm files remain next to it.
 func (c *Cassette) Close() error {
 	var errs []error
 	if c.walMode {

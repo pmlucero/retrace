@@ -23,6 +23,12 @@ CREATE TABLE session (
     labels            TEXT    NOT NULL
 );
 
+CREATE TRIGGER session_single_row BEFORE INSERT ON session
+WHEN (SELECT COUNT(*) FROM session) > 0
+BEGIN
+    SELECT RAISE(ABORT, 'cassette already has a session');
+END;
+
 -- §7.3: content-addressed payloads, deduplicated by SHA-256 (ADR 0005).
 CREATE TABLE blobs (
     sha256 TEXT    PRIMARY KEY,
