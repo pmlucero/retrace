@@ -28,6 +28,7 @@ func TestRunExitCodesAndOutput(t *testing.T) {
 	tests := []struct {
 		name       string
 		args       []string
+		env        map[string]string
 		wantCode   int
 		wantStdout string
 		wantStderr string
@@ -38,13 +39,15 @@ func TestRunExitCodesAndOutput(t *testing.T) {
 		{name: "no command prints usage to stderr", args: nil, wantCode: ExitUsage, wantStderr: "Usage: retrace"},
 		{name: "unknown command", args: []string{"nope"}, wantCode: ExitUsage, wantStderr: `unknown command "nope"`},
 		{name: "unknown flag", args: []string{"--nope"}, wantCode: ExitUsage, wantStderr: "flag provided but not defined: -nope"},
-		{name: "invalid log level", args: []string{"--log-level", "loud", "echo"}, wantCode: ExitUsage, wantStderr: `invalid log level "loud"`},
+		{name: "invalid log level from flag", args: []string{"--log-level", "loud", "echo"}, wantCode: ExitUsage, wantStderr: `invalid log level "loud": want debug, info, warn or error`},
+		{name: "invalid log level from env names the variable", args: []string{"echo"}, env: map[string]string{"RETRACE_LOG_LEVEL": "loud"}, wantCode: ExitUsage, wantStderr: `(from RETRACE_LOG_LEVEL)`},
+		{name: "flags after the command belong to the command", args: []string{"echo", "--dir", "x"}, wantCode: ExitOK, wantStdout: "--dir x"},
 		{name: "dispatches with remaining args", args: []string{"echo", "a", "--b"}, wantCode: ExitOK, wantStdout: "a --b"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), tt.args, &stdout, &stderr, fakeEnv(nil), []command{echo})
+			code := run(context.Background(), tt.args, &stdout, &stderr, fakeEnv(tt.env), []command{echo})
 
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d (stderr: %q)", code, tt.wantCode, stderr.String())
@@ -102,6 +105,9 @@ func TestRunResolvesGlobals(t *testing.T) {
 	}
 }
 
+// The "version" case in TestRunExitCodesAndOutput expects "dev" because test
+// binaries carry no stamped module version ("(devel)" or empty). If a toolchain
+// change starts stamping one, that case fails first: update its expectation.
 func TestVersionUsesBuildValue(t *testing.T) {
 	saved := version
 	t.Cleanup(func() { version = saved })

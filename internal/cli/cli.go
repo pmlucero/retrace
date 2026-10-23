@@ -80,9 +80,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
+		if !flagWasSet(fs, "log-level") {
+			// The value came from the environment: say so, or the error looks inexplicable (spec §9.1).
+			err = fmt.Errorf("%w (from RETRACE_LOG_LEVEL)", err)
+		}
 		return usageError(stderr, err.Error())
 	}
 
+	// Global flags precede the command (spec §9.1): parsing stops at the command
+	// name, and everything after it belongs to the command.
 	if fs.NArg() == 0 {
 		printUsage(stderr, fs, cmds)
 		return ExitUsage
@@ -108,6 +114,16 @@ func envOr(getenv func(string) string, key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
 }
 
 func parseLogLevel(s string) (slog.Level, error) {
