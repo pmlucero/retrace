@@ -1,0 +1,14 @@
+# Keeps SHA-pinned GitHub Actions up to date. Updates are grouped into one weekly PR
+# whose title ("chore(ci): bump the actions group ...") passes the pr-title check.
+# Add the gomod ecosystem when go.mod exists.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: chore(ci)
+    groups:
+      actions:
+        patterns: ["*"]

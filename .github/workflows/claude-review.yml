@@ -14,10 +14,12 @@ jobs:
   review:
     name: claude-review
     # Same-repo, non-draft PRs only: fork PRs have no access to secrets.
+    # Dependabot PRs are skipped: they cannot read Actions secrets, and version bumps need no architecture review.
     # On-demand reviews only for trusted commenters, so outsiders cannot spend the quota.
     if: |
       (github.event_name == 'pull_request' &&
         !github.event.pull_request.draft &&
+        github.event.pull_request.user.login != 'dependabot[bot]' &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'issue_comment' &&
         github.event.issue.pull_request &&
