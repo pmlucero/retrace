@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.1
+- Version: 0.2
 - Last updated: 2026-10-23
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -331,6 +331,8 @@ Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These f
 | `--dir` | `RETRACE_DIR` | `.retrace/cassettes` | Cassette directory |
 | `--log-level` | `RETRACE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` (logs go to stderr) |
 | `--no-color` | `NO_COLOR` | — | Disable colored output |
+
+Global flags MUST precede the command: `retrace [global flags] <command> [command flags] [arguments]`. Flags after the command name belong to that command, so a global flag placed there is a usage error (exit `2`). Each value is resolved with the precedence flag > environment variable > default. When an invalid value comes from an environment variable, the error message MUST name the variable.
 
 A `retrace.yaml` file in the working directory MAY declare `mcp` servers, `listen`, `redact` rules and the Anthropic upstream. Command-line flags override it.
 
