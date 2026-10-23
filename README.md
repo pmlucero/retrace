@@ -77,6 +77,7 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 - [Vision](docs/vision.md): the problem, principles, non-goals and positioning.
 - [Core spec](docs/spec/core.md): modes, matching, the cassette data model, diff, CLI and acceptance criteria.
 - [Architecture decisions](docs/adr/README.md).
+- [MVP plan](docs/plan/mvp.md): milestones and the order of implementation.
 
 ## License
 
