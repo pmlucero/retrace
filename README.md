@@ -23,6 +23,19 @@ It records every session into a **cassette**. You can then replay that session d
 
 Enabling it requires no SDK and no code changes. You point the agent's base URLs at retrace.
 
+## How it works
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/architecture/overview-dark.png">
+  <img alt="retrace architecture: the agent talks to the retrace proxy, which forwards live channels to the Anthropic API and MCP servers or answers from a recorded cassette, and writes every session to its own SQLite cassette through a non-blocking writer queue. retrace diff compares two cassettes." src="docs/architecture/overview-light.png">
+</picture>
+
+- **Record:** the proxy forwards each request upstream, streams the response back unbuffered, and enqueues it for the cassette without ever blocking the agent.
+- **Replay:** the router answers a channel from the source cassette by request fingerprint, or forwards it live, depending on the mode. Every replay writes a new cassette.
+- **Diff:** compares the trajectories of two cassettes and reports the first divergence.
+
+The diagram source and how to regenerate it are in [docs/architecture](docs/architecture/README.md).
+
 ## What retrace is not
 
 retrace is **not** an observability or tracing tool. Langfuse, LangSmith, Phoenix and OpenTelemetry already do that well. retrace is about **replay and experimentation**, and it is designed to be used alongside your tracing stack, not instead of it. See [docs/vision.md](docs/vision.md#5-positioning-vs-existing-tools).
@@ -78,6 +91,7 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 - [Core spec](docs/spec/core.md): modes, matching, the cassette data model, diff, CLI and acceptance criteria.
 - [Architecture decisions](docs/adr/README.md).
 - [MVP plan](docs/plan/mvp.md): milestones and the order of implementation.
+- [Architecture diagram](docs/architecture/README.md): the overview above, with its source.
 
 ## License
 

@@ -1,0 +1,78 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "How retrace works: record, replay, diff",
+    "output": "docs/architecture/overview.html",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/pmlucero/retrace.git",
+      "provider": "github",
+      "link_mode": "web",
+      "revision": "4e5db5851a93ff9583d9fff498b6bef7be4ce804"
+    }
+  },
+  "components": [
+    { "id": "cli", "type": "frontend", "label": "retrace CLI", "sublabel": "record · run · diff · ls · show", "tag": "M0 done", "pos": [40, 40], "size": [170, 64],
+      "sources": [ { "path": "internal/cli/cli.go", "line": 52, "end_line": 58, "label": "command dispatch" }, { "path": "docs/spec/core.md", "line": 341, "end_line": 351, "label": "record CLI" } ] },
+    { "id": "agent", "type": "external", "label": "Your agent", "sublabel": "child process, unchanged code", "pos": [40, 210], "size": [170, 64],
+      "sources": [ { "path": "docs/spec/core.md", "line": 68, "end_line": 77, "label": "injected base URLs" } ] },
+    { "id": "router", "type": "backend", "label": "Proxy router", "sublabel": "one local listener, by path", "tag": "M2", "pos": [360, 210], "size": [170, 64],
+      "sources": [ { "path": "docs/spec/core.md", "line": 31, "end_line": 57, "label": "system overview" }, { "path": "docs/adr/0002-transparent-proxy-base-url.md", "label": "ADR 0002" } ] },
+    { "id": "forwarder", "type": "backend", "label": "Forwarder + recorder", "sublabel": "streams SSE without buffering", "tag": "M2 / M4", "pos": [660, 210], "size": [180, 64],
+      "sources": [ { "path": "docs/spec/core.md", "line": 79, "end_line": 93, "label": "LLM, MCP, redaction" } ] },
+    { "id": "anthropic", "type": "external", "label": "Anthropic API", "sublabel": "Messages API", "pos": [1000, 140], "size": [160, 60],
+      "sources": [ { "path": "docs/adr/0003-anthropic-messages-api-with-sse.md", "label": "ADR 0003" } ] },
+    { "id": "mcp", "type": "external", "label": "MCP servers", "sublabel": "Streamable HTTP", "pos": [1000, 290], "size": [160, 60],
+      "sources": [ { "path": "docs/adr/0004-mcp-streamable-http-first.md", "label": "ADR 0004" } ] },
+    { "id": "replayer", "type": "backend", "label": "Replayer", "sublabel": "fingerprint match, FIFO queues", "tag": "M3 / M5", "pos": [360, 400], "size": [170, 64],
+      "sources": [ { "path": "docs/spec/core.md", "line": 95, "end_line": 126, "label": "replay modes" }, { "path": "docs/spec/core.md", "line": 128, "end_line": 139, "label": "matching" } ] },
+    { "id": "queue", "type": "messagebus", "label": "Writer queue", "sublabel": "bounded, batched transactions", "tag": "M1b next", "pos": [660, 400], "size": [180, 64],
+      "sources": [ { "path": "docs/plan/mvp.md", "line": 41, "label": "writer queue design" } ] },
+    { "id": "store", "type": "backend", "label": "cassette package", "sublabel": "Create · Open · Write(tx) · reads", "tag": "M1a done", "pos": [660, 580], "size": [180, 64],
+      "sources": [ { "path": "internal/cassette/cassette.go", "line": 1, "end_line": 6, "label": "package contract" }, { "path": "internal/cassette/cassette.go", "line": 161, "end_line": 178, "label": "Write in one tx" }, { "path": "internal/cassette/write.go", "line": 90, "end_line": 134, "label": "begin/complete interaction" } ] },
+    { "id": "file", "type": "database", "label": "cassette .sqlite", "sublabel": "one file per session", "pos": [660, 760], "size": [180, 64],
+      "sources": [ { "path": "internal/cassette/migrations/0001_initial.sql", "line": 11, "end_line": 108, "label": "schema v1" }, { "path": "docs/adr/0005-sqlite-cassette-storage.md", "label": "ADR 0005" } ] },
+    { "id": "diff", "type": "backend", "label": "retrace diff", "sublabel": "first divergence of trajectories", "tag": "M6", "pos": [1000, 760], "size": [170, 64],
+      "sources": [ { "path": "docs/spec/core.md", "line": 280, "end_line": 295, "label": "diff" } ] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "retrace proxy (single Go binary)", "wraps": ["router", "forwarder", "replayer", "queue", "store"] }
+  ],
+  "connections": [
+    { "id": "cli-spawns-agent", "from": "cli", "to": "agent", "label": "spawns" },
+    { "id": "agent-to-router", "from": "agent", "to": "router", "label": "/llm · /mcp/<name>", "variant": "emphasis" },
+    { "id": "router-live", "from": "router", "to": "forwarder", "label": "live channel", "variant": "emphasis" },
+    { "id": "to-anthropic", "from": "forwarder", "to": "anthropic", "label": "POST /v1/messages" },
+    { "id": "to-mcp", "from": "forwarder", "to": "mcp", "label": "JSON-RPC" },
+    { "id": "router-replay", "from": "router", "to": "replayer", "label": "from cassette" },
+    { "id": "record-enqueue", "from": "forwarder", "to": "queue", "label": "enqueue, never blocks", "variant": "dashed" },
+    { "id": "replay-log", "from": "replayer", "to": "queue", "label": "log as replayed", "variant": "dashed" },
+    { "id": "queue-to-store", "from": "queue", "to": "store", "label": "batched tx" },
+    { "id": "store-writes", "from": "store", "to": "file", "label": "append-only" },
+    { "id": "replay-reads", "from": "replayer", "to": "file", "label": "reads source" },
+    { "id": "diff-reads", "from": "diff", "to": "file", "label": "reads 2 sessions" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "Inside a cassette (schema v1)", "items": [
+      "session: one row, command, mode, status, parent session",
+      "interactions: raw HTTP exchanges, used to replay",
+      "chunks: SSE events with their time offset",
+      "events: semantic log (model_response, tool_call...), used to diff",
+      "blobs: bodies stored once by SHA-256"
+    ] },
+    { "dot": "cyan", "title": "Replay modes (retrace run)", "items": [
+      "exact: both channels from the cassette, no network",
+      "swap-model: real LLM with another model, tools from cassette",
+      "live-tools: LLM from cassette, real MCP servers",
+      "A request with no recorded match is a divergence (strict)",
+      "Every replay writes a new cassette; the source is never modified"
+    ] },
+    { "dot": "amber", "title": "Build status", "items": [
+      "Done: M0 CLI skeleton, M1a cassette store",
+      "Next: M1b writer queue (full queue marks error, drains on SIGINT)",
+      "Then: M2 record, M3 exact replay, M4 MCP, M5 swap/live, M6 diff"
+    ] }
+  ]
+}
