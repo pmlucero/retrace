@@ -141,6 +141,11 @@ func (c *Cassette) Path() string { return c.path }
 // Close closes the cassette. A cassette in WAL mode (created by Create, or
 // left by a crashed recording) is checkpointed and switched back to a single
 // file, so no -wal or -shm files remain next to it.
+//
+// It takes no context: closing always runs to the end, so the file is left
+// valid even when the caller is shutting down.
+//
+// nolint: contextcheck
 func (c *Cassette) Close() error {
 	var errs []error
 	if c.walMode {
