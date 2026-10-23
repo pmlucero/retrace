@@ -1,0 +1,331 @@
+package cassette
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
+	"reflect"
+	"strconv"
+	"testing"
+	"time"
+)
+
+// at returns a fixed UTC time with microsecond precision, the precision of the
+// cassette's time columns (spec §7.1).
+func at(sec int) time.Time {
+	return time.Date(2026, 10, 23, 12, 0, sec, 123456000, time.UTC)
+}
+
+func ptr[T any](v T) *T { return &v }
+
+func testSession() Session {
+	return Session{
+		ID:             "20261023-120000-ab12",
+		Mode:           "record",
+		Status:         "recording",
+		CreatedAt:      at(0),
+		Command:        []string{"python", "agent.py"},
+		Cwd:            "/work",
+		OnMiss:         "strict",
+		MCPServers:     json.RawMessage(`[{"name":"orders","url":"http://localhost:9001/mcp"}]`),
+		Redaction:      json.RawMessage(`{"headers":["authorization"]}`),
+		RetraceVersion: "dev",
+		DeriverVersion: 1,
+		PricingVersion: "2026-10",
+		Labels:         map[string]string{"case": "checkout"},
+	}
+}
+
+func newCassette(t *testing.T) (*Cassette, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "s.cassette")
+	c, err := Create(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	return c, path
+}
+
+func write(t *testing.T, c *Cassette, fn func(*Tx) error) {
+	t.Helper()
+	if err := c.Write(context.Background(), fn); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+}
+
+func TestRoundTripSurvivesCloseAndReopen(t *testing.T) {
+	ctx := context.Background()
+	c, path := newCassette(t)
+
+	wantSession := testSession()
+	var reqKey string
+	wantInteraction := Interaction{
+		ID: 1, Channel: "llm", Upstream: "anthropic", HTTPMethod: "POST", Path: "/v1/messages",
+		RequestHeaders: json.RawMessage(`{"content-type":["application/json"]}`),
+		Fingerprint:    ptr("fp-1"), StartedAt: at(1), Provenance: "recorded",
+	}
+	completion := Completion{
+		StatusCode: ptr(200), ResponseHeaders: json.RawMessage(`{"content-type":["text/event-stream"]}`),
+		Streamed: true, TTFBMillis: ptr[int64](40), DurationMillis: 900,
+	}
+	wantChunks := []Chunk{
+		{InteractionID: 1, Index: 0, OffsetMillis: 40, Data: []byte("event: message_start\ndata: {}\n\n")},
+		{InteractionID: 1, Index: 1, OffsetMillis: 900, Data: []byte("event: message_stop\ndata: {}\n\n")},
+	}
+	wantEvents := []Event{
+		{Seq: 1, InteractionID: ptr[int64](1), Kind: "model_response", Source: "model", Target: "agent",
+			StartedAt: at(1), DurationMillis: ptr[int64](900), Model: ptr("claude-x"), RequestedModel: ptr("claude-x"),
+			Result: json.RawMessage(`{"stop_reason":"tool_use"}`), TokensIn: ptr[int64](10), TokensOut: ptr[int64](5),
+			CostUSD: ptr(0.0012), Status: "ok", Provenance: "recorded", DeriverVersion: 1},
+		{Seq: 2, ParentSeq: ptr[int64](1), InteractionID: ptr[int64](1), Kind: "tool_use", Source: "model",
+			Target: "agent", StartedAt: at(2), Tool: ptr("search"), Arguments: json.RawMessage(`{"q":"x"}`),
+			Status: "ok", Provenance: "recorded", DeriverVersion: 1},
+	}
+
+	write(t, c, func(tx *Tx) error {
+		if err := tx.InsertSession(ctx, wantSession); err != nil {
+			return err
+		}
+		var err error
+		if reqKey, err = tx.PutBlob(ctx, []byte(`{"model":"claude-x"}`)); err != nil {
+			return err
+		}
+		wantInteraction.RequestBlob = &reqKey
+		return tx.BeginInteraction(ctx, wantInteraction)
+	})
+	write(t, c, func(tx *Tx) error {
+		for _, ch := range wantChunks {
+			if err := tx.AppendChunk(ctx, ch); err != nil {
+				return err
+			}
+		}
+		if err := tx.CompleteInteraction(ctx, 1, completion); err != nil {
+			return err
+		}
+		for _, e := range wantEvents {
+			if err := tx.AppendEvent(ctx, e); err != nil {
+				return err
+			}
+		}
+		return tx.EndSession(ctx, SessionEnd{Status: "completed", EndedAt: at(3), AgentExitCode: ptr(0)})
+	})
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	// ADR 0005: after Close the cassette is a single self-contained file.
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if _, err := os.Stat(path + suffix); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s still exists after Close (err = %v)", path+suffix, err)
+		}
+	}
+
+	r, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+
+	gotSession, err := r.Session(ctx)
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	wantSession.Status, wantSession.EndedAt, wantSession.AgentExitCode = "completed", ptr(at(3)), ptr(0)
+	if !reflect.DeepEqual(gotSession, wantSession) {
+		t.Errorf("session:\n got %+v\nwant %+v", gotSession, wantSession)
+	}
+
+	gotInteractions, err := r.Interactions(ctx)
+	if err != nil {
+		t.Fatalf("Interactions: %v", err)
+	}
+	wantInteraction.StatusCode, wantInteraction.ResponseHeaders = completion.StatusCode, completion.ResponseHeaders
+	wantInteraction.Streamed, wantInteraction.TTFBMillis = true, completion.TTFBMillis
+	wantInteraction.DurationMillis = ptr(completion.DurationMillis)
+	if !reflect.DeepEqual(gotInteractions, []Interaction{wantInteraction}) {
+		t.Errorf("interactions:\n got %+v\nwant %+v", gotInteractions, []Interaction{wantInteraction})
+	}
+
+	gotChunks, err := r.Chunks(ctx, 1)
+	if err != nil {
+		t.Fatalf("Chunks: %v", err)
+	}
+	if !reflect.DeepEqual(gotChunks, wantChunks) {
+		t.Errorf("chunks:\n got %+v\nwant %+v", gotChunks, wantChunks)
+	}
+
+	gotEvents, err := r.Events(ctx)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	if !reflect.DeepEqual(gotEvents, wantEvents) {
+		t.Errorf("events:\n got %+v\nwant %+v", gotEvents, wantEvents)
+	}
+
+	blob, err := r.Blob(ctx, reqKey)
+	if err != nil || string(blob) != `{"model":"claude-x"}` {
+		t.Errorf("Blob(%s) = %q, %v", reqKey, blob, err)
+	}
+}
+
+func TestCreateRefusesExistingFile(t *testing.T) {
+	_, path := newCassette(t)
+	if _, err := Create(context.Background(), path); !errors.Is(err, ErrExists) {
+		t.Errorf("Create on existing file: err = %v, want ErrExists", err)
+	}
+}
+
+func TestPutBlobDeduplicatesContent(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	var k1, k2 string
+	write(t, c, func(tx *Tx) error {
+		var err error
+		if k1, err = tx.PutBlob(ctx, []byte("same")); err != nil {
+			return err
+		}
+		k2, err = tx.PutBlob(ctx, []byte("same"))
+		return err
+	})
+
+	if k1 != k2 {
+		t.Errorf("keys differ for identical content: %s vs %s", k1, k2)
+	}
+	var n int
+	if err := c.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM blobs").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("blobs rows = %d, want 1", n)
+	}
+}
+
+func TestCompleteInteractionExactlyOnce(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	write(t, c, func(tx *Tx) error {
+		return tx.BeginInteraction(ctx, Interaction{ID: 7, Channel: "mcp", Upstream: "mcp:orders",
+			HTTPMethod: "POST", Path: "/", StartedAt: at(0), Provenance: "recorded"})
+	})
+	complete := func(id int64) error {
+		return c.Write(ctx, func(tx *Tx) error {
+			return tx.CompleteInteraction(ctx, id, Completion{DurationMillis: 5})
+		})
+	}
+
+	if err := complete(7); err != nil {
+		t.Fatalf("first completion: %v", err)
+	}
+	if err := complete(7); !errors.Is(err, ErrAlreadyCompleted) {
+		t.Errorf("second completion: err = %v, want ErrAlreadyCompleted", err)
+	}
+	if err := complete(8); !errors.Is(err, ErrNotFound) {
+		t.Errorf("unknown interaction: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestWriteRollsBackOnError(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	boom := errors.New("boom")
+
+	err := c.Write(ctx, func(tx *Tx) error {
+		if err := tx.InsertSession(ctx, testSession()); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("Write: err = %v, want boom", err)
+	}
+	if _, err := c.Session(ctx); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Session after rollback: err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSchemaRejectsInvalidValuesAndDanglingReferences(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+
+	bad := testSession()
+	bad.Mode = "rewind"
+	if err := c.Write(ctx, func(tx *Tx) error { return tx.InsertSession(ctx, bad) }); err == nil {
+		t.Error("InsertSession with invalid mode: want error")
+	}
+	chunk := Chunk{InteractionID: 99, Index: 0, Data: []byte("x")}
+	if err := c.Write(ctx, func(tx *Tx) error { return tx.AppendChunk(ctx, chunk) }); err == nil {
+		t.Error("AppendChunk for a missing interaction: want foreign key error")
+	}
+}
+
+func TestOpenNewerSchemaIsReadOnly(t *testing.T) {
+	ctx := context.Background()
+	c, path := newCassette(t)
+	write(t, c, func(tx *Tx) error { return tx.InsertSession(ctx, testSession()) })
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	setUserVersion(t, path, len(migrations)+1)
+
+	r, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+
+	if _, err := r.Session(ctx); err != nil {
+		t.Errorf("reading a newer cassette: %v", err)
+	}
+	err = r.Write(ctx, func(tx *Tx) error {
+		_, err := tx.PutBlob(ctx, []byte("x"))
+		return err
+	})
+	if !errors.Is(err, ErrNewerSchema) {
+		t.Errorf("writing a newer cassette: err = %v, want ErrNewerSchema", err)
+	}
+}
+
+func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "m.cassette")
+	all := []string{
+		"CREATE TABLE a (x INTEGER)",
+		"CREATE TABLE b (y INTEGER)",
+	}
+
+	c, err := open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if err := c.migrate(ctx, all[:1]); err != nil {
+		t.Fatalf("migrate to v1: %v", err)
+	}
+	// Re-running v1 would fail with "table a already exists": only v2 may run.
+	if err := c.migrate(ctx, all); err != nil {
+		t.Fatalf("migrate v1 -> v2: %v", err)
+	}
+	if c.SchemaVersion() != 2 {
+		t.Errorf("schema = %d, want 2", c.SchemaVersion())
+	}
+	var version int
+	if err := c.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 2 {
+		t.Errorf("user_version = %d (err %v), want 2", version, err)
+	}
+}
+
+func setUserVersion(t *testing.T, path string, v int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(context.Background(), "PRAGMA user_version = "+strconv.Itoa(v)); err != nil {
+		t.Fatal(err)
+	}
+}
