@@ -35,17 +35,24 @@ type Route struct {
 type Config struct {
 	Routes    []Route
 	Writer    *cassette.Writer
-	Headers   *redact.Headers
+	Redact    *redact.Rules
 	Logger    *slog.Logger
 	Transport http.RoundTripper // nil selects http.DefaultTransport
+
+	// MaxBodyBytes caps how much of one response, or of one SSE event, is
+	// held in memory to be recorded. Larger ones are still forwarded, and the
+	// interaction is recorded with an error instead. Zero selects
+	// cassette.DefaultQueueBytes: the writer would drop anything larger anyway.
+	MaxBodyBytes int64
 }
 
 // Proxy is an http.Handler that forwards and records.
 type Proxy struct {
 	routes  []route
 	writer  *cassette.Writer
-	headers *redact.Headers
+	redact  *redact.Rules
 	log     *slog.Logger
+	maxBody int64
 }
 
 type route struct {
@@ -59,7 +66,11 @@ func New(cfg Config) *Proxy {
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
 	}
-	p := &Proxy{writer: cfg.Writer, headers: cfg.Headers, log: log}
+	maxBody := cfg.MaxBodyBytes
+	if maxBody <= 0 {
+		maxBody = cassette.DefaultQueueBytes
+	}
+	p := &Proxy{writer: cfg.Writer, redact: cfg.Redact, log: log, maxBody: maxBody}
 	for _, r := range cfg.Routes {
 		target := r.Target
 		p.routes = append(p.routes, route{Route: r, rp: &httputil.ReverseProxy{
@@ -100,7 +111,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	path := rest
 	if r.URL.RawQuery != "" {
-		path += "?" + r.URL.RawQuery
+		path += "?" + p.redact.Query(r.URL.RawQuery) // spec §3.5
 	}
 	in := cassette.Interaction{
 		Channel: rt.Channel, Upstream: rt.Upstream, HTTPMethod: r.Method, Path: path,
@@ -134,7 +145,7 @@ func (p *Proxy) match(path string) (route, string, bool) {
 }
 
 func (p *Proxy) headersJSON(h http.Header) json.RawMessage {
-	b, err := json.Marshal(p.headers.Apply(h))
+	b, err := json.Marshal(p.redact.Headers(h))
 	if err != nil {
 		return json.RawMessage(`{}`) // http.Header always marshals; unreachable
 	}
@@ -188,6 +199,7 @@ type exchange struct {
 	sse      sseSplitter
 	chunkIdx int
 	body     bytes.Buffer // the response body when not streamed
+	tooLarge bool         // the body, or one SSE event, exceeded maxBody: stop recording it
 	eof      bool
 	readErr  error
 	once     sync.Once
@@ -195,12 +207,29 @@ type exchange struct {
 
 // observe records bytes of the response as they pass to the agent.
 func (ex *exchange) observe(b []byte) {
+	if ex.tooLarge {
+		return
+	}
 	if !ex.streamed {
+		if int64(ex.body.Len()+len(b)) > ex.p.maxBody {
+			ex.tooLarge = true
+			ex.body = bytes.Buffer{} // release it; the agent still gets every byte
+			return
+		}
 		ex.body.Write(b)
 		return
 	}
 	for _, event := range ex.sse.feed(b) {
+		if int64(len(event)) > ex.p.maxBody {
+			ex.tooLarge = true
+			ex.sse = sseSplitter{}
+			return
+		}
 		ex.appendChunk(event)
+	}
+	if int64(len(ex.sse.rest())) > ex.p.maxBody {
+		ex.tooLarge = true // no event boundary in sight: a malformed or binary stream
+		ex.sse = sseSplitter{}
 	}
 }
 
@@ -221,21 +250,30 @@ func (ex *exchange) finish() {
 			TTFBMillis: &ttfb, DurationMillis: time.Since(ex.start).Milliseconds(),
 		}
 		var blobs [][]byte
-		if ex.streamed {
+		switch {
+		case ex.tooLarge:
+		case ex.streamed:
 			if rest := ex.sse.rest(); len(rest) > 0 {
 				ex.appendChunk(rest) // an unterminated last event, kept as received
 			}
-		} else {
+		default:
 			key := cassette.BlobKey(ex.body.Bytes())
 			done.ResponseBlob = &key
 			blobs = append(blobs, ex.body.Bytes())
 		}
+		var msg string
 		switch {
+		case ex.tooLarge && ex.streamed:
+			msg = fmt.Sprintf("an SSE event exceeded %d bytes; the rest of the stream was forwarded but not recorded", ex.p.maxBody)
+		case ex.tooLarge:
+			msg = fmt.Sprintf("the response body exceeded %d bytes; it was forwarded but not recorded", ex.p.maxBody)
+		case errors.Is(ex.readErr, context.Canceled), ex.readErr == nil && !ex.eof:
+			// The server cancels the upstream request when the agent leaves.
+			msg = "the agent closed the connection before the response ended"
 		case ex.readErr != nil:
-			msg := "reading the upstream response: " + ex.readErr.Error()
-			done.Error = &msg
-		case !ex.eof:
-			msg := "the agent closed the connection before the response ended"
+			msg = "reading the upstream response: " + ex.readErr.Error()
+		}
+		if msg != "" {
 			done.Error = &msg
 		}
 		ex.p.writer.CompleteInteraction(ex.id, done, blobs...)

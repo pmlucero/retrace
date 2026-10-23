@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"io"
@@ -29,6 +30,12 @@ type harness struct {
 
 func newHarness(t *testing.T, upstream http.Handler) *harness {
 	t.Helper()
+	return newHarnessWith(t, upstream, 0)
+}
+
+// newHarnessWith is newHarness with a MaxBodyBytes for the proxy.
+func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64) *harness {
+	t.Helper()
 	ctx := context.Background()
 	target, _ := url.Parse("http://127.0.0.1:1")
 	if upstream != nil {
@@ -54,9 +61,10 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 		t.Fatal(err)
 	}
 	p := New(Config{
-		Routes:  []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target}},
-		Writer:  w,
-		Headers: redact.NewHeaders(nil),
+		Routes:       []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target}},
+		Writer:       w,
+		Redact:       redact.NewRules(nil),
+		MaxBodyBytes: maxBody,
 	})
 	server := httptest.NewServer(p)
 	t.Cleanup(server.Close)
@@ -107,7 +115,7 @@ func TestProxyRecordsAJSONExchange(t *testing.T) {
 		_, _ = io.WriteString(w, `{"type":"message","content":[]}`)
 	}))
 
-	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, h.server.URL+"/llm/anthropic/v1/messages?beta=true",
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, h.server.URL+"/llm/anthropic/v1/messages?beta=true&api_key=sk-q",
 		strings.NewReader(`{"model":"m","messages":[]}`))
 	req.Header.Set("X-Api-Key", "sk-ant-secret")
 	req.Header.Set("Content-Type", "application/json")
@@ -121,7 +129,7 @@ func TestProxyRecordsAJSONExchange(t *testing.T) {
 	if resp.StatusCode != 200 || string(body) != `{"type":"message","content":[]}` {
 		t.Fatalf("agent got %d %q", resp.StatusCode, body)
 	}
-	if gotPath != "/v1/messages?beta=true" || gotKey != "sk-ant-secret" {
+	if gotPath != "/v1/messages?beta=true&api_key=sk-q" || gotKey != "sk-ant-secret" {
 		t.Errorf("upstream got %s with key %q, want the route stripped and the real key", gotPath, gotKey)
 	}
 	if gotEncoding != "gzip" {
@@ -133,8 +141,9 @@ func TestProxyRecordsAJSONExchange(t *testing.T) {
 		t.Fatalf("got %d interactions, want 1", len(all))
 	}
 	in := all[0]
-	if in.Channel != "llm" || in.Upstream != "anthropic" || in.HTTPMethod != "POST" || in.Path != "/v1/messages?beta=true" {
-		t.Errorf("request line = %s %s %s %s", in.Channel, in.Upstream, in.HTTPMethod, in.Path)
+	if in.Channel != "llm" || in.Upstream != "anthropic" || in.HTTPMethod != "POST" ||
+		!strings.HasPrefix(in.Path, "/v1/messages?beta=true&api_key=[REDACTED:") {
+		t.Errorf("request line = %s %s %s %s, want the query credential redacted (spec §3.5)", in.Channel, in.Upstream, in.HTTPMethod, in.Path)
 	}
 	if got := h.blob(in.RequestBlob); got != `{"model":"m","messages":[]}` {
 		t.Errorf("request body = %q", got)
@@ -262,8 +271,84 @@ func TestProxyRecordsAStreamTheAgentAbandons(t *testing.T) {
 		t.Fatalf("got %d interactions", len(all))
 	}
 	in := all[0]
-	if in.Error == nil || in.DurationMillis == nil {
-		t.Errorf("interaction = %+v, want it completed with an error", in)
+	if in.Error == nil || *in.Error != "the agent closed the connection before the response ended" || in.DurationMillis == nil {
+		t.Errorf("interaction error = %v, want it completed saying the agent left", in.Error)
+	}
+}
+
+// spec §3.3: the agent and the cassette both get the decoded bytes.
+func TestProxyDecodesACompressedResponse(t *testing.T) {
+	const body = `{"type":"message","content":[{"type":"text","text":"compressed"}]}`
+	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			http.Error(w, "expected gzip to be accepted", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		_, _ = io.WriteString(gz, body)
+		_ = gz.Close()
+	}))
+
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, h.server.URL+"/llm/anthropic/v1/messages", strings.NewReader(`{}`))
+	req.Header.Set("Accept-Encoding", "gzip") // as an agent might; Go's client then does not decode it
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if string(got) != body || resp.Header.Get("Content-Encoding") != "" {
+		t.Fatalf("agent got %q with Content-Encoding %q, want the plain body", got, resp.Header.Get("Content-Encoding"))
+	}
+
+	in := h.interactions()[0]
+	if stored := h.blob(in.ResponseBlob); stored != body {
+		t.Errorf("stored body = %q, want what the agent got", stored)
+	}
+	if enc := headerValue(t, in.ResponseHeaders, "Content-Encoding"); enc != "" {
+		t.Errorf("stored Content-Encoding = %q, want none", enc)
+	}
+}
+
+func TestProxyForwardsButDoesNotRecordOversizedBodies(t *testing.T) {
+	big := strings.Repeat("x", 4096)
+	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/stream" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: small\n\n")
+			_, _ = io.WriteString(w, "data: "+big+"\n\n") // one event over the limit
+			return
+		}
+		_, _ = io.WriteString(w, big)
+	}), 1024)
+
+	for _, path := range []string{"/plain", "/stream"} {
+		resp, err := post(h.server.URL+"/llm/anthropic"+path, `{}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if !strings.Contains(string(got), big) {
+			t.Errorf("%s: the agent did not get the whole body", path)
+		}
+	}
+
+	all := h.interactions()
+	if len(all) != 2 {
+		t.Fatalf("got %d interactions", len(all))
+	}
+	plain, stream := all[0], all[1]
+	if plain.ResponseBlob != nil || plain.Error == nil || !strings.Contains(*plain.Error, "exceeded 1024 bytes") {
+		t.Errorf("plain: blob %v, error %v; want no blob and an error", plain.ResponseBlob, plain.Error)
+	}
+	if stream.Error == nil || !strings.Contains(*stream.Error, "SSE event exceeded") {
+		t.Errorf("stream: error %v, want the oversized event reported", stream.Error)
+	}
+	if chunks, _ := h.c.Chunks(context.Background(), stream.ID); len(chunks) != 1 {
+		t.Errorf("stream: got %d chunks, want the one before the oversized event", len(chunks))
 	}
 }
 
