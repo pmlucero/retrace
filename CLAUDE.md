@@ -47,6 +47,7 @@ Read these before changing anything non-trivial:
 
 ## Commits and PRs
 
+- **Trunk-based:** branch from `main` as `<type>/<kebab-case-description>`, using the commit types below, and merge back via PR. Never push to `main`. See CONTRIBUTING.md, *Branches and releases*.
 - **Small commits:** one logical change per commit. A spec change, an ADR and its implementation are separate commits.
 - **Conventional Commits:** `feat:`, `fix:`, `docs:`, `test:`, `refactor:`, `chore:`, with an optional scope, e.g. `feat(replay): serve SSE chunks with recorded offsets`.
 - The subject is imperative and at most 72 characters. The body explains *why* and references `AC-xx` or `ADR NNNN` when relevant.
