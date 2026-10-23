@@ -8,7 +8,8 @@ updates:
     schedule:
       interval: weekly
     # Only propose releases that are at least two weeks old: new releases get time
-    # to surface bugs or a compromise before they reach CI.
+    # to surface bugs or a compromise before they reach CI. Security updates are
+    # not delayed by the cooldown. Policy: CONTRIBUTING.md, "Dependencies".
     cooldown:
       default-days: 14
     commit-message:
