@@ -4,5 +4,9 @@
 /docs/spec/          @pmlucero
 /docs/adr/           @pmlucero
 
+# The review rubric and the automated reviewer's prompt.
+/docs/review-guidelines.md             @pmlucero
+/.github/workflows/claude-review.yml   @pmlucero
+
 # Protect this file so ownership cannot be changed without review.
 /.github/CODEOWNERS  @pmlucero

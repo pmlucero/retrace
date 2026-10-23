@@ -36,6 +36,7 @@ Please read the [non-goals](docs/vision.md#4-non-goals) before proposing feature
   python3 .github/scripts/check_docs.py
   ```
 
+- Every PR from a branch of this repository gets an advisory review from Claude, following [docs/review-guidelines.md](docs/review-guidelines.md). It does not block merging. Maintainers can request another pass by commenting `@claude review`. PRs from forks are reviewed by the maintainer.
 - Keep PRs focused. A spec change, an ADR and an implementation belong in separate commits, and preferably in separate PRs.
 
 ### Commits
