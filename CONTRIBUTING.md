@@ -62,7 +62,7 @@ Why not GitFlow (`develop`, `hotfix/`, `release/` per version)? It fits schedule
 Go conventions, the package layout and testing rules are in [CLAUDE.md](CLAUDE.md). That file is written for coding agents, and the same rules apply to humans. In short:
 
 - `CGO_ENABLED=0` must build, and the standard library is preferred.
-- `go test -race ./...`, `go vet ./...` and `golangci-lint run` must pass.
+- `go mod tidy -diff`, `go vet ./...`, `go test -race ./...` and `golangci-lint run` must pass, on Go 1.26 and 1.27. Use golangci-lint v2.14.0, the version CI uses (`.github/workflows/go.yml`).
 - Tests never call real external APIs. They use in-process fake upstreams.
 - Tests that verify an acceptance criterion reference it (`// AC-12`).
 
