@@ -1,6 +1,6 @@
 # retrace core specification
 
-- Status: Draft (phase 0, pending approval)
+- Status: Approved (phase 0 closed on 2026-10-23)
 - Version: 0.1
 - Last updated: 2026-10-23
 
