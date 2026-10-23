@@ -332,7 +332,9 @@ Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These f
 | `--log-level` | `RETRACE_LOG_LEVEL` | `info` | `debug`, `info`, `warn` or `error` (logs go to stderr) |
 | `--no-color` | `NO_COLOR` | — | Disable colored output |
 
-Global flags MUST precede the command: `retrace [global flags] <command> [command flags] [arguments]`. Flags after the command name belong to that command, so a global flag placed there is a usage error (exit `2`). Each value is resolved with the precedence flag > environment variable > default. When an invalid value comes from an environment variable, the error message MUST name the variable.
+Global flags MUST precede the command: `retrace [global flags] <command> [command flags] [arguments]`. Flags after the command name belong to that command, so a global flag placed there is a usage error (exit `2`). That error SHOULD say that global flags go before the command.
+
+Each global flag's value is resolved with the precedence flag > environment variable > default. When an invalid value comes from an environment variable, the error message MUST name the variable. `NO_COLOR` follows the [no-color.org](https://no-color.org) convention: any non-empty value disables color, and no value is invalid. `--no-color` can only disable color. It never re-enables color that `NO_COLOR` disabled.
 
 A `retrace.yaml` file in the working directory MAY declare `mcp` servers, `listen`, `redact` rules and the Anthropic upstream. Command-line flags override it.
 
