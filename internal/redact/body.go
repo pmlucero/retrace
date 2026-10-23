@@ -2,6 +2,8 @@ package redact
 
 import (
 	"bytes"
+	"errors"
+	"fmt"
 	"slices"
 	"strings"
 )
@@ -16,33 +18,41 @@ func (r *Rules) BodyRules() []string {
 	return out
 }
 
+// ErrNotRedactable is returned for a body that may hold values the rules
+// select but cannot be redacted safely. It must not be stored.
+var ErrNotRedactable = errors.New("body cannot be redacted")
+
 // Body returns data with the values selected by the body rules masked
 // (spec §3.5). A body that is not JSON, or has no match, is returned as it is.
-func (r *Rules) Body(data []byte) []byte {
+// A JSON body nested too deeply returns ErrNotRedactable.
+func (r *Rules) Body(data []byte) ([]byte, error) {
 	if len(r.body) == 0 {
-		return data
+		return data, nil
 	}
 	v, err := decodeJSON(data)
+	if errors.Is(err, errTooDeep) {
+		return nil, fmt.Errorf("%w: %w", ErrNotRedactable, err)
+	}
 	if err != nil {
-		return data
+		return data, nil
 	}
-	n := 0
+	var sel []selection
 	for _, p := range r.body {
-		n += p.apply(&v)
+		sel = p.selectAll(&v, sel)
 	}
-	if n == 0 {
-		return data
+	if maskSelections(sel) == 0 {
+		return data, nil
 	}
-	return encodeJSON(v)
+	return encodeJSON(v), nil
 }
 
 // SSEEvent returns one raw SSE event with the body rules applied to its data.
 // Other fields and the line framing are kept. Data split over several lines
 // is joined as the SSE format defines, and written back as one line if
 // anything in it was masked.
-func (r *Rules) SSEEvent(event []byte) []byte {
+func (r *Rules) SSEEvent(event []byte) ([]byte, error) {
 	if len(r.body) == 0 {
-		return event
+		return event, nil
 	}
 	lines := splitLines(event)
 	var (
@@ -56,12 +66,15 @@ func (r *Rules) SSEEvent(event []byte) []byte {
 		}
 	}
 	if len(dataIdx) == 0 {
-		return event
+		return event, nil
 	}
 	joined := []byte(strings.Join(data, "\n"))
-	red := r.Body(joined)
+	red, err := r.Body(joined)
+	if err != nil {
+		return nil, err
+	}
 	if bytes.Equal(red, joined) {
-		return event
+		return event, nil
 	}
 
 	var out bytes.Buffer
@@ -78,7 +91,7 @@ func (r *Rules) SSEEvent(event []byte) []byte {
 			out.WriteString(l.eol)
 		}
 	}
-	return out.Bytes()
+	return out.Bytes(), nil
 }
 
 type sseLine struct {

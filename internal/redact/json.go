@@ -24,11 +24,20 @@ type jsonMember struct {
 
 type jsonArray []jsonValue
 
+// maxDepth caps nesting while decoding. It is below encoding/json's own
+// limit (10000), whose error cannot be told apart from malformed JSON: a body
+// that is merely too deep must be refused, never stored as "not JSON"
+// (spec §3.5). Real API bodies nest a few dozen levels at most.
+const maxDepth = 1000
+
+// errTooDeep reports a body nested deeper than maxDepth.
+var errTooDeep = fmt.Errorf("JSON nested deeper than %d levels", maxDepth)
+
 // decodeJSON parses data as exactly one JSON value.
 func decodeJSON(data []byte) (jsonValue, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
-	v, err := decodeValue(dec)
+	v, err := decodeValue(dec, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -38,13 +47,16 @@ func decodeJSON(data []byte) (jsonValue, error) {
 	return v, nil
 }
 
-func decodeValue(dec *json.Decoder) (jsonValue, error) {
+func decodeValue(dec *json.Decoder, depth int) (jsonValue, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
 	switch t := tok.(type) {
 	case json.Delim:
+		if depth >= maxDepth {
+			return nil, errTooDeep
+		}
 		switch t {
 		case '{':
 			obj := &jsonObject{}
@@ -54,7 +66,7 @@ func decodeValue(dec *json.Decoder) (jsonValue, error) {
 					return nil, err
 				}
 				key, _ := keyTok.(string)
-				v, err := decodeValue(dec)
+				v, err := decodeValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -65,7 +77,7 @@ func decodeValue(dec *json.Decoder) (jsonValue, error) {
 		case '[':
 			arr := jsonArray{}
 			for dec.More() {
-				v, err := decodeValue(dec)
+				v, err := decodeValue(dec, depth+1)
 				if err != nil {
 					return nil, err
 				}
@@ -131,7 +143,12 @@ func writeString(b *bytes.Buffer, s string) {
 	b.Truncate(b.Len() - 1) // Encode appends a newline
 }
 
-// masked returns the redaction marker for v, hashed over its JSON text.
+// masked returns the redaction marker for v. A string is hashed as it is, like
+// a header value, so a secret gets the same marker wherever it appears; other
+// values are hashed over their JSON text (spec §3.5).
 func masked(v jsonValue) jsonValue {
+	if s, ok := v.(string); ok {
+		return mask(s)
+	}
 	return mask(string(encodeJSON(v)))
 }

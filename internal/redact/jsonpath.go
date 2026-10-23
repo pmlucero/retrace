@@ -2,6 +2,7 @@ package redact
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 )
@@ -120,47 +121,65 @@ func parseBracket(s string) (step, string, error) {
 	}
 }
 
-// apply replaces every value that p selects in root with mask(value), and
-// returns how many it replaced.
-func (p Path) apply(root *jsonValue) int {
-	return walk(root, p.steps)
+// selection is a value a rule selected, and how deep it is in the body.
+type selection struct {
+	value *jsonValue
+	depth int
 }
 
-func walk(v *jsonValue, steps []step) int {
+// selectAll returns every value p selects in root, without changing it.
+func (p Path) selectAll(root *jsonValue, out []selection) []selection {
+	return walk(root, p.steps, 0, out)
+}
+
+func walk(v *jsonValue, steps []step, depth int, out []selection) []selection {
 	if len(steps) == 0 {
-		*v = masked(*v)
-		return 1
+		return append(out, selection{value: v, depth: depth})
 	}
 	s, rest := steps[0], steps[1:]
-	n := 0
 	switch s.kind {
 	case stepChild:
 		if obj, ok := (*v).(*jsonObject); ok {
 			for i := range obj.members {
 				if obj.members[i].key == s.name {
-					n += walk(&obj.members[i].value, rest)
+					out = walk(&obj.members[i].value, rest, depth+1, out)
 				}
 			}
 		}
 	case stepIndex:
 		if arr, ok := (*v).(jsonArray); ok && s.index < len(arr) {
-			n += walk(&arr[s.index], rest)
+			out = walk(&arr[s.index], rest, depth+1, out)
 		}
 	case stepWildcard:
-		forEachChild(*v, func(c *jsonValue) { n += walk(c, rest) })
+		forEachChild(*v, func(c *jsonValue) { out = walk(c, rest, depth+1, out) })
 	case stepRecursive:
-		// The name may match here and at any depth below. A replaced value is
-		// a string, so the descent never revisits it.
+		// The name may match here and at any depth below.
 		if obj, ok := (*v).(*jsonObject); ok {
 			for i := range obj.members {
 				if obj.members[i].key == s.name {
-					n += walk(&obj.members[i].value, rest)
+					out = walk(&obj.members[i].value, rest, depth+1, out)
 				}
 			}
 		}
-		forEachChild(*v, func(c *jsonValue) { n += walk(c, steps) })
+		forEachChild(*v, func(c *jsonValue) { out = walk(c, steps, depth+1, out) })
 	}
-	return n
+	return out
+}
+
+// maskSelections masks each selected value once, outermost first, and returns
+// how many it masked. A value inside one already masked has been cut from the
+// body, so masking it changes nothing; the outer marker is hashed over the
+// original content whatever the rule order (spec §3.5).
+func maskSelections(sel []selection) int {
+	slices.SortStableFunc(sel, func(a, b selection) int { return a.depth - b.depth })
+	done := map[*jsonValue]bool{}
+	for _, s := range sel {
+		if !done[s.value] {
+			done[s.value] = true
+			*s.value = masked(*s.value)
+		}
+	}
+	return len(done)
 }
 
 func forEachChild(v jsonValue, fn func(*jsonValue)) {
