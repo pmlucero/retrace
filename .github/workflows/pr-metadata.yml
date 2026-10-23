@@ -15,6 +15,7 @@ jobs:
         env:
           # Passed through env, never interpolated into the script, so a crafted title cannot inject shell.
           TITLE: ${{ github.event.pull_request.title }}
+          AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           # Keep in sync with the branch-name job below and CONTRIBUTING.md.
           types='feat|fix|docs|test|refactor|chore'
@@ -28,7 +29,9 @@ jobs:
             echo "Got: $TITLE"
             exit 1
           fi
-          if (( ${#TITLE} > 72 )); then
+          # Dependabot generates long titles ("Bump <action> from <v> to <v> in the <group> group")
+          # that cannot be shortened; their format is still checked above.
+          if [[ "$AUTHOR" != "dependabot[bot]" ]] && (( ${#TITLE} > 72 )); then
             echo "::error::PR title is ${#TITLE} characters; the limit is 72 (see CONTRIBUTING.md)"
             exit 1
           fi
