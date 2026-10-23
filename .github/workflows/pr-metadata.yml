@@ -1,4 +1,4 @@
-name: pr-title
+name: pr-metadata
 
 on:
   pull_request:
@@ -27,3 +27,19 @@ jobs:
             exit 1
           fi
           echo "ok: $TITLE"
+
+  branch-name:
+    name: branch-name
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check branch naming convention
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          types='feat|fix|docs|test|refactor|chore'
+          if [[ "$BRANCH" =~ ^($types)/[a-z0-9]+(-[a-z0-9]+)*$ ]] || [[ "$BRANCH" =~ ^release/[0-9]+\.[0-9]+$ ]]; then
+            echo "ok: $BRANCH"
+            exit 0
+          fi
+          echo "::error::Branch '$BRANCH' must be '<type>/<kebab-case-description>' with type in: ${types//|/, }, or 'release/<major>.<minor>' (see CONTRIBUTING.md)"
+          exit 1
