@@ -1,6 +1,6 @@
 # 0002. Transparent proxy enabled by changing the base URL
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

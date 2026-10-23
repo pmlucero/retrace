@@ -7,15 +7,15 @@ This directory records the significant architectural decisions of retrace, follo
 | # | Title | Status |
 |---|---|---|
 | [0000](0000-record-architecture-decisions.md) | Record architecture decisions | Accepted |
-| [0001](0001-go-single-binary.md) | Go as the implementation language, shipped as a single binary | Proposed |
-| [0002](0002-transparent-proxy-base-url.md) | Transparent proxy enabled by changing the base URL | Proposed |
-| [0003](0003-anthropic-messages-api-with-sse.md) | Anthropic Messages API with SSE streaming as the first provider | Proposed |
-| [0004](0004-mcp-streamable-http-first.md) | MCP over Streamable HTTP as the first transport | Proposed |
-| [0005](0005-sqlite-cassette-storage.md) | One SQLite file per cassette | Proposed |
-| [0006](0006-strict-divergence-default.md) | `strict` as the default divergence strategy | Proposed |
-| [0007](0007-request-matching-fingerprints.md) | Request matching by canonical fingerprint | Proposed |
-| [0008](0008-secret-redaction.md) | Secret redaction in cassettes | Proposed |
-| [0009](0009-append-only-event-log.md) | Cassette as an append-only event log | Proposed |
+| [0001](0001-go-single-binary.md) | Go as the implementation language, shipped as a single binary | Accepted |
+| [0002](0002-transparent-proxy-base-url.md) | Transparent proxy enabled by changing the base URL | Accepted |
+| [0003](0003-anthropic-messages-api-with-sse.md) | Anthropic Messages API with SSE streaming as the first provider | Accepted |
+| [0004](0004-mcp-streamable-http-first.md) | MCP over Streamable HTTP as the first transport | Accepted |
+| [0005](0005-sqlite-cassette-storage.md) | One SQLite file per cassette | Accepted |
+| [0006](0006-strict-divergence-default.md) | `strict` as the default divergence strategy | Accepted |
+| [0007](0007-request-matching-fingerprints.md) | Request matching by canonical fingerprint | Accepted |
+| [0008](0008-secret-redaction.md) | Secret redaction in cassettes | Accepted |
+| [0009](0009-append-only-event-log.md) | Cassette as an append-only event log | Accepted |
 
 ## Statuses
 

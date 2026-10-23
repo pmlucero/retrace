@@ -1,6 +1,6 @@
 # 0008. Secret redaction in cassettes
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

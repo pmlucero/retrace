@@ -1,6 +1,6 @@
 # 0006. `strict` as the default divergence strategy
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

@@ -1,6 +1,6 @@
 # 0001. Go as the implementation language, shipped as a single binary
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

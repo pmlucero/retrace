@@ -14,10 +14,10 @@ Read these before changing anything non-trivial:
 
 ## Workflow: Spec-Driven Development
 
-1. **Spec first.** Behavior is defined in `docs/spec/` before it is implemented. If a task requires behavior the spec does not describe, update the spec first, in its own commit, and get approval.
+1. **Spec first.** Behavior is defined in `docs/spec/` before it is implemented. If a task requires behavior the spec does not describe, update the spec first, in its own commit, and get approval. An approved change keeps the status `Approved` and bumps `Version` and `Last updated` (see CONTRIBUTING.md).
 2. **ADR for significant decisions.** A new dependency, a cassette format change, a CLI contract change or a new protocol needs an ADR (see [ADR 0000](docs/adr/0000-record-architecture-decisions.md)). Code that contradicts an Accepted ADR must come with a superseding ADR in the same PR.
 3. **Trace to acceptance criteria.** Tests that verify an acceptance criterion reference it by name, e.g. `// AC-12`. Commit messages reference the AC or ADR they implement when applicable.
-4. **Phase gate.** No production code is written until phase 0 (docs) is approved by the maintainer.
+4. **Scope gate.** Implementation covers the MVP scope only (spec §1 and §12). Anything beyond it needs an approved spec change first.
 
 ## Language
 

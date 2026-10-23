@@ -1,6 +1,6 @@
 # 0005. One SQLite file per cassette
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

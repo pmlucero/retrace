@@ -1,6 +1,6 @@
 # 0003. Anthropic Messages API with SSE streaming as the first provider
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

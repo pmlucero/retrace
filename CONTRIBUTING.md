@@ -1,6 +1,6 @@
 # Contributing to retrace
 
-Thanks for your interest. retrace is in **phase 0 (design)**: the vision, spec and ADRs exist, and implementation has not started. Design feedback is the most valuable contribution right now.
+Thanks for your interest. The design (phase 0) is approved and the **MVP is in progress**. Feedback on the design and on early implementation is very welcome.
 
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
@@ -18,10 +18,10 @@ Changes flow in that order. A pull request that adds behavior not described in t
 ## Ways to contribute
 
 - **Report a bug or propose a feature** using the [issue forms](https://github.com/pmlucero/retrace/issues/new/choose).
-- **Challenge a design decision.** Open an issue that references the ADR or spec section. ADRs in `Proposed` status are explicitly open for discussion.
-- **Propose a spec change.** Open an issue first for anything non-trivial. Then send a PR that changes only `docs/spec/`, and explain the motivation and how acceptance criteria are affected.
+- **Challenge a design decision.** Open an issue that references the ADR or spec section. Accepted ADRs can be challenged too: a good argument leads to a new ADR that supersedes the old one (ADR 0000).
+- **Propose a spec change.** Open an issue first for anything non-trivial. Then send a PR that changes only `docs/spec/`, and explain the motivation and how acceptance criteria are affected. The spec stays `Approved` while a change is under review. When the change is merged, it bumps `Version` (minor while the version is below 1.0, e.g. 0.1 → 0.2) and `Last updated`.
 - **Propose an ADR.** Copy the template in [docs/adr/README.md](docs/adr/README.md), use the next free number, set the status to `Proposed`, and add it to the index. An ADR is needed for changes to the cassette format, the CLI contract, supported protocols, or new dependencies.
-- **Implement** (once phase 0 is approved): pick an issue, comment that you are working on it, and reference the acceptance criteria you cover.
+- **Implement**: pick an issue, comment that you are working on it, and reference the acceptance criteria you cover.
 
 Please read the [non-goals](docs/vision.md#4-non-goals) before proposing features. In particular, observability and tracing features are out of scope.
 
