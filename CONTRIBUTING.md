@@ -19,7 +19,7 @@ Changes flow in that order. A pull request that adds behavior not described in t
 
 - **Report a bug or propose a feature** using the [issue forms](https://github.com/pmlucero/retrace/issues/new/choose).
 - **Challenge a design decision.** Open an issue that references the ADR or spec section. Accepted ADRs can be challenged too: a good argument leads to a new ADR that supersedes the old one (ADR 0000).
-- **Propose a spec change.** Open an issue first for anything non-trivial. Then send a PR that changes only `docs/spec/`, and explain the motivation and how acceptance criteria are affected.
+- **Propose a spec change.** Open an issue first for anything non-trivial. Then send a PR that changes only `docs/spec/`, and explain the motivation and how acceptance criteria are affected. The spec stays `Approved` while a change is under review. When the change is merged, it bumps `Version` (minor while the version is below 1.0, e.g. 0.1 → 0.2) and `Last updated`.
 - **Propose an ADR.** Copy the template in [docs/adr/README.md](docs/adr/README.md), use the next free number, set the status to `Proposed`, and add it to the index. An ADR is needed for changes to the cassette format, the CLI contract, supported protocols, or new dependencies.
 - **Implement**: pick an issue, comment that you are working on it, and reference the acceptance criteria you cover.
 
