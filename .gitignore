@@ -7,6 +7,8 @@
 *.test
 *.out
 coverage.*
+/pr.diff
+/.coverage-report.md
 
 # Editors and OS
 *.swp
