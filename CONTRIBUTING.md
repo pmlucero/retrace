@@ -29,7 +29,7 @@ Please read the [non-goals](docs/vision.md#4-non-goals) before proposing feature
 
 - Changes to `docs/spec/`, `docs/adr/` and `.github/CODEOWNERS` require review from the maintainer (see [CODEOWNERS](.github/CODEOWNERS)).
 - All PRs to `main` need an approving review. Fill in the PR template: the traceability section (spec sections, AC-xx, ADRs) is what reviewers look at first.
-- CI must pass. It checks Markdown style (`markdownlint-cli2`, configured in `.markdownlint-cli2.jsonc`), internal links and ADR consistency (`.github/scripts/check_docs.py`), and the PR title format. Run them locally with:
+- CI must pass. It checks Markdown style (`markdownlint-cli2`, configured in `.markdownlint-cli2.jsonc`), internal links and ADR consistency (`.github/scripts/check_docs.py`), and the PR title and branch name formats. Run the docs checks locally with:
 
   ```sh
   npx markdownlint-cli2 "**/*.md"
@@ -44,10 +44,12 @@ Please read the [non-goals](docs/vision.md#4-non-goals) before proposing feature
 retrace uses **trunk-based development**. `main` is the only long-lived branch, and it is always releasable.
 
 - Work happens on short-lived branches cut from `main` and merged back through a PR. Rebase or merge `main` often, and keep branches to days, not weeks.
-- Branch names are `<type>/<kebab-case-description>`. The types are the same as for commits: `feat/`, `fix/`, `docs/`, `test/`, `refactor/`, `chore/`. Example: `feat/sse-replay-timing`. CI enforces this (`branch-name` check).
+- Branch names are `<type>/<kebab-case-description>`. The types are the same as for commits: `feat/`, `fix/`, `docs/`, `test/`, `refactor/`, `chore/`. Example: `feat/sse-replay-timing`. CI enforces this (`branch-name` check) for branches of this repository. PRs from forks are exempt.
 - **Urgent fixes** are ordinary `fix/` branches from `main`, prioritized for review. There is no separate hotfix flow.
-- **Releases** are tags `vX.Y.Z` (Semantic Versioning) on `main`. Binaries are built from the tag (ADR 0001).
-- **Maintenance branches** (`release/<major>.<minor>`) are created from a tag only if an older release needs a patch while `main` has moved on. Fixes land on `main` first and are cherry-picked.
+- **Releases** are tags `vX.Y.Z` (Semantic Versioning) on `main`. Binaries are built from the tag with GoReleaser (see ADR 0001 for targets).
+- **Maintenance branches** (`release/<major>.<minor>`) are created from a tag only if an older release needs a patch while `main` has moved on. Fixes land on `main` first and are cherry-picked through a `fix/` branch whose PR targets the `release/` branch.
+
+Why not GitFlow (`develop`, `hotfix/`, `release/` per version)? It fits scheduled releases with several supported versions in parallel. For retrace it would add double merges, divergence between `develop` and `main`, and duplicated branch protections, without solving a problem the project has.
 
 ### Commits
 
