@@ -18,3 +18,7 @@ coverage.*
 
 # Tooling
 node_modules/
+
+# Generated architecture diagram (docs/architecture/README.md)
+/docs/architecture/overview.html
+/docs/architecture/*.delivery.json
