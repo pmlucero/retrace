@@ -63,7 +63,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	fs.SetOutput(io.Discard) // errors and help are printed by us, to the right stream
 	dir := fs.String("dir", envOr(getenv, "RETRACE_DIR", defaultDir), "cassette directory (env RETRACE_DIR)")
 	logLevel := fs.String("log-level", envOr(getenv, "RETRACE_LOG_LEVEL", defaultLogLevel), "debug, info, warn or error (env RETRACE_LOG_LEVEL)")
-	noColor := fs.Bool("no-color", getenv("NO_COLOR") != "", "disable colored output (env NO_COLOR)")
+	noColor := fs.Bool("no-color", false, "disable colored output (env NO_COLOR)")
 	showVersion := fs.Bool("version", false, "print the version and exit")
 
 	if err := fs.Parse(args); err != nil {
@@ -100,7 +100,8 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	}
 
 	env := &Env{
-		Globals: Globals{Dir: *dir, LogLevel: level, NoColor: *noColor},
+		// NO_COLOR (any non-empty value) and --no-color can each only disable color (spec §9.1).
+		Globals: Globals{Dir: *dir, LogLevel: level, NoColor: *noColor || getenv("NO_COLOR") != ""},
 		Stdout:  stdout,
 		Stderr:  stderr,
 		Logger:  slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})),

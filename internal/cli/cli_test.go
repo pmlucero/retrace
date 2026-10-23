@@ -79,6 +79,12 @@ func TestRunResolvesGlobals(t *testing.T) {
 			want: Globals{Dir: "/env/dir", LogLevel: slog.LevelDebug, NoColor: true},
 		},
 		{
+			name: "--no-color=false cannot re-enable color disabled by NO_COLOR",
+			env:  map[string]string{"NO_COLOR": "yes"},
+			args: []string{"--no-color=false"},
+			want: Globals{Dir: ".retrace/cassettes", LogLevel: slog.LevelInfo, NoColor: true},
+		},
+		{
 			name: "flags override environment",
 			env:  map[string]string{"RETRACE_DIR": "/env/dir", "RETRACE_LOG_LEVEL": "debug"},
 			args: []string{"--dir", "/flag/dir", "--log-level", "ERROR", "--no-color"},
