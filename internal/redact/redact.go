@@ -28,12 +28,13 @@ var queryNames = map[string]bool{
 // Rules decides what is redacted.
 type Rules struct {
 	headers map[string]bool // lower-case
+	body    []Path
 }
 
-// NewRules returns the default rules plus extra header names
-// (--redact-header).
-func NewRules(extraHeaders []string) *Rules {
-	r := &Rules{headers: map[string]bool{}}
+// NewRules returns the default header rules plus extra header names
+// (--redact-header) and body rules (--redact).
+func NewRules(extraHeaders []string, body []Path) *Rules {
+	r := &Rules{headers: map[string]bool{}, body: body}
 	for _, n := range slices.Concat(DefaultHeaders, extraHeaders) {
 		r.headers[strings.ToLower(n)] = true
 	}
