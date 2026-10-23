@@ -18,7 +18,7 @@ Matching is **fingerprint-based with per-fingerprint FIFO queues**, not position
 1. **Fingerprint** = SHA-256 of a canonical form of the request:
    - JSON canonicalized: keys sorted, insignificant whitespace removed, numbers in their original textual form.
    - Headers are never part of the fingerprint.
-   - **LLM (Anthropic)**: the request body without `stream` and `metadata`. All other fields are included (`model`, `system`, `messages`, `tools`, `tool_choice`, sampling parameters). Because `messages` contains the whole conversation so far, the fingerprint implicitly encodes the trajectory up to that point.
+   - **LLM (Anthropic)**: the request body without `metadata`. All other fields are included (`model`, `stream`, `system`, `messages`, `tools`, `tool_choice`, sampling parameters). `stream` is included because a streamed recording cannot faithfully answer a non-streaming request, or the other way around. Because `messages` contains the whole conversation so far, the fingerprint implicitly encodes the trajectory up to that point.
    - **MCP**: `server name + method + params`, excluding JSON-RPC `id` and `params._meta`.
 2. **Queues**: during replay every recorded interaction is placed in a queue keyed by its fingerprint, in recorded order. An incoming request with fingerprint F consumes the head of queue F. If queue F is empty, that is a **cassette miss**.
 3. **Which channels are matched depends on the mode**:
