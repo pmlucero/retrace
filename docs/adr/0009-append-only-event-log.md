@@ -1,6 +1,6 @@
 # 0009. Cassette as an append-only event log
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

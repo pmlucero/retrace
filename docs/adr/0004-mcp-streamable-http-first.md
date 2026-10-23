@@ -1,6 +1,6 @@
 # 0004. MCP over Streamable HTTP as the first transport
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context

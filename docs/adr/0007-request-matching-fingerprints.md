@@ -1,6 +1,6 @@
 # 0007. Request matching by canonical fingerprint
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-23
 
 ## Context
