@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -144,7 +146,7 @@ func TestRecordRunsTheAgentAndRecordsItsCalls(t *testing.T) {
 	up := fakeAnthropic(t)
 
 	r := runRecordCmd(t, dir, append([]string{"--session", "checkout", "--listen", "127.0.0.1:0",
-		"--anthropic-upstream", up.URL, "--mcp", "orders-db=http://127.0.0.1:9/mcp",
+		"--anthropic-upstream", up.URL, "--mcp", "orders-db=http://user:pw@127.0.0.1:9/mcp?api_key=mcp-SECRET",
 		"--label", "case=happy", "--"}, agentCommand()...)...)
 	if r.code != ExitOK {
 		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
@@ -185,13 +187,19 @@ func TestRecordRunsTheAgentAndRecordsItsCalls(t *testing.T) {
 		t.Errorf("interactions = %+v, want one 200 POST /v1/messages", all)
 	}
 
-	// AC-06: the key never reaches the file, in any form SQLite might store it.
+	if !strings.Contains(string(s.MCPServers), "http://REDACTED@127.0.0.1:9/mcp?api_key=[REDACTED:") {
+		t.Errorf("stored MCP servers = %s, want the URL credentials redacted (spec §3.5)", s.MCPServers)
+	}
+
+	// AC-06: no credential reaches the file, in any form SQLite might store it.
 	raw, err := os.ReadFile(path) //nolint:gosec // G304: the cassette this test created
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Contains(raw, []byte(agentAPIKey)) {
-		t.Error("the API key appears in the cassette file")
+	for _, secret := range []string{agentAPIKey, "mcp-SECRET", "user:pw"} {
+		if bytes.Contains(raw, []byte(secret)) {
+			t.Errorf("%q appears in the cassette file", secret)
+		}
 	}
 }
 
@@ -386,5 +394,20 @@ func waitUntil(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met in time")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// A terminal's Ctrl+C reaches the agent and retrace together. Even when the
+// agent's exit is seen first, the session counts as interrupted (spec §3.1).
+func TestWaitAgentCountsASignalThatRacesTheExit(t *testing.T) {
+	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^$") //nolint:gosec // G204: this test binary, exiting at once
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	sigs := make(chan os.Signal, 1)
+	sigs <- os.Interrupt
+	res := waitAgent(cmd, sigs, slog.New(slog.DiscardHandler))
+	if !res.interrupted {
+		t.Error("the session was not marked as interrupted")
 	}
 }

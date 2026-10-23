@@ -33,13 +33,10 @@ type agentResult struct {
 	interrupted bool // retrace received a signal while the agent ran
 }
 
-// waitAgent waits for cmd, which has started, while handling signals: the first
-// is forwarded to the agent (SIGINT after interruptGrace), a second one kills it.
-func waitAgent(cmd *exec.Cmd, log *slog.Logger) agentResult {
-	sigs := make(chan os.Signal, 2)
-	stop := notifySignals(sigs)
-	defer stop()
-
+// waitAgent waits for cmd, which has started, while handling the signals that
+// arrive on sigs: the first is forwarded to the agent (SIGINT after
+// interruptGrace), a second one kills it.
+func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, log *slog.Logger) agentResult {
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait() // the exit status is read from cmd.ProcessState
@@ -54,6 +51,13 @@ func waitAgent(cmd *exec.Cmd, log *slog.Logger) agentResult {
 	for {
 		select {
 		case <-exited:
+			// A terminal's Ctrl+C reaches both processes at once, and the agent
+			// may exit before select sees the signal (spec §3.1).
+			select {
+			case <-sigs:
+				res.interrupted = true
+			default:
+			}
 			res.exitCode = exitCodeOf(cmd.ProcessState)
 			return res
 		case sig := <-sigs:

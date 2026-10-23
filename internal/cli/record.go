@@ -181,14 +181,14 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		return failed("cannot record into the cassette", err)
 	}
 
-	headers := redact.NewHeaders(opts.redactHeader)
+	rules := redact.NewRules(opts.redactHeader)
 	routes := []proxy.Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: opts.anthropic}}
 	for _, s := range opts.mcp {
 		target, _ := absoluteHTTPURL(s.URL) // validated by the flag
 		routes = append(routes, proxy.Route{Prefix: "/mcp/" + s.Name, Channel: "mcp", Upstream: "mcp:" + s.Name, Target: target})
 	}
 	srv := &http.Server{
-		Handler:           proxy.New(proxy.Config{Routes: routes, Writer: w, Headers: headers, Logger: log}),
+		Handler:           proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log}),
 		ReadHeaderTimeout: 30 * time.Second,
 	}
 	go func() {
@@ -210,6 +210,12 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 	cmd.Env = withEnv(os.Environ(), vars)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = env.Stdin, env.Stdout, env.Stderr
 
+	// Signals are handled until the cassette is closed: one that arrives while
+	// the session is being finished must not kill retrace halfway.
+	sigs := make(chan os.Signal, 2)
+	stopSignals := notifySignals(sigs)
+	defer stopSignals()
+
 	log.Info("recording", "session", id, "cassette", path, "proxy", base)
 	var res agentResult
 	status := "completed"
@@ -217,7 +223,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		log.Error("cannot start the agent", "command", opts.command[0], "error", err)
 		status = "failed"
 	} else {
-		res = waitAgent(cmd, log)
+		res = waitAgent(cmd, sigs, log)
 		if res.interrupted {
 			status = "interrupted"
 		}
@@ -287,13 +293,19 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions) (*cassett
 		_ = c.Close()
 		return nil, "", fmt.Errorf("reading the working directory: %w", err)
 	}
-	servers, _ := json.Marshal(append([]mcpServer{}, opts.mcp...))
-	redaction, _ := json.Marshal(map[string]any{"headers": redact.NewHeaders(opts.redactHeader).Names()})
+	rules := redact.NewRules(opts.redactHeader)
+	servers := make([]mcpServer, len(opts.mcp))
+	for i, sv := range opts.mcp {
+		u, _ := absoluteHTTPURL(sv.URL)                          // validated by the flag
+		servers[i] = mcpServer{Name: sv.Name, URL: rules.URL(u)} // spec §3.5: no credentials from the URL
+	}
+	serversJSON, _ := json.Marshal(servers)
+	redaction, _ := json.Marshal(map[string]any{"headers": rules.HeaderNames()})
 	err = c.Write(ctx, func(tx *cassette.Tx) error {
 		return tx.InsertSession(ctx, cassette.Session{
 			ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
 			Command: opts.command, Cwd: cwd, OnMiss: "strict",
-			MCPServers: servers, Redaction: redaction, RetraceVersion: Version(),
+			MCPServers: serversJSON, Redaction: redaction, RetraceVersion: Version(),
 			Labels: opts.labels,
 			// DeriverVersion and PricingVersion stay zero until event
 			// derivation and the price table exist (M2c).
