@@ -119,9 +119,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var blobs [][]byte
 	if len(body) > 0 {
-		key := cassette.BlobKey(body)
+		stored := p.redact.Body(body) // spec §3.5; the upstream gets body itself
+		key := cassette.BlobKey(stored)
 		in.RequestBlob = &key
-		blobs = append(blobs, body)
+		blobs = append(blobs, stored)
 	}
 	ex := &exchange{p: p, start: start}
 	ex.id = p.writer.BeginInteraction(in, blobs...)
@@ -233,10 +234,10 @@ func (ex *exchange) observe(b []byte) {
 	}
 }
 
-func (ex *exchange) appendChunk(data []byte) {
+func (ex *exchange) appendChunk(event []byte) {
 	ex.p.writer.AppendChunk(cassette.Chunk{
 		InteractionID: ex.id, Index: ex.chunkIdx,
-		OffsetMillis: time.Since(ex.respStart).Milliseconds(), Data: data,
+		OffsetMillis: time.Since(ex.respStart).Milliseconds(), Data: ex.p.redact.SSEEvent(event),
 	})
 	ex.chunkIdx++
 }
@@ -257,9 +258,10 @@ func (ex *exchange) finish() {
 				ex.appendChunk(rest) // an unterminated last event, kept as received
 			}
 		default:
-			key := cassette.BlobKey(ex.body.Bytes())
+			stored := ex.p.redact.Body(ex.body.Bytes())
+			key := cassette.BlobKey(stored)
 			done.ResponseBlob = &key
-			blobs = append(blobs, ex.body.Bytes())
+			blobs = append(blobs, stored)
 		}
 		var msg string
 		switch {

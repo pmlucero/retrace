@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -30,11 +32,11 @@ type harness struct {
 
 func newHarness(t *testing.T, upstream http.Handler) *harness {
 	t.Helper()
-	return newHarnessWith(t, upstream, 0)
+	return newHarnessWith(t, upstream, 0, redact.NewRules(nil, nil))
 }
 
-// newHarnessWith is newHarness with a MaxBodyBytes for the proxy.
-func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64) *harness {
+// newHarnessWith is newHarness with a MaxBodyBytes and redaction rules.
+func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64, rules *redact.Rules) *harness {
 	t.Helper()
 	ctx := context.Background()
 	target, _ := url.Parse("http://127.0.0.1:1")
@@ -63,7 +65,7 @@ func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64) *harness
 	p := New(Config{
 		Routes:       []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target}},
 		Writer:       w,
-		Redact:       redact.NewRules(nil),
+		Redact:       rules,
 		MaxBodyBytes: maxBody,
 	})
 	server := httptest.NewServer(p)
@@ -325,7 +327,7 @@ func TestProxyForwardsButDoesNotRecordOversizedBodies(t *testing.T) {
 			return
 		}
 		_, _ = io.WriteString(w, big)
-	}), 1024)
+	}), 1024, redact.NewRules(nil, nil))
 
 	for _, path := range []string{"/plain", "/stream"} {
 		resp, err := post(h.server.URL+"/llm/anthropic"+path, `{}`)
@@ -352,6 +354,69 @@ func TestProxyForwardsButDoesNotRecordOversizedBodies(t *testing.T) {
 	}
 	if chunks, _ := h.c.Chunks(context.Background(), stream.ID); len(chunks) != 1 {
 		t.Errorf("stream: got %d chunks, want the one before the oversized event", len(chunks))
+	}
+}
+
+// AC-25
+func TestProxyRedactsBodiesOnlyInTheCassette(t *testing.T) {
+	const (
+		reqBody  = `{"messages":[{"role":"user","content":"hi"}],"metadata":{"email":"req@example.com"}}`
+		respBody = `{"content":[{"type":"text","text":"hello"}],"email":"resp@example.com"}`
+		sseEvent = "event: message_start\ndata: {\"message\":{\"email\":\"sse@example.com\"}}\n\n"
+	)
+	var gotReq string
+	email, _ := redact.ParsePath("$..email")
+	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		gotReq = string(b)
+		if r.URL.Path == "/stream" {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, sseEvent)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, respBody)
+	}), 0, redact.NewRules(nil, []redact.Path{email}))
+
+	// In this order: interaction 1 is plain, 2 is streamed.
+	for _, c := range []struct{ path, want string }{{"/plain", respBody}, {"/stream", sseEvent}} {
+		path, want := c.path, c.want
+		resp, err := post(h.server.URL+"/llm/anthropic"+path, reqBody)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if string(got) != want {
+			t.Errorf("%s: agent got %q, want the original", path, got)
+		}
+		if gotReq != reqBody {
+			t.Errorf("%s: upstream got %q, want the original", path, gotReq)
+		}
+	}
+
+	all := h.interactions()
+	if len(all) != 2 {
+		t.Fatalf("got %d interactions", len(all))
+	}
+	stored := h.blob(all[0].RequestBlob) + h.blob(all[0].ResponseBlob) + h.blob(all[1].RequestBlob)
+	chunks, _ := h.c.Chunks(context.Background(), all[1].ID)
+	for _, ch := range chunks {
+		stored += string(ch.Data)
+	}
+	if strings.Count(stored, "[REDACTED:") != 4 {
+		t.Errorf("stored bodies = %s, want the four emails redacted", stored)
+	}
+	path := h.c.Path()
+	if err := h.c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: the cassette this test created
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte("@example.com")) {
+		t.Error("an email appears in the cassette file")
 	}
 }
 
