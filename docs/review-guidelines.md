@@ -92,6 +92,7 @@ This is the core promise of retrace. Look for:
 ### 10. Tests
 
 - **Quality over coverage.** Tests assert behavior, not implementation details. A test that cannot fail is a finding.
+- **Coverage is a signal, not a target.** CI reports coverage per package and lists the changed lines that no test executes (`.github/scripts/coverage_report.py`). New or changed logic that no test runs is a finding, unless the PR explains why (an unreachable error branch, OS-specific code). Never ask for tests that only raise the number, and there is no threshold.
 - Acceptance criteria are traced: tests reference the `AC-xx` they verify, and claimed ACs are actually covered.
 - Edge and failure cases from dimension 4 are tested, not just the happy path.
 - Golden files are used for canonical outputs and regenerated with `-update`, not by hand.
