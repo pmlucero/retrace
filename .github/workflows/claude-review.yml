@@ -1,0 +1,72 @@
+name: claude-review
+
+# Automated, advisory PR review following docs/review-guidelines.md.
+# Runs once when a PR is opened or marked ready, and on demand when a
+# maintainer comments "@claude review" on a PR. It never blocks merging.
+
+on:
+  pull_request:
+    types: [opened, ready_for_review]
+  issue_comment:
+    types: [created]
+
+jobs:
+  review:
+    name: claude-review
+    # Same-repo, non-draft PRs only: fork PRs have no access to secrets.
+    # On-demand reviews only for trusted commenters, so outsiders cannot spend the quota.
+    if: |
+      (github.event_name == 'pull_request' &&
+        !github.event.pull_request.draft &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' &&
+        github.event.issue.pull_request &&
+        startsWith(github.event.comment.body, '@claude review') &&
+        contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Job-level, so unrelated PR comments (skipped runs) never cancel a review in progress.
+    concurrency:
+      group: claude-review-${{ github.event.pull_request.number || github.event.issue.number }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      id-token: write
+    env:
+      PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # issue_comment runs on the default branch; review the PR's code instead.
+          ref: refs/pull/${{ env.PR_NUMBER }}/head
+          fetch-depth: 1
+
+      - uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ env.PR_NUMBER }}
+
+            You are reviewing this pull request as a senior software architect.
+
+            1. Read docs/review-guidelines.md first and follow it exactly: its
+               principles, severity levels, dimensions and output format.
+            2. Read CLAUDE.md, and the parts of docs/vision.md, docs/spec/core.md
+               and docs/adr/ that the change touches or depends on. Ground every
+               finding in these documents or in the code.
+            3. Inspect the PR with `gh pr view`, `gh pr diff` and
+               `gh pr view --json commits` (for the Git dimension). Read the full
+               files around the changes, not only the diff, to judge global
+               consistency and coupling.
+            4. Post inline comments for line-specific findings, then one summary
+               comment with `gh pr comment` using the format in the guidelines.
+
+            Write the review in English. Do not modify files, push commits, or
+            approve or request changes: this review is advisory.
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 40
+            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
