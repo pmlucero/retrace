@@ -1,5 +1,9 @@
 # retrace
 
+[![docs](https://github.com/pmlucero/retrace/actions/workflows/docs.yml/badge.svg)](https://github.com/pmlucero/retrace/actions/workflows/docs.yml)
+[![License: Apache 2.0](https://img.shields.io/github/license/pmlucero/retrace)](LICENSE)
+[![Status: phase 0 (design)](https://img.shields.io/badge/status-phase%200%20%28design%29-orange)](#project-status)
+
 **Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.**
 
 > **Status: phase 0, design only.** There is no code yet. This repository currently holds the vision, the specification and the architecture decisions. Implementation starts once the design is approved. See [Project status](#project-status).
