@@ -61,7 +61,7 @@ func (c *Cassette) migrate(ctx context.Context, all []string) error {
 			return fmt.Errorf("migrating %s to schema v%d: %w", c.path, v+1, err)
 		}
 		// PRAGMA does not accept bound parameters; v+1 is an int we control.
-		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v+1)); err != nil {
+		if _, err := tx.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", v+1)); err != nil { //nolint:gosec // G701: see above
 			_ = tx.Rollback()
 			return fmt.Errorf("recording schema v%d on %s: %w", v+1, c.path, err)
 		}
