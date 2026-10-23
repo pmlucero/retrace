@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.6
+- Version: 0.7
 - Last updated: 2026-10-23
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -101,6 +101,14 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 - Userinfo (`https://user:pass@host`) is replaced with `REDACTED`.
 - A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is a redacted header name, ends in one of the header suffixes (`-token`, `-secret`, `-key`), or is one of `key`, `token`, `secret`, `password`, `apikey`, `auth`, `sig` or `signature`. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the query is kept as it was.
+
+**Body redaction** (`--redact <jsonpath>`, repeatable) is opt-in.
+
+- Each rule is a JSONPath in this subset: it starts with `$`, followed by any of `.name`, `['name']`, `[n]` (array index), `.*` or `[*]` (every member or element), and `..name` (`name` at any depth). A dotted name has letters, digits, `_` and `-`; any other name is written `['name']`. Any other syntax is a usage error (exit `2`).
+- Rules apply to every JSON body retrace stores, on both channels: request bodies, non-streamed response bodies, and the `data` of each SSE event. A body that is not JSON is stored as it is.
+- Each matched value, whatever its type, is replaced by the string `[REDACTED:<sha256-prefix-8>]`, hashed over the value's JSON text. A body with no match is stored byte for byte. A body with a match is re-encoded compactly, keeping member order and number formats.
+- The agent and the upstream always receive the original bodies. Only what is written to the cassette is redacted.
+- The rules are stored in the session's `redaction` metadata (§7.2). M3 applies them to incoming requests before fingerprinting them (§5).
 
 ## 4. Replay modes
 
@@ -440,6 +448,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-06** `authorization`, `x-api-key` and `*-token` header values never appear in the cassette file (verified by scanning the raw file bytes).
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
 - **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
+- **AC-25** `record --redact '$..email'` stores no `email` value from request bodies, response bodies or SSE events (verified by scanning the raw file bytes), while the agent and the upstream receive the original bodies.
 
 ### Exact replay
 
