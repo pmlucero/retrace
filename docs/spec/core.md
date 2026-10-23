@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.3
+- Version: 0.4
 - Last updated: 2026-10-23
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -336,8 +336,6 @@ Global flags MUST precede the command: `retrace [global flags] <command> [comman
 
 Each global flag's value is resolved with the precedence flag > environment variable > default. When an invalid value comes from an environment variable, the error message MUST name the variable. `NO_COLOR` follows the [no-color.org](https://no-color.org) convention: any non-empty value disables color, and no value is invalid. `--no-color` can only disable color. It never re-enables color that `NO_COLOR` disabled.
 
-A `retrace.yaml` file in the working directory MAY declare `mcp` servers, `listen`, `redact` rules and the Anthropic upstream. Command-line flags override it.
-
 ### 9.2 `retrace record`
 
 ```text
@@ -347,6 +345,8 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 ```
 
 - `--session`: the session id. Generated if omitted. An existing id fails unless `--force` is given.
+  - A session id MUST match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, because it names the cassette file (`<dir>/<id>.cassette`). Any other value is a usage error (exit `2`). Every command that takes a session id (`run`, `run --as`, `diff`, `show`, `reindex`) validates it the same way.
+  - A generated id has the form `YYYYMMDD-HHMMSS-xxxx`: local time, then four random lowercase hexadecimal digits.
 - `--mcp`: registers an MCP upstream. Repeatable.
 - `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`.
 
@@ -468,3 +468,4 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - User-defined matching ignore rules (`--ignore <jsonpath>`).
 - `retrace proxy` (proxy without a child process), `retrace export` (JSONL), `retrace scan` (secret detection), OpenTelemetry export.
 - CI mode: replay a corpus of cassettes against a candidate model and summarize divergences.
+- A `retrace.yaml` configuration file for MCP servers, the listen address, redaction rules and the Anthropic upstream. Reading YAML needs a new dependency and an ADR. In the MVP, configuration is given with flags.
