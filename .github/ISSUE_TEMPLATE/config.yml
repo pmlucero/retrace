@@ -3,3 +3,6 @@ contact_links:
   - name: Design and scope
     url: https://github.com/pmlucero/retrace/blob/main/docs/vision.md
     about: Read the vision and non-goals before proposing larger changes.
+  - name: Report a security vulnerability
+    url: https://github.com/pmlucero/retrace/security/advisories/new
+    about: Please report security issues privately, not as public issues.
