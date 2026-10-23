@@ -48,6 +48,9 @@ jobs:
       - uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Shows the session report (including denied tool calls) in the job summary.
+          # Safe here: the job only runs for same-repo PRs and trusted commenters.
+          display_report: true
           prompt: |
             REPO: ${{ github.repository }}
             PR NUMBER: ${{ env.PR_NUMBER }}
@@ -63,12 +66,17 @@ jobs:
                `gh pr view --json commits` (for the Git dimension). Read the full
                files around the changes, not only the diff, to judge global
                consistency and coupling.
-            4. Post inline comments for line-specific findings, then one summary
-               comment with `gh pr comment` using the format in the guidelines.
+            4. Post inline comments for line-specific findings.
+            5. Post exactly one summary comment, using the format in the
+               guidelines. This step is mandatory, even when there are no
+               findings. Write the body to `.claude-review.md` in the working
+               directory with the Write tool, then run
+               `gh pr comment <PR NUMBER> --body-file .claude-review.md`.
+               Do not pass the body inline or through shell substitution.
 
             Write the review in English. Do not modify files, push commits, or
             approve or request changes: this review is advisory.
           claude_args: |
             --model claude-opus-5-5
             --max-turns 40
-            --allowedTools "Read,Glob,Grep,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
+            --allowedTools "Read,Glob,Grep,Write,mcp__github_inline_comment__create_inline_comment,Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
