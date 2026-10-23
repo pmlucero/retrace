@@ -105,7 +105,9 @@ func (t *Tx) BeginInteraction(ctx context.Context, in Interaction) error {
 }
 
 // CompleteInteraction records the response of an in-flight interaction. It
-// succeeds once per interaction; later calls return ErrAlreadyCompleted.
+// succeeds once per interaction. Repeating it never changes the stored row
+// (idempotent, ADR 0009) and returns ErrAlreadyCompleted, so a caller retrying
+// after an ambiguous commit failure can treat that error as success.
 func (t *Tx) CompleteInteraction(ctx context.Context, id int64, done Completion) error {
 	res, err := t.tx.ExecContext(ctx, `
 		UPDATE interactions

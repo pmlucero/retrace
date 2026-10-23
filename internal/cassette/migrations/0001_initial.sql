@@ -1,6 +1,12 @@
 -- Schema v1: spec §7 (cassette data model).
 -- Timestamps are RFC 3339 UTC strings with microsecond precision; durations are
 -- integer milliseconds; JSON columns hold UTF-8 JSON text.
+--
+-- CHECK constraints on enumerated columns are deliberate: cassettes are long-lived,
+-- shared and untrusted files, so invalid values are rejected at the source. The
+-- cost is that adding a value (a new event kind, mode or provenance) needs a
+-- table-rebuild migration in SQLite. That is acceptable, because each new value
+-- is a spec change anyway (spec §7.6).
 
 -- §7.2: exactly one row per cassette.
 CREATE TABLE session (
