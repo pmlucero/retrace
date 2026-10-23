@@ -1,0 +1,102 @@
+name: Bug report
+description: retrace recorded, replayed or diffed something incorrectly, or crashed.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Please check the [core spec](https://github.com/pmlucero/retrace/blob/main/docs/spec/core.md) first: some behaviors that look like bugs are by design. For example, a `swap-model` replay stopping with exit code 3 is a `strict` divergence, not a crash.
+
+  - type: input
+    id: version
+    attributes:
+      label: retrace version
+      description: Output of `retrace --version`.
+      placeholder: v0.1.0
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: OS and architecture, plus the agent's language and SDK version.
+      placeholder: macOS 15 arm64, Python 3.12, anthropic 0.x
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected command or mode
+      options:
+        - record
+        - run (exact)
+        - run (swap-model)
+        - run (live-tools)
+        - diff
+        - ls / show
+        - other
+    validations:
+      required: true
+
+  - type: dropdown
+    id: channel
+    attributes:
+      label: Channel
+      description: Which traffic was involved, if known.
+      options:
+        - LLM (Anthropic Messages API)
+        - MCP (Streamable HTTP)
+        - both
+        - not sure / not applicable
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact retrace command you ran.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What you expected, and, if possible, the spec section or acceptance criterion (AC-xx) it relates to.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead, including the exit code.
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Output with `--log-level debug`. Check that it contains no secrets or private data.
+      render: text
+
+  - type: textarea
+    id: cassette
+    attributes:
+      label: Cassette or reproduction
+      description: |
+        A minimal reproduction, or `retrace show <id> --json` output. You can also attach a cassette file.
+        ⚠️ Cassettes store prompts and tool outputs verbatim. Only share cassettes you have reviewed.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checks
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: Anything I attached contains no API keys, tokens or private data.
+          required: true
