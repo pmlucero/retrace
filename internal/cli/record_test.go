@@ -147,7 +147,7 @@ func TestRecordRunsTheAgentAndRecordsItsCalls(t *testing.T) {
 
 	r := runRecordCmd(t, dir, append([]string{"--session", "checkout", "--listen", "127.0.0.1:0",
 		"--anthropic-upstream", up.URL, "--mcp", "orders-db=http://user:pw@127.0.0.1:9/mcp?api_key=mcp-SECRET",
-		"--label", "case=happy", "--"}, agentCommand()...)...)
+		"--label", "case=happy", "--redact", "$..max_tokens", "--"}, agentCommand()...)...)
 	if r.code != ExitOK {
 		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
 	}
@@ -187,6 +187,9 @@ func TestRecordRunsTheAgentAndRecordsItsCalls(t *testing.T) {
 		t.Errorf("interactions = %+v, want one 200 POST /v1/messages", all)
 	}
 
+	if !strings.Contains(string(s.Redaction), `"body":["$..max_tokens"]`) {
+		t.Errorf("stored redaction = %s, want the body rule (spec §7.2)", s.Redaction)
+	}
 	if !strings.Contains(string(s.MCPServers), "http://REDACTED@127.0.0.1:9/mcp?api_key=[REDACTED:") {
 		t.Errorf("stored MCP servers = %s, want the URL credentials redacted (spec §3.5)", s.MCPServers)
 	}
@@ -345,6 +348,7 @@ func TestRecordUsageErrors(t *testing.T) {
 		{"non-loopback listen", []string{"--listen", "0.0.0.0:0", "--", "true"}, "add --listen-unsafe"},
 		{"malformed MCP server", []string{"--mcp", "orders", "--", "true"}, "want name=url"},
 		{"MCP URL", []string{"--mcp", "orders=ftp://x", "--", "true"}, "not an http or https URL"},
+		{"body redaction rule", []string{"--redact", "user.email", "--", "true"}, "must start with $"},
 		{"Anthropic URL", []string{"--anthropic-upstream", "api.anthropic.com", "--", "true"}, "--anthropic-upstream"},
 	}
 	for _, tt := range tests {
