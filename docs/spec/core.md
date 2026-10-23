@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.5
+- Version: 0.6
 - Last updated: 2026-10-23
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -65,7 +65,7 @@ flowchart LR
 3. The session ends when the agent process exits. retrace waits for in-flight interactions to complete (default timeout 10 s), finalizes the cassette and exits (§9.7).
 4. On `SIGINT` or `SIGTERM`, retrace forwards the signal to the agent, waits for it to exit, and finalizes the cassette with status `interrupted`. A partial cassette MUST remain readable and valid.
    - A terminal's Ctrl+C already delivers `SIGINT` to the agent, which shares retrace's process group. So retrace forwards `SIGINT` only if the agent has not exited 1 s later, and avoids interrupting it twice. `SIGTERM` is forwarded at once.
-   - A second signal kills the agent.
+   - A second signal kills the agent. Only the agent process is killed: processes it started itself (for example under `sh -c`) may outlive it.
 5. The session status is `completed` when the agent exits on its own, whatever its exit code, `interrupted` after a signal, and `failed` when retrace cannot run the session, for example when the agent command cannot be started.
 6. retrace exits with `4` when the agent's exit code is non-zero, including after a signal, and with `0` when it is zero (§9.7). An agent terminated by a signal has exit code `128 + signal number`.
 
@@ -96,6 +96,11 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 ### 3.5 Redaction
 
 Header and body redaction are applied before anything is written to disk, as specified in [ADR 0008](../adr/0008-secret-redaction.md).
+
+Credentials can also travel in URLs, so the same rule covers every URL retrace stores (the registered MCP server URLs and each interaction's `path`). The upstream always receives the original URL.
+
+- Userinfo (`https://user:pass@host`) is replaced with `REDACTED`.
+- A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is a redacted header name, ends in one of the header suffixes (`-token`, `-secret`, `-key`), or is one of `key`, `token`, `secret`, `password`, `apikey`, `auth`, `sig` or `signature`. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the query is kept as it was.
 
 ## 4. Replay modes
 
