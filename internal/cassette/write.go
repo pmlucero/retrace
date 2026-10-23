@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
@@ -135,6 +136,27 @@ func (t *Tx) CompleteInteraction(ctx context.Context, id int64, done Completion)
 		return fmt.Errorf("completing interaction %d: %w", id, ErrAlreadyCompleted)
 	}
 	return fmt.Errorf("completing interaction %d: %w", id, ErrNotFound)
+}
+
+// interactionState returns when interaction id started and whether it is
+// complete, or ErrNotFound.
+func (t *Tx) interactionState(ctx context.Context, id int64) (startedAt time.Time, complete bool, err error) {
+	var (
+		started  string
+		duration sql.NullInt64
+	)
+	err = t.tx.QueryRowContext(ctx, `SELECT started_at, duration_ms FROM interactions WHERE id = ?`, id).
+		Scan(&started, &duration)
+	if errors.Is(err, sql.ErrNoRows) {
+		return time.Time{}, false, fmt.Errorf("reading interaction %d: %w", id, ErrNotFound)
+	}
+	if err != nil {
+		return time.Time{}, false, fmt.Errorf("reading interaction %d: %w", id, err)
+	}
+	if startedAt, err = parseTime(started); err != nil {
+		return time.Time{}, false, fmt.Errorf("reading interaction %d: started_at: %w", id, err)
+	}
+	return startedAt, duration.Valid, nil
 }
 
 // AppendChunk stores one raw SSE event of a streamed response.

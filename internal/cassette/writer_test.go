@@ -194,6 +194,12 @@ func TestWriterDropsInsteadOfBlockingWhenTheQueueIsFull(t *testing.T) {
 	release()
 	waitFor(t, func() bool { return w.Stats().Written == 2 }) // both begin records; the queue has room again
 	w.CompleteInteraction(first, Completion{StatusCode: ptr(200), DurationMillis: 3})
+	event := func(id int64) {
+		w.AppendEvent(Event{InteractionID: &id, Kind: "model_response", Source: "model", Target: "agent",
+			StartedAt: at(2), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+	}
+	event(partial) // its row exists, so the event is kept
+	event(missing) // its row does not exist yet, so the event is dropped
 	closeWriter(t, w)
 
 	all := interactionByID(t, c)
@@ -217,11 +223,11 @@ func TestWriterDropsInsteadOfBlockingWhenTheQueueIsFull(t *testing.T) {
 		t.Errorf("interaction %d = %+v, want it inserted on close, with its completion, an error and no blob", missing, in)
 	}
 
-	if events, _ := c.Events(ctx); len(events) != 0 {
-		t.Errorf("got %d events, want the event of the incomplete interaction dropped", len(events))
+	if events, _ := c.Events(ctx); len(events) != 1 || *events[0].InteractionID != partial {
+		t.Errorf("events = %+v, want only the one of interaction %d", events, partial)
 	}
-	if st := w.Stats(); st.LostInteractions != 2 || st.DroppedEvents != 1 {
-		t.Errorf("stats = %+v, want 2 lost interactions and 1 dropped event", st)
+	if st := w.Stats(); st.LostInteractions != 2 || st.DroppedEvents != 2 {
+		t.Errorf("stats = %+v, want 2 lost interactions and 2 dropped events", st)
 	}
 }
 
@@ -242,6 +248,44 @@ func TestWriterBoundsQueuedBytes(t *testing.T) {
 	}
 	if st := w.Stats(); st.MaxQueueBytes > 4<<10 {
 		t.Errorf("queued up to %d bytes, limit is %d", st.MaxQueueBytes, 4<<10)
+	}
+}
+
+func TestWriterAcceptsALargeRecordIntoAnEmptyQueue(t *testing.T) {
+	w, c, _ := newWriter(t, WriterOptions{QueueBytes: 4 << 10})
+	big := make([]byte, 8<<10)
+	id := w.BeginInteraction(llmRequest(1, big), big)
+	closeWriter(t, w)
+
+	if in := interactionByID(t, c)[id]; in.Error != nil || in.RequestBlob == nil {
+		t.Errorf("interaction = %+v, want a record larger than the byte limit written when nothing else is queued", in)
+	}
+}
+
+// Callers may reuse their buffers as soon as a call returns, such as the read
+// buffer of an SSE stream; the cassette keeps what was passed (spec §7.3).
+func TestWriterCopiesTheBuffersItIsGiven(t *testing.T) {
+	ctx := context.Background()
+	hook, stalled, release := stall()
+	w, c, _ := newWriter(t, WriterOptions{beforeBatch: hook})
+
+	w.SetMCPServers(json.RawMessage(`[]`))
+	<-stalled
+	buf := []byte("request")
+	id := w.BeginInteraction(llmRequest(1, buf), buf)
+	copy(buf, "XXXXXXX")
+	buf = []byte("data: 1\n\n")
+	w.AppendChunk(Chunk{InteractionID: id, Data: buf})
+	copy(buf, "data: 2\n\n")
+	release()
+	closeWriter(t, w)
+
+	in := interactionByID(t, c)[id]
+	if got, err := c.Blob(ctx, *in.RequestBlob); err != nil || string(got) != "request" {
+		t.Errorf("request blob = %q, %v; want the bytes passed to BeginInteraction", got, err)
+	}
+	if chunks, _ := c.Chunks(ctx, id); len(chunks) != 1 || string(chunks[0].Data) != "data: 1\n\n" {
+		t.Errorf("chunks = %+v, want the bytes passed to AppendChunk", chunks)
 	}
 }
 
@@ -342,6 +386,40 @@ func TestWriterCloseTimeoutStillEndsTheSession(t *testing.T) {
 		t.Fatalf("closing cassette: %v", err)
 	}
 	assertValidCassette(t, path, "interrupted")
+}
+
+// A write stuck in the kernel ignores cancellation. Close still returns, and
+// the cassette is left as it is: valid, and still recording.
+func TestWriterCloseGivesUpOnAStuckWriter(t *testing.T) {
+	gate := make(chan struct{})
+	stalled := make(chan struct{}, 1)
+	hook := func(context.Context) {
+		select {
+		case stalled <- struct{}{}:
+		default:
+		}
+		<-gate // ignores ctx, like a hung disk
+	}
+	w, c, path := newWriter(t, WriterOptions{beforeBatch: hook, closeGrace: 50 * time.Millisecond})
+
+	w.SetMCPServers(json.RawMessage(`[]`))
+	<-stalled
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	err := w.Close(ctx, SessionEnd{Status: "interrupted", EndedAt: at(30)})
+	if !errors.Is(err, ErrWriterStuck) || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close error = %v, want ErrWriterStuck and a deadline exceeded", err)
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Errorf("Close took %v with a stuck writer", elapsed)
+	}
+	close(gate)
+	<-w.done
+	if err := c.Close(); err != nil {
+		t.Fatalf("closing cassette: %v", err)
+	}
+	assertValidCassette(t, path, "recording")
 }
 
 // A record that fails to write loses only its own interaction, not the rest

@@ -1,8 +1,8 @@
 package cassette
 
 import (
+	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,16 +25,30 @@ const (
 // payload, so a flood of tiny records is also bounded by QueueBytes.
 const recordOverhead = 256
 
+// After Close cancels the writes, it waits this long for the writing goroutine
+// to stop. A write stuck in the kernel ignores cancellation, and Close must
+// still return. finishTimeout bounds the final transaction the same way.
+const (
+	defaultCloseGrace = 2 * time.Second
+	finishTimeout     = 5 * time.Second
+)
+
+// ErrWriterStuck is returned by Close when the writing goroutine did not stop,
+// for example on a hung disk. The session was not ended: the cassette stays a
+// valid prefix of the log, with status recording.
+var ErrWriterStuck = errors.New("cassette writer did not stop")
+
 // WriterOptions configures a Writer. Zero values select the defaults.
 type WriterOptions struct {
 	QueueLen   int   // maximum queued records
-	QueueBytes int64 // maximum queued payload bytes
+	QueueBytes int64 // maximum queued payload bytes; a single larger record is still accepted into an empty queue
 	BatchLen   int   // maximum records per transaction
 	Logger     *slog.Logger
 
 	// beforeBatch runs before each batch is written. Tests use it to stall the
-	// writer; it must return when ctx is done.
+	// writer.
 	beforeBatch func(ctx context.Context)
+	closeGrace  time.Duration
 }
 
 // WriterStats counts what a Writer did with the records it was given.
@@ -49,7 +63,8 @@ type WriterStats struct {
 
 // Writer appends a recording to a cassette without ever blocking its caller,
 // the proxy's hot path (ADR 0009, AC-03). Records go into a bounded queue, and
-// one goroutine writes them in batched transactions.
+// one goroutine writes them in batched transactions. Its methods copy the
+// slices they are given, so callers may reuse their buffers right away.
 //
 // When the queue is full the record is dropped instead of waiting. Its
 // interaction is then marked as lost: later records of it are dropped too, and
@@ -58,7 +73,9 @@ type WriterStats struct {
 // stalling the agent's stream (docs/plan/mvp.md, Design points).
 //
 // The Writer assigns interaction ids and event seqs when it accepts a record,
-// so callers never wait for the database.
+// so callers never wait for the database. Callers never log either: warnings
+// are emitted by the writing goroutine, so a blocked stderr cannot stall the
+// proxy.
 type Writer struct {
 	c     *Cassette
 	log   *slog.Logger
@@ -77,10 +94,19 @@ type Writer struct {
 	nextSeq     int64
 	queuedBytes int64
 	lost        map[int64]*lostInteraction
+	// droppedSeqs grows by one entry per dropped event until Close. That is
+	// intended: an entry is a few bytes, and it is what keeps a child event
+	// from referencing a parent that was never written.
 	droppedSeqs map[int64]bool
 	mcpServers  json.RawMessage // latest value, written again by Close if one was dropped
 	mcpDropped  bool
+	warnings    []warning // logged by the writing goroutine, outside mu
 	stats       WriterStats
+}
+
+type warning struct {
+	msg  string
+	args []any
 }
 
 type recordKind int
@@ -108,7 +134,7 @@ type record struct {
 // lostInteraction remembers what Close needs to finish an interaction whose
 // records were not all written.
 type lostInteraction struct {
-	begin   *Interaction // set when the begin record itself was dropped
+	begin   *Interaction // set when the begin record itself was dropped: the row does not exist
 	done    *Completion  // set when the completion was dropped
 	dropped int
 	reason  string // why the first record was dropped
@@ -136,6 +162,9 @@ func NewWriter(ctx context.Context, c *Cassette, opts WriterOptions) (*Writer, e
 	if opts.BatchLen <= 0 {
 		opts.BatchLen = DefaultBatchLen
 	}
+	if opts.closeGrace <= 0 {
+		opts.closeGrace = defaultCloseGrace
+	}
 	log := opts.Logger
 	if log == nil {
 		log = slog.New(slog.DiscardHandler)
@@ -161,6 +190,8 @@ func NewWriter(ctx context.Context, c *Cassette, opts WriterOptions) (*Writer, e
 // assigned, ignoring in.ID. blobs are the bodies that in references by
 // BlobKey, such as the request and its canonical form.
 func (w *Writer) BeginInteraction(in Interaction, blobs ...[]byte) int64 {
+	in.RequestHeaders = bytes.Clone(in.RequestHeaders)
+	blobs = cloneAll(blobs)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.nextID++
@@ -172,6 +203,7 @@ func (w *Writer) BeginInteraction(in Interaction, blobs ...[]byte) int64 {
 
 // AppendChunk queues one SSE event of a streamed response.
 func (w *Writer) AppendChunk(ch Chunk) {
+	ch.Data = bytes.Clone(ch.Data)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.enqueueLocked(record{kind: recChunk, id: ch.InteractionID, chunk: ch, size: int64(len(ch.Data))})
@@ -180,6 +212,8 @@ func (w *Writer) AppendChunk(ch Chunk) {
 // CompleteInteraction queues the response of interaction id. blobs are the
 // bodies that done references, such as a non-streamed response.
 func (w *Writer) CompleteInteraction(id int64, done Completion, blobs ...[]byte) {
+	done.ResponseHeaders = bytes.Clone(done.ResponseHeaders)
+	blobs = cloneAll(blobs)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.enqueueLocked(record{kind: recComplete, id: id, done: done, blobs: blobs,
@@ -188,6 +222,7 @@ func (w *Writer) CompleteInteraction(id int64, done Completion, blobs ...[]byte)
 
 // AppendEvent queues an event and returns the seq it assigned, ignoring e.Seq.
 func (w *Writer) AppendEvent(e Event) int64 {
+	e.Arguments, e.Result = bytes.Clone(e.Arguments), bytes.Clone(e.Result)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.nextSeq++
@@ -202,6 +237,7 @@ func (w *Writer) AppendEvent(e Event) int64 {
 
 // SetMCPServers queues new MCP server metadata for the session (spec §3.4).
 func (w *Writer) SetMCPServers(servers json.RawMessage) {
+	servers = bytes.Clone(servers)
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.mcpServers = servers
@@ -221,7 +257,9 @@ func (w *Writer) Stats() WriterStats {
 //
 // If ctx is done before the queue is drained, the remaining records are
 // dropped (and their interactions marked as lost), the session is still ended,
-// and the error wraps ctx.Err(). Either way the cassette is left valid.
+// and the error wraps ctx.Err(). If the writing goroutine does not stop even
+// then, Close gives up without ending the session and returns ErrWriterStuck.
+// In every case the cassette is left valid.
 func (w *Writer) Close(ctx context.Context, end SessionEnd) error {
 	w.mu.Lock()
 	if w.closed {
@@ -237,17 +275,32 @@ func (w *Writer) Close(ctx context.Context, end SessionEnd) error {
 	case <-w.done:
 	case <-ctx.Done():
 		w.stop()
-		<-w.done
 		errs = append(errs, fmt.Errorf("draining cassette writer: %w", ctx.Err()))
+		select {
+		case <-w.done:
+		case <-time.After(w.opts.closeGrace):
+			errs = append(errs, fmt.Errorf("closing %s: %w", w.c.path, ErrWriterStuck))
+			return errors.Join(errs...)
+		}
 	}
 	w.stop()
 
 	// Finishing is a handful of rows, and skipping it would leave the session
-	// "recording", so it runs even when ctx is already done.
-	fctx := context.WithoutCancel(ctx)
-	if err := w.c.Write(fctx, func(tx *Tx) error { return w.finish(fctx, tx, end) }); err != nil {
+	// "recording", so it gets its own deadline even when ctx is already done.
+	fctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+	defer cancel()
+	var finishErrs []error
+	err := w.c.Write(fctx, func(tx *Tx) error {
+		var err error
+		finishErrs, err = w.finish(fctx, tx, end)
+		return err
+	})
+	if err != nil {
 		errs = append(errs, fmt.Errorf("finishing cassette %s: %w", w.c.path, err))
+	} else {
+		errs = append(errs, finishErrs...)
 	}
+	w.flushWarnings()
 	return errors.Join(errs...)
 }
 
@@ -261,7 +314,9 @@ func (w *Writer) enqueueLocked(r record) {
 	case w.blockedLocked(r):
 		w.dropLocked(r, "an earlier record it depends on was dropped")
 		return
-	case w.queuedBytes+r.size > w.opts.QueueBytes:
+	case w.queuedBytes > 0 && w.queuedBytes+r.size > w.opts.QueueBytes:
+		// An empty queue takes any record, so the bound limits how much waits
+		// and never rules out one large request.
 		w.dropLocked(r, "cassette writer queue full (bytes)")
 		return
 	}
@@ -277,15 +332,20 @@ func (w *Writer) enqueueLocked(r record) {
 
 // blockedLocked reports whether r depends on a record that was dropped.
 // Writing it would break a foreign key or leave a gap that looks complete.
-// A begin record is never blocked: it is the first record of its interaction.
 func (w *Writer) blockedLocked(r record) bool {
 	switch r.kind {
 	case recBegin, recMCP:
+		// A begin record is the first of its interaction; MCP metadata is
+		// session-wide.
 		return false
 	case recEvent:
 		if r.event.ParentSeq != nil && w.droppedSeqs[*r.event.ParentSeq] {
 			return true
 		}
+		// An event only needs its interaction's row, which exists unless the
+		// begin record itself was dropped.
+		l := w.lost[r.id]
+		return r.id != 0 && l != nil && l.begin != nil
 	}
 	return r.id != 0 && w.lost[r.id] != nil
 }
@@ -296,7 +356,7 @@ func (w *Writer) dropLocked(r record, reason string) {
 	switch r.kind {
 	case recMCP:
 		w.mcpDropped = true
-		w.log.Warn("cassette writer dropped MCP server metadata; it will be written on close", "reason", reason)
+		w.warnLocked("cassette writer dropped MCP server metadata; it will be written on close", "reason", reason)
 		return
 	case recEvent:
 		// Events are not marked on their interaction: it may already be
@@ -304,7 +364,8 @@ func (w *Writer) dropLocked(r record, reason string) {
 		w.droppedSeqs[r.event.Seq] = true
 		w.stats.DroppedEvents++
 		if w.stats.DroppedEvents == 1 {
-			w.log.Warn("cassette writer dropped an event; further drops are counted, not logged", "seq", r.event.Seq, "reason", reason)
+			w.warnLocked("cassette writer dropped an event; further drops are counted, not logged",
+				"seq", r.event.Seq, "reason", reason)
 		}
 		return
 	}
@@ -313,7 +374,7 @@ func (w *Writer) dropLocked(r record, reason string) {
 		l = &lostInteraction{reason: reason}
 		w.lost[r.id] = l
 		w.stats.LostInteractions++
-		w.log.Warn("cassette writer dropped a record; the interaction will be marked as incomplete",
+		w.warnLocked("cassette writer dropped a record; the interaction will be marked as incomplete",
 			"interaction", r.id, "reason", reason)
 	}
 	l.dropped++
@@ -327,6 +388,22 @@ func (w *Writer) dropLocked(r record, reason string) {
 		d := r.done
 		d.ResponseBlob = nil
 		l.done = &d
+	}
+}
+
+func (w *Writer) warnLocked(msg string, args ...any) {
+	w.warnings = append(w.warnings, warning{msg: msg, args: args})
+}
+
+// flushWarnings logs the queued warnings. Only the writing goroutine and
+// Close call it, never the proxy.
+func (w *Writer) flushWarnings() {
+	w.mu.Lock()
+	warnings := w.warnings
+	w.warnings = nil
+	w.mu.Unlock()
+	for _, wn := range warnings {
+		w.log.Warn(wn.msg, wn.args...)
 	}
 }
 
@@ -351,6 +428,7 @@ func (w *Writer) run() {
 			w.opts.beforeBatch(w.ctx)
 		}
 		w.writeBatch(batch)
+		w.flushWarnings()
 	}
 }
 
@@ -433,7 +511,9 @@ func (w *Writer) apply(tx *Tx, r record) error {
 		err := tx.CompleteInteraction(w.ctx, r.id, r.done)
 		if errors.Is(err, ErrAlreadyCompleted) {
 			// The first completion stands and the row is unchanged (ADR 0009).
-			w.log.Warn("interaction completed twice; keeping the first completion", "interaction", r.id)
+			w.mu.Lock()
+			w.warnLocked("interaction completed twice; keeping the first completion", "interaction", r.id)
+			w.mu.Unlock()
 			return nil
 		}
 		return err
@@ -446,8 +526,10 @@ func (w *Writer) apply(tx *Tx, r record) error {
 }
 
 // finish completes the lost interactions with an error and ends the session.
-// The writing goroutine has exited, so nothing else touches the cassette.
-func (w *Writer) finish(ctx context.Context, tx *Tx, end SessionEnd) error {
+// The writing goroutine has exited, so nothing else touches the cassette. It
+// returns the interactions it could not mark separately from err, which fails
+// the transaction.
+func (w *Writer) finish(ctx context.Context, tx *Tx, end SessionEnd) (unmarked []error, err error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -457,46 +539,43 @@ func (w *Writer) finish(ctx context.Context, tx *Tx, end SessionEnd) error {
 	}
 	slices.Sort(ids)
 	for _, id := range ids {
-		// A failed statement does not abort the transaction, so one interaction
-		// that cannot be finished does not keep the session from ending.
+		// A constraint error rolls back only its statement, so one interaction
+		// that cannot be marked does not keep the session from ending. Errors
+		// that roll back the whole transaction (a full disk, I/O) make the
+		// commit fail, and Close reports that.
 		if err := w.finishLost(ctx, tx, id, w.lost[id], end.EndedAt); err != nil {
-			w.log.Warn("could not mark an incomplete interaction", "interaction", id, "error", err)
+			unmarked = append(unmarked, fmt.Errorf("marking interaction %d as incomplete: %w", id, err))
 		}
 	}
 	if w.mcpDropped {
 		if err := tx.SetMCPServers(ctx, w.mcpServers); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if w.stats.Dropped > 0 {
-		w.log.Warn("cassette recording is incomplete",
+		w.warnLocked("cassette recording is incomplete",
 			"dropped_records", w.stats.Dropped, "dropped_events", w.stats.DroppedEvents,
 			"incomplete_interactions", w.stats.LostInteractions)
 	}
-	return tx.EndSession(ctx, end)
+	return unmarked, tx.EndSession(ctx, end)
 }
 
 func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostInteraction, endedAt time.Time) error {
-	var (
-		startedAt string
-		duration  sql.NullInt64
-	)
-	err := tx.tx.QueryRowContext(ctx, `SELECT started_at, duration_ms FROM interactions WHERE id = ?`, id).
-		Scan(&startedAt, &duration)
+	startedAt, complete, err := tx.interactionState(ctx, id)
 	switch {
-	case errors.Is(err, sql.ErrNoRows):
+	case errors.Is(err, ErrNotFound):
 		if l.begin == nil {
 			return nil // nothing of it was ever accepted
 		}
 		if err := tx.BeginInteraction(ctx, *l.begin); err != nil {
 			return err
 		}
-		startedAt = FormatTime(l.begin.StartedAt)
+		startedAt = l.begin.StartedAt
 	case err != nil:
-		return fmt.Errorf("reading interaction %d: %w", id, err)
-	case duration.Valid:
-		// Already complete, and complete rows are never updated (ADR 0009).
-		w.log.Warn("records of a completed interaction were dropped", "interaction", id, "reason", l.reason)
+		return err
+	case complete:
+		// Complete rows are never updated (ADR 0009).
+		w.warnLocked("records of a completed interaction were dropped", "interaction", id, "reason", l.reason)
 		return nil
 	}
 
@@ -509,14 +588,18 @@ func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostIntera
 		}
 	} else {
 		// Still in flight when the recording ended: that is when it stopped.
-		started, err := parseTime(startedAt)
-		if err != nil {
-			return fmt.Errorf("reading interaction %d: started_at: %w", id, err)
-		}
-		done.DurationMillis = max(0, endedAt.Sub(started).Milliseconds())
+		done.DurationMillis = max(0, endedAt.Sub(startedAt).Milliseconds())
 	}
 	done.Error = &msg
 	return tx.CompleteInteraction(ctx, id, done)
+}
+
+func cloneAll(blobs [][]byte) [][]byte {
+	out := make([][]byte, len(blobs))
+	for i, b := range blobs {
+		out[i] = bytes.Clone(b)
+	}
+	return out
 }
 
 func blobsSize(blobs [][]byte) int64 {
