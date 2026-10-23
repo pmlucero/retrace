@@ -47,7 +47,7 @@ func TestRunExitCodesAndOutput(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), tt.args, &stdout, &stderr, fakeEnv(tt.env), []command{echo})
+			code := run(context.Background(), tt.args, nil, &stdout, &stderr, fakeEnv(tt.env), []command{echo})
 
 			if code != tt.wantCode {
 				t.Errorf("exit code = %d, want %d (stderr: %q)", code, tt.wantCode, stderr.String())
@@ -101,7 +101,7 @@ func TestRunResolvesGlobals(t *testing.T) {
 			var stdout, stderr bytes.Buffer
 			args := slices.Concat(tt.args, []string{"capture"})
 
-			if code := run(context.Background(), args, &stdout, &stderr, fakeEnv(tt.env), []command{capture}); code != ExitOK {
+			if code := run(context.Background(), args, nil, &stdout, &stderr, fakeEnv(tt.env), []command{capture}); code != ExitOK {
 				t.Fatalf("exit code = %d, want %d (stderr: %q)", code, ExitOK, stderr.String())
 			}
 			if got != tt.want {
