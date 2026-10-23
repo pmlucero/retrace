@@ -171,7 +171,7 @@ Storage is one SQLite file per session ([ADR 0005](../adr/0005-sqlite-cassette-s
 
 ### 7.1 Overview
 
-```
+```text
 session (1 row) ──┬── interactions ──┬── chunks
                   │                  └── blobs (request / response / canonical bodies)
                   └── events ──────────── (interaction_id → interactions)
@@ -298,7 +298,7 @@ A session's trajectory is its events with `kind ∈ {tool_use, tool_call, tool_r
 
 Text output (default):
 
-```
+```text
 retrace diff 20261023-checkout  20261023-checkout.swap-model.1
 
              A: claude-sonnet-4-5          B: claude-haiku-4-5
@@ -336,7 +336,7 @@ A `retrace.yaml` file in the working directory MAY declare `mcp` servers, `liste
 
 ### 9.2 `retrace record`
 
-```
+```text
 retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
                [--anthropic-upstream <url>] [--redact <jsonpath>]... [--redact-header <name>]...
                [--label <k>=<v>]... [--force] -- <agent command...>
@@ -348,7 +348,7 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 
 ### 9.3 `retrace run`
 
-```
+```text
 retrace run <id> [--model <model>] [--tools frozen|live] [--as <new-id>]
                  [--on-miss strict] [--realtime] [--grace <duration>]
                  [--mcp <name>=<url>]... [--listen <addr>] [-- <agent command...>]
@@ -369,7 +369,7 @@ The mode is derived from the flags:
 
 ### 9.4 `retrace diff`
 
-```
+```text
 retrace diff <id-a> <id-b> [--format text|json] [--text]
 ```
 
@@ -377,7 +377,7 @@ See §8.
 
 ### 9.5 `retrace ls`
 
-```
+```text
 retrace ls [--json]
 ```
 
@@ -385,7 +385,7 @@ Lists the cassettes in `--dir`, newest first, with these columns: `ID`, `CREATED
 
 ### 9.6 `retrace show`
 
-```
+```text
 retrace show <id> [--json] [--raw <interaction-id>]
 ```
 
@@ -414,7 +414,8 @@ retrace show <id> [--json] [--raw <interaction-id>]
 
 Each criterion is verified by an automated test unless marked *(manual)*. "Fake upstream" means an in-process test server that emulates the Anthropic API or an MCP server.
 
-**Recording**
+### Recording
+
 - **AC-01** `record` launches the agent with `ANTHROPIC_BASE_URL` and `RETRACE_MCP_<NAME>_URL` set, and the session ends when the agent exits.
 - **AC-02** A non-streaming `/v1/messages` exchange is recorded with request, response, status, headers (redacted) and timing.
 - **AC-03** A streaming `/v1/messages` exchange is recorded with every SSE event and its offset. The agent receives the first chunk before the upstream finishes (no buffering).
@@ -423,7 +424,8 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-06** `authorization`, `x-api-key` and `*-token` header values never appear in the cassette file (verified by scanning the raw file bytes).
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
 
-**Exact replay**
+### Exact replay
+
 - **AC-08** `run <id>` (exact) replays a recorded session with all upstreams unreachable. The agent's stdout matches the original run's stdout.
 - **AC-09** In exact mode the proxy opens zero outbound connections (enforced by a dialer that fails the test if called).
 - **AC-10** Streaming responses are replayed byte-identically. With `--realtime`, chunk offsets are within ±20 ms of the recorded ones.
@@ -431,22 +433,26 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
 
-**Swap-model and strict**
+### Swap-model and strict
+
 - **AC-14** `run <id> --model M` forwards LLM requests with `model` rewritten to `M` and serves MCP from the cassette. The new cassette records `requested_model` and `model`.
 - **AC-15** When the new model calls a tool with arguments not in the cassette, retrace records a `divergence` event with a JSON-path diff, answers with JSON-RPC error `-32099`, terminates the agent and exits `3`.
 - **AC-16** `--on-miss nearest-match` (and the other reserved values) exits `2` with a "not implemented" message.
 - **AC-17** `--model` combined with `--tools live` exits `2`.
 
-**Live-tools**
+### Live-tools
+
 - **AC-18** `run <id> --tools live` serves LLM responses from the cassette and forwards MCP to the real servers. A changed tool result produces a divergence on the next LLM request.
 
-**Diff and inspection**
+### Diff and inspection
+
 - **AC-19** `diff` of a session with its exact replay reports identical trajectories and exits `0`.
 - **AC-20** `diff` of a session with a diverging swap-model replay reports the correct step, event, tool and argument diff, and exits `1`.
 - **AC-21** `diff --format json` output validates against a JSON schema committed in the repo.
 - **AC-22** `ls` and `show` (text and `--json`) display the fields listed in §9.5 and §9.6.
 
-**Demo** *(manual)*
+### Demo (manual)
+
 - **AC-23** The repo contains a demo agent that uses two MCP servers. The README GIF shows record → exact replay → swap-model with divergence → diff.
 
 ## 12. Out of scope / future work

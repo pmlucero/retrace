@@ -37,23 +37,29 @@ Matching is **fingerprint-based with per-fingerprint FIFO queues**, not position
 ## Alternatives considered
 
 ### Strict sequential matching (next recorded interaction must match)
+
 It is simpler and detects any reordering. However, it produces false divergences under concurrency (parallel tool calls, subagents), which are common in real agents.
 
 ### Matching on method plus URL only (typical HTTP VCR)
+
 It is too loose for LLM calls, because every request is `POST /v1/messages`, so it would replay wrong answers silently.
 
 ### Semantic or embedding similarity
+
 It is non-deterministic and opaque. It belongs to the future `nearest-match` strategy, not to the core.
 
 ## Consequences
 
 ### Positive
+
 - Robust to reordering and concurrency, and exact about content.
 - `live-tools` divergence detection falls out of the design.
 - Misses carry a precise "expected vs. received" diff, which is the input for `retrace diff` and the UI.
 
 ### Negative
+
 - Any byte-level change in the agent's prompts, such as a timestamp in the system prompt, causes misses in `exact` mode until ignore rules exist.
 
 ### Risks and mitigations
+
 - *Canonicalization bugs cause false misses.* Mitigation: canonicalization is pure, heavily unit-tested, and the canonical form is stored with each interaction, so a mismatch can be inspected.

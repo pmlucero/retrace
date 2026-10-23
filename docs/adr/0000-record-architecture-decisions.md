@@ -19,19 +19,24 @@ Every significant architectural decision is recorded as an Architecture Decision
 ## Alternatives considered
 
 ### Design notes in a single document
+
 Simpler, but a single document loses the history of why a decision changed, and it grows into something nobody re-reads.
 
 ### Decisions in issues or PR descriptions
+
 They are discoverable only by people who already know where to look, and they are tied to a hosting platform.
 
 ## Consequences
 
 ### Positive
+
 - The rationale is versioned with the code and reviewable in PRs.
 - New contributors, and coding agents working on the repo, can check the ADRs before proposing a change that was already discussed.
 
 ### Negative
+
 - Writing ADRs adds a small overhead to each significant change.
 
 ### Risks and mitigations
+
 - *ADRs drift from reality.* Mitigation: `CLAUDE.md` requires that code contradicting an Accepted ADR comes with a superseding ADR in the same PR.
