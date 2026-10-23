@@ -5,7 +5,9 @@
     // Prose is not hard-wrapped.
     "MD013": false,
     // ADRs repeat "Positive" / "Negative" under different parents.
-    "MD024": { "siblings_only": true }
+    "MD024": { "siblings_only": true },
+    // <picture> is the only way to serve a light and a dark diagram on GitHub.
+    "MD033": { "allowed_elements": ["picture", "source", "img"] }
   },
   "ignores": [
     "node_modules/**",
