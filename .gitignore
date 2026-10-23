@@ -1,0 +1,20 @@
+# retrace data: cassettes from real sessions must never be committed (see CONTRIBUTING.md).
+/.retrace/
+
+# Go build and test artifacts
+/retrace
+/dist/
+*.test
+*.out
+coverage.*
+
+# Editors and OS
+*.swp
+*.swo
+*~
+.DS_Store
+.idea/
+.vscode/
+
+# Tooling
+node_modules/
