@@ -52,6 +52,10 @@ Read these before changing anything non-trivial:
 - The subject is imperative and at most 72 characters. The body explains *why* and references `AC-xx` or `ADR NNNN` when relevant.
 - Never commit cassettes from real sessions, `.retrace/` directories or secrets.
 
+## Code review
+
+Reviews, human or automated, follow [docs/review-guidelines.md](docs/review-guidelines.md): grounded findings, severities, the review dimensions and the output format. When asked to review a change locally, use the same rubric. Every PR also gets an advisory review from `.github/workflows/claude-review.yml`. Comment `@claude review` on a PR to request another pass.
+
 ## Things not to do
 
 - Do not add providers, transports or divergence strategies that are outside the MVP scope (spec §12) without an approved spec change.
