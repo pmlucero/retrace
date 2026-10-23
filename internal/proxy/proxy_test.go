@@ -71,9 +71,12 @@ func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64) *harness
 	return &harness{t: t, c: c, w: w, server: server}
 }
 
-// interactions ends the session and returns what was recorded.
+// interactions ends the session and returns what was recorded. Like record,
+// it first waits for in-flight handlers: an exchange completes when the proxy
+// closes the upstream body, which can be after the agent has the response.
 func (h *harness) interactions() []cassette.Interaction {
 	h.t.Helper()
+	h.server.Close()
 	if err := h.w.Close(context.Background(), cassette.SessionEnd{Status: "completed", EndedAt: time.Now()}); err != nil {
 		h.t.Fatalf("closing writer: %v", err)
 	}
