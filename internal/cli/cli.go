@@ -33,9 +33,10 @@ type Globals struct {
 	NoColor  bool
 }
 
-// Env is what a command receives: resolved globals, output streams and a logger.
+// Env is what a command receives: resolved globals, standard streams and a logger.
 type Env struct {
 	Globals Globals
+	Stdin   io.Reader
 	Stdout  io.Writer
 	Stderr  io.Writer
 	Logger  *slog.Logger
@@ -50,15 +51,15 @@ type command struct {
 }
 
 // commands are added by the milestones that implement them (docs/plan/mvp.md).
-var commands []command
+var commands = []command{recordCommand}
 
 // Run parses global flags, dispatches to a subcommand and returns the exit code.
 // getenv is injected so tests can control environment variables.
-func Run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string) int {
-	return run(ctx, args, stdout, stderr, getenv, commands)
+func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	return run(ctx, args, stdin, stdout, stderr, getenv, commands)
 }
 
-func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv func(string) string, cmds []command) int {
+func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, cmds []command) int {
 	fs := flag.NewFlagSet("retrace", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors and help are printed by us, to the right stream
 	dir := fs.String("dir", envOr(getenv, "RETRACE_DIR", defaultDir), "cassette directory (env RETRACE_DIR)")
@@ -102,6 +103,7 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, getenv fu
 	env := &Env{
 		// NO_COLOR (any non-empty value) and --no-color can each only disable color (spec §9.1).
 		Globals: Globals{Dir: *dir, LogLevel: level, NoColor: *noColor || getenv("NO_COLOR") != ""},
+		Stdin:   stdin,
 		Stdout:  stdout,
 		Stderr:  stderr,
 		Logger:  slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})),
@@ -149,6 +151,31 @@ func findCommand(cmds []command, name string) (command, bool) {
 		}
 	}
 	return command{}, false
+}
+
+// globalFlags are the flags that go before the command (spec §9.1).
+var globalFlags = map[string]bool{"dir": true, "log-level": true, "no-color": true, "version": true}
+
+// parseCommandFlags parses a command's flags. It returns ok=false with the exit
+// code when parsing ends the command: help was requested, or a flag is wrong.
+func parseCommandFlags(fs *flag.FlagSet, args []string, env *Env) (code int, ok bool) {
+	fs.SetOutput(io.Discard)
+	err := fs.Parse(args)
+	if err == nil {
+		return 0, true
+	}
+	if errors.Is(err, flag.ErrHelp) {
+		fs.SetOutput(env.Stdout)
+		fs.Usage()
+		return ExitOK, false
+	}
+	msg := err.Error()
+	if name, found := strings.CutPrefix(msg, "flag provided but not defined: -"); found && globalFlags[strings.TrimPrefix(name, "-")] {
+		// Spec §9.1: say where a global flag belongs.
+		msg = fmt.Sprintf("--%s is a global flag: put it before the command, as in 'retrace --%s ... %s'",
+			strings.TrimPrefix(name, "-"), strings.TrimPrefix(name, "-"), fs.Name())
+	}
+	return usageError(env.Stderr, msg), false
 }
 
 func usageError(stderr io.Writer, msg string) int {
