@@ -39,6 +39,16 @@ Please read the [non-goals](docs/vision.md#4-non-goals) before proposing feature
 - Every PR from a branch of this repository gets an advisory review from Claude, following [docs/review-guidelines.md](docs/review-guidelines.md). It does not block merging. Maintainers can request another pass by commenting `@claude review`. PRs from forks are reviewed by the maintainer.
 - Keep PRs focused. A spec change, an ADR and an implementation belong in separate commits, and preferably in separate PRs.
 
+### Branches and releases
+
+retrace uses **trunk-based development**. `main` is the only long-lived branch, and it is always releasable.
+
+- Work happens on short-lived branches cut from `main` and merged back through a PR. Rebase or merge `main` often, and keep branches to days, not weeks.
+- Branch names are `<type>/<kebab-case-description>`. The types are the same as for commits: `feat/`, `fix/`, `docs/`, `test/`, `refactor/`, `chore/`. Example: `feat/sse-replay-timing`. CI enforces this (`branch-name` check).
+- **Urgent fixes** are ordinary `fix/` branches from `main`, prioritized for review. There is no separate hotfix flow.
+- **Releases** are tags `vX.Y.Z` (Semantic Versioning) on `main`. Binaries are built from the tag (ADR 0001).
+- **Maintenance branches** (`release/<major>.<minor>`) are created from a tag only if an older release needs a patch while `main` has moved on. Fixes land on `main` first and are cherry-picked.
+
 ### Commits
 
 - One logical change per commit.
