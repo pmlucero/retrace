@@ -20,7 +20,7 @@ retrace runs as a **local HTTP reverse proxy**. The agent is pointed at it by ch
   - `/llm/anthropic/...` → the Anthropic API (default upstream `https://api.anthropic.com`).
   - `/mcp/<name>/...` → the MCP server registered under `<name>`.
 - `retrace record -- <cmd>` and `retrace run -- <cmd>` start the proxy, launch the agent as a child process, and inject `ANTHROPIC_BASE_URL=http://127.0.0.1:4790/llm/anthropic` into its environment. For MCP servers, retrace exports `RETRACE_MCP_<NAME>_URL` per registered server. The agent's MCP configuration must use those URLs, which is the only mandatory configuration change.
-- MCP upstreams are declared with `--mcp <name>=<url>` or in a `retrace.yaml` file. (Amended in spec v0.4: `retrace.yaml` is deferred after the MVP, so the MVP uses flags only.)
+- MCP upstreams are declared with `--mcp <name>=<url>` or in a `retrace.yaml` file.
 - A `retrace proxy` sub-mode, which runs the proxy without launching a child, is reserved for agents that cannot be launched as a child. It is not part of the MVP.
 
 The proxy is transparent: it forwards requests and responses byte-for-byte, except for the rewrites required by replay (see [ADR 0004](0004-mcp-streamable-http-first.md) and [ADR 0007](0007-request-matching-fingerprints.md)).

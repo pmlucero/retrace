@@ -346,7 +346,9 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 
 - `--session`: the session id. Generated if omitted. An existing id fails unless `--force` is given.
   - A session id MUST match `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`, because it names the cassette file (`<dir>/<id>.cassette`). Any other value is a usage error (exit `2`). Every command that takes a session id (`run`, `run --as`, `diff`, `show`, `reindex`) validates it the same way.
-  - A generated id has the form `YYYYMMDD-HHMMSS-xxxx`: local time, then four random lowercase hexadecimal digits.
+  - An id whose part before the first `.` is a Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, in any case) is also a usage error, on every platform, so cassettes stay portable.
+  - Whether an id exists is decided by the cassette file, not by comparing ids, so on a case-insensitive file system `Foo` and `foo` are the same session.
+  - A generated id has the form `YYYYMMDD-HHMMSS-xxxx`: local time, then four random lowercase hexadecimal digits. If it already exists, a new random suffix is drawn.
 - `--mcp`: registers an MCP upstream. Repeatable.
 - `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`.
 
@@ -367,7 +369,7 @@ The mode is derived from the flags:
 | absent | `live` | `live-tools` |
 | present | `live` | **error** (exit `2`): nothing would be held constant; use `record` instead |
 
-- `--as`: id of the new session. The default is `<id>.<mode>.<n>`, with `n` incrementing.
+- `--as`: id of the new session. The default is `<id>.<mode>.<n>`, with `n` incrementing. If that default does not fit the id format (§9.2), it is a usage error that asks for `--as`.
 - `-- <cmd>`: overrides the recorded command. Without it, the recorded command and cwd are used.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
 
@@ -427,6 +429,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-05** Events are derived with all §7.4 fields populated where applicable, including tokens and estimated cost for each `model_response`, and correct `source`/`target`.
 - **AC-06** `authorization`, `x-api-key` and `*-token` header values never appear in the cassette file (verified by scanning the raw file bytes).
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
+- **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
 
 ### Exact replay
 
