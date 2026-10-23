@@ -33,19 +33,24 @@ Several responses are possible, and they trade fidelity against how far the repl
 ## Alternatives considered
 
 ### `fallthrough` as default
+
 It is more convenient, because replays "just work". However, it silently turns a controlled experiment into an uncontrolled one, which defeats the purpose of swap-model.
 
 ### Returning an error to the agent without terminating it
+
 It is less disruptive, but agents often retry or improvise after a tool error, so the resulting trajectory is an artifact of the replay, not of the model. It may become an option (`--on-miss strict --keep-running`) later.
 
 ## Consequences
 
 ### Positive
+
 - Every replay result is trustworthy: if it completed, nothing was invented.
 - The divergence point is exactly the most interesting fact in a model comparison, and `strict` surfaces it directly.
 
 ### Negative
+
 - swap-model replays will often stop early when the new model explores differently. That is expected and documented as a finding, not a failure of the tool.
 
 ### Risks and mitigations
+
 - *Users perceive early stops as bugs.* The CLI output explains the divergence and suggests the reserved strategies on the roadmap.

@@ -27,27 +27,34 @@ The cassette directory is configurable with `--dir` and `RETRACE_DIR`.
 ## Alternatives considered
 
 ### JSON or YAML files (one per cassette, like VCR.py)
+
 They are human-readable and diffable in git. However, they cannot be written incrementally without rewriting the file, they are poor at holding thousands of SSE chunks, they cannot be queried, and they grow large with repeated prompts.
 
 ### JSONL append-only log
+
 It is easy to append to and to stream. Queries for the UI and for diff would need a full scan and an in-memory index every time, and there is no deduplication. It remains a good **export** format (see Consequences).
 
 ### One shared SQLite database for all sessions
+
 It makes cross-session queries easy, but loses portability: sharing one session means extracting it.
 
 ### Embedded KV store (bbolt, Badger)
+
 It is not queryable with standard tools, and it is less familiar to contributors and users.
 
 ## Consequences
 
 ### Positive
+
 - Cassettes are single files that can be opened with any SQLite tool for ad-hoc inspection.
 - Incremental, crash-safe writes.
 - The future web UI can query cassettes directly.
 
 ### Negative
+
 - Cassettes are binary and do not produce meaningful git diffs. Mitigation: `retrace show <id> --json` (and later `retrace export`) produce a stable JSONL representation.
 - Cross-session queries (`ls`) must open each file. This is acceptable at the expected scale of tens to hundreds of cassettes.
 
 ### Risks and mitigations
+
 - *Cassettes contain sensitive data (prompts and tool outputs).* See [ADR 0008](0008-secret-redaction.md). Documentation must warn before cassettes are shared.

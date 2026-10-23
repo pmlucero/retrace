@@ -20,6 +20,7 @@ The cassette has **two layers**, both append-only:
 2. **Events** (semantic layer): an ordered, append-only log derived from interactions **at record time**. Each event has every field required by the UI from day one: `seq`, `started_at`, `duration_ms`, `source`, `target`, `kind`, `tool`, `arguments`, `result`, `tokens_in`, `tokens_out`, `cost_usd`, `model`, `status`, `error`, plus `interaction_id` and `parent_seq` for causality.
 
 Rules:
+
 - Rows are never updated after they are complete, and never deleted. An in-flight interaction is inserted when the request arrives and completed once when the response ends. This is the only allowed update, and it is idempotent.
 - `seq` is a strictly increasing integer per session, assigned when the request arrives. It defines the canonical order even under concurrency.
 - Times: `started_at` is wall-clock UTC with microsecond precision, and `duration_ms` is measured with the monotonic clock.
@@ -29,24 +30,30 @@ Rules:
 ## Alternatives considered
 
 ### Raw interactions only, semantic view computed on read
+
 It is simpler to write, but every reader would re-implement protocol parsing, and timing information that only exists at record time would be lost.
 
 ### Semantic events only
+
 It is compact, but loses byte fidelity (SSE framing, unknown fields), which breaks `exact` replay.
 
 ### Mutable session document (update in place as the session progresses)
+
 It is harder to make crash-safe, and loses the ordering guarantees the sequence view relies on.
 
 ## Consequences
 
 ### Positive
+
 - The web UI can be built later on top of existing cassettes without re-recording.
 - `diff` operates on a stable, protocol-agnostic event stream.
 - Crash safety: a partial session is a valid prefix of a log.
 
 ### Negative
+
 - Some data is duplicated between layers. This is accepted for clarity, and blobs are deduplicated anyway.
 - The derivation code runs on the hot path while recording. It must be cheap and must never block forwarding.
 
 ### Risks and mitigations
+
 - *Derivation bugs corrupt the semantic layer.* `retrace reindex` plus `deriver_version` make it recoverable, because raw interactions are always intact.

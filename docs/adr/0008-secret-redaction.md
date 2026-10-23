@@ -19,19 +19,24 @@ Cassettes are designed to be shared: attached to issues, committed as fixtures, 
 ## Alternatives considered
 
 ### Encrypt cassettes at rest
+
 It protects storage, but defeats sharing and inspection. It also does not solve the main risk, which is accidental publication of a key.
 
 ### Redact automatically with secret-scanning heuristics over bodies (regexes for key formats)
+
 It is attractive, but causes both false positives (corrupting replay) and false negatives (false confidence). It may be added later as a `retrace scan` command that warns rather than mutates.
 
 ## Consequences
 
 ### Positive
+
 - A cassette produced with defaults never contains auth headers.
 - Body redaction is explicit and auditable.
 
 ### Negative
+
 - Body content is stored verbatim by default. Users are responsible for reviewing it before sharing.
 
 ### Risks and mitigations
+
 - *A custom auth header outside the deny-list leaks.* Mitigations: the pattern-based defaults, `--redact-header <name>`, and a test fixture suite with common MCP auth schemes.

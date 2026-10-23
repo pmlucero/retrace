@@ -28,24 +28,30 @@ The proxy is transparent: it forwards requests and responses byte-for-byte, exce
 ## Alternatives considered
 
 ### SDK wrapper or monkey-patching
+
 It gives richer context, such as the agent's internal state, but it requires one implementation per language and SDK, and it violates zero-intrusion.
 
 ### HTTPS MITM proxy (`HTTPS_PROXY` plus a local CA)
+
 It would capture traffic without changing URLs. However, it requires installing a trusted CA, and many clients pin or ignore proxy settings. It is invasive and fragile, and a poor first experience for an open-source tool.
 
 ### OpenTelemetry ingestion
+
 It only observes and cannot control responses, so it cannot replay.
 
 ## Consequences
 
 ### Positive
+
 - Works with any agent whose LLM and MCP endpoints are configurable, in any language.
 - Launching the agent as a child gives retrace a clear session lifecycle: the session ends when the process exits. It also allows terminating the agent on a strict divergence.
 
 ### Negative
+
 - Agents with hard-coded endpoints are not supported.
 - The agent's MCP configuration must reference retrace URLs, so it is not purely an environment-variable change for MCP.
 - The proxy speaks plain HTTP on localhost. TLS is only used upstream.
 
 ### Risks and mitigations
+
 - *Port conflicts.* `--listen` overrides the address, and port `0` picks a free port, which is propagated through the injected environment variables.

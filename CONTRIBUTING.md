@@ -29,6 +29,13 @@ Please read the [non-goals](docs/vision.md#4-non-goals) before proposing feature
 
 - Changes to `docs/spec/`, `docs/adr/` and `.github/CODEOWNERS` require review from the maintainer (see [CODEOWNERS](.github/CODEOWNERS)).
 - All PRs to `main` need an approving review. Fill in the PR template: the traceability section (spec sections, AC-xx, ADRs) is what reviewers look at first.
+- CI must pass. It checks Markdown style (`markdownlint-cli2`, configured in `.markdownlint-cli2.jsonc`), internal links and ADR consistency (`.github/scripts/check_docs.py`), and the PR title format. Run them locally with:
+
+  ```sh
+  npx markdownlint-cli2 "**/*.md"
+  python3 .github/scripts/check_docs.py
+  ```
+
 - Keep PRs focused. A spec change, an ADR and an implementation belong in separate commits, and preferably in separate PRs.
 
 ### Commits
