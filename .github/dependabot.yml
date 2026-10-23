@@ -1,6 +1,5 @@
-# Keeps SHA-pinned GitHub Actions up to date, grouped into one weekly PR.
-# Its long titles are exempt from the pr-title length limit (pr-metadata.yml).
-# Add the gomod ecosystem when go.mod exists.
+# Keeps SHA-pinned GitHub Actions and Go modules up to date, one grouped weekly PR
+# per ecosystem. Long titles are exempt from the pr-title length limit (pr-metadata.yml).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -16,4 +15,15 @@ updates:
       prefix: chore(ci)
     groups:
       actions:
+        patterns: ["*"]
+  - package-ecosystem: gomod
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      go-modules:
         patterns: ["*"]
