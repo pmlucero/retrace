@@ -1,0 +1,36 @@
+# golangci-lint v2 configuration, enforced in CI (.github/workflows/go.yml).
+version: "2"
+
+linters:
+  # errcheck, govet, ineffassign, staticcheck, unused
+  default: standard
+  enable:
+    - bodyclose      # HTTP response bodies must be closed (proxy code)
+    - contextcheck   # context propagated through call chains
+    - errorlint      # errors compared and wrapped with errors.Is/As and %w
+    - gocritic
+    - gosec
+    - misspell
+    - noctx          # HTTP requests carry a context
+    - revive
+    - unconvert
+    - unparam
+  settings:
+    errcheck:
+      # Writes to the CLI's output streams have no meaningful recovery.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+  exclusions:
+    presets:
+      - std-error-handling
+    rules:
+      # Tests may ignore write errors on in-memory buffers.
+      - path: _test\.go
+        linters: [errcheck]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
