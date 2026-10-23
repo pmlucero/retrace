@@ -11,6 +11,7 @@ Read these before changing anything non-trivial:
 - [docs/vision.md](docs/vision.md): the purpose, principles and non-goals.
 - [docs/spec/core.md](docs/spec/core.md): the behavior contract and acceptance criteria (AC-xx).
 - [docs/adr/](docs/adr/README.md): the architecture decisions and their rationale.
+- [docs/plan/mvp.md](docs/plan/mvp.md): the MVP milestones (M0–M7), their order and the plan-level decisions.
 
 ## Workflow: Spec-Driven Development
 
