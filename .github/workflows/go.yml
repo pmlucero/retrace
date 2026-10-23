@@ -23,6 +23,9 @@ jobs:
         go: ["1.26", "1.27"]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The parent commit gives the change's diff for the coverage report.
+          fetch-depth: 2
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: ${{ matrix.go }}.x
@@ -33,7 +36,15 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Test with the race detector
-        run: go test -race ./...
+        run: go test -race -covermode=atomic -coverprofile=coverage.out ./...
+      # Informs the review; there is no threshold (docs/review-guidelines.md, Tests).
+      # The checkout is the PR's merge commit (or a merge on main), so its first
+      # parent is the base and HEAD^1..HEAD is the change.
+      - name: Coverage report
+        if: matrix.go == '1.27'
+        run: |
+          git diff HEAD^1 HEAD > pr.diff
+          python3 -I .github/scripts/coverage_report.py coverage.out pr.diff . >> "$GITHUB_STEP_SUMMARY"
 
   golangci-lint:
     name: golangci-lint

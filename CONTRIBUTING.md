@@ -63,6 +63,7 @@ Go conventions, the package layout and testing rules are in [CLAUDE.md](CLAUDE.m
 
 - `CGO_ENABLED=0` must build, and the standard library is preferred.
 - `go mod tidy -diff`, `go vet ./...`, `go test -race ./...` and `golangci-lint run` must pass, on Go 1.26 and 1.27. Use golangci-lint v2.14.0, the version CI uses (`.github/workflows/go.yml`).
+- CI reports test coverage per package and for the lines your PR changes. There is no threshold, but reviews flag changed logic that no test executes. To see it locally: `go test -coverprofile=coverage.out ./... && go tool cover -html=coverage.out`.
 - Tests never call real external APIs. They use in-process fake upstreams.
 - Tests that verify an acceptance criterion reference it (`// AC-12`).
 
