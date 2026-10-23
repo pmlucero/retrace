@@ -18,6 +18,11 @@ jobs:
         run: |
           # Keep in sync with the branch-name job below and CONTRIBUTING.md.
           types='feat|fix|docs|test|refactor|chore'
+          # GitHub's Revert button titles PRs 'Revert "<original title>"'; allow them as-is.
+          if [[ "$TITLE" =~ ^Revert\ \".+\"$ ]]; then
+            echo "ok (revert): $TITLE"
+            exit 0
+          fi
           if ! [[ "$TITLE" =~ ^($types)(\([a-z0-9-]+\))?!?:\ [^[:space:]].*$ ]]; then
             echo "::error::PR title must follow Conventional Commits: '<type>(<scope>)?: <subject>' with type in: ${types//|/, }"
             echo "Got: $TITLE"
@@ -42,7 +47,11 @@ jobs:
         run: |
           # Keep in sync with the pr-title job above and CONTRIBUTING.md.
           types='feat|fix|docs|test|refactor|chore'
-          if ! [[ "$BRANCH" =~ ^($types)/[a-z0-9]+(-[a-z0-9]+)*$ ]]; then
+          # Generated branches are also allowed: GitHub's Revert button
+          # (revert-<pr>-<head>) and Dependabot (dependabot/<ecosystem>/...).
+          if ! [[ "$BRANCH" =~ ^($types)/[a-z0-9]+(-[a-z0-9]+)*$ ||
+                  "$BRANCH" =~ ^revert-[0-9]+- ||
+                  "$BRANCH" =~ ^dependabot/ ]]; then
             echo "::error::Branch '$BRANCH' must be '<type>/<kebab-case-description>' with type in: ${types//|/, } (see CONTRIBUTING.md)"
             exit 1
           fi
