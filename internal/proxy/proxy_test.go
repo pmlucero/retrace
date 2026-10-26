@@ -38,6 +38,21 @@ func newHarness(t *testing.T, upstream http.Handler) *harness {
 // newHarnessWith is newHarness with a MaxBodyBytes and redaction rules.
 func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64, rules *redact.Rules) *harness {
 	t.Helper()
+	return newHarnessOpts(t, upstream, harnessOptions{maxBody: maxBody, rules: rules})
+}
+
+type harnessOptions struct {
+	maxBody   int64
+	rules     *redact.Rules
+	deriver   cassette.Deriver
+	transport http.RoundTripper
+}
+
+func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harness {
+	t.Helper()
+	if o.rules == nil {
+		o.rules = redact.NewRules(nil, nil)
+	}
 	ctx := context.Background()
 	target, _ := url.Parse("http://127.0.0.1:1")
 	if upstream != nil {
@@ -58,15 +73,16 @@ func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64, rules *r
 	if err != nil {
 		t.Fatal(err)
 	}
-	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{})
+	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Deriver: o.deriver})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := New(Config{
 		Routes:       []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target}},
 		Writer:       w,
-		Redact:       rules,
-		MaxBodyBytes: maxBody,
+		Redact:       o.rules,
+		Transport:    o.transport,
+		MaxBodyBytes: o.maxBody,
 	})
 	server := httptest.NewServer(p)
 	t.Cleanup(server.Close)
@@ -74,8 +90,8 @@ func newHarnessWith(t *testing.T, upstream http.Handler, maxBody int64, rules *r
 }
 
 // interactions ends the session and returns what was recorded. Like record,
-// it first waits for in-flight handlers: an exchange completes when the proxy
-// closes the upstream body, which can be after the agent has the response.
+// it first waits for in-flight handlers: an exchange the agent abandons
+// completes when the proxy closes the upstream body.
 func (h *harness) interactions() []cassette.Interaction {
 	h.t.Helper()
 	h.server.Close()

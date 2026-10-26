@@ -258,7 +258,8 @@ func (ex *exchange) appendChunk(event []byte) {
 	ex.chunkIdx++
 }
 
-// finish completes the interaction once the body is closed.
+// finish completes the interaction when the upstream body ends, or when it is
+// closed before that.
 func (ex *exchange) finish() {
 	ex.once.Do(func() {
 		ttfb := ex.respStart.Sub(ex.start).Milliseconds()
@@ -324,6 +325,11 @@ func (b *recordingBody) Read(p []byte) (int, error) {
 	switch {
 	case errors.Is(err, io.EOF):
 		b.ex.eof = true
+		// Complete now, before these last bytes reach the agent: a request it
+		// sends after reading the response is then always queued after this
+		// completion, and its events after this response's (spec §7.4).
+		// The transport often returns the last bytes together with EOF.
+		b.ex.finish()
 	case err != nil:
 		b.ex.readErr = err
 	}
