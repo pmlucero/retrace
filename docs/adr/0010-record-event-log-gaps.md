@@ -1,6 +1,6 @@
 # 0010. Record gaps in the semantic event log
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-10-26
 
 ## Context
