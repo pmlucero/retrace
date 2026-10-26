@@ -321,6 +321,90 @@ func TestWriterDropsEventsWhoseParentWasDropped(t *testing.T) {
 	}
 }
 
+// AC-26: the ended session counts every dropped event, including those at
+// the end of the log, and the other dropped events are exactly the missing
+// seqs. Seqs are handed out contiguously and never again after a drop.
+func TestWriterRecordsDroppedEventsInTheSession(t *testing.T) {
+	ctx := context.Background()
+	gate := make(chan struct{}) // each receive lets one batch through
+	stalled := make(chan struct{}, 1)
+	hook := func(ctx context.Context) {
+		select {
+		case stalled <- struct{}{}:
+		default:
+		}
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+	}
+	w, c, _ := newWriter(t, WriterOptions{QueueLen: 1, beforeBatch: hook})
+
+	event := func(parent *int64) int64 {
+		return w.AppendEvent(Event{ParentSeq: parent, Kind: "mcp_message", Source: "agent", Target: "mcp:orders",
+			StartedAt: at(1), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+	}
+	var seqs []int64
+	seqs = append(seqs, event(nil)) // 1: held by the stalled writer
+	<-stalled
+	seqs = append(seqs, event(nil)) // 2: fills the queue
+	middle := event(nil)            // 3: queue full
+	seqs = append(seqs, middle)
+	gate <- struct{}{} // 1 is written; the writer stalls again holding 2
+	<-stalled
+	seqs = append(seqs, event(nil))     // 4: fills the queue
+	seqs = append(seqs, event(nil))     // 5: queue full, after the last written seq
+	seqs = append(seqs, event(&middle)) // 6: its parent was dropped
+	close(gate)
+	closeWriter(t, w)
+	event(nil) // after the session ended: counted in Stats only
+
+	if want := []int64{1, 2, 3, 4, 5, 6}; fmt.Sprint(seqs) != fmt.Sprint(want) {
+		t.Errorf("assigned seqs %v, want %v", seqs, want)
+	}
+	events, err := c.Events(ctx)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var stored []int64
+	for _, e := range events {
+		stored = append(stored, e.Seq)
+	}
+	if want := []int64{1, 2, 4}; fmt.Sprint(stored) != fmt.Sprint(want) {
+		t.Errorf("stored seqs %v, want %v: the only missing seq is the dropped 3", stored, want)
+	}
+	s, err := c.Session(ctx)
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	if s.DroppedEvents != 3 {
+		t.Errorf("session dropped_events = %d, want 3 (seqs 3, 5 and 6)", s.DroppedEvents)
+	}
+	if st := w.Stats(); st.DroppedEvents != 4 {
+		t.Errorf("stats dropped events = %d, want 4, with the one after the end", st.DroppedEvents)
+	}
+}
+
+// AC-26: an event that fails to write is counted too, like one dropped from a
+// full queue.
+func TestWriterCountsEventsThatFailToWrite(t *testing.T) {
+	ctx := context.Background()
+	w, c, _ := newWriter(t, WriterOptions{})
+	w.AppendEvent(Event{Kind: "invalid", Source: "agent", Target: "mcp:orders", // fails the CHECK constraint
+		StartedAt: at(1), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+	ok := w.AppendEvent(Event{Kind: "mcp_message", Source: "agent", Target: "mcp:orders",
+		StartedAt: at(1), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+	closeWriter(t, w)
+
+	events, _ := c.Events(ctx)
+	if len(events) != 1 || events[0].Seq != ok {
+		t.Errorf("events = %+v, want only seq %d", events, ok)
+	}
+	if s, _ := c.Session(ctx); s.DroppedEvents != 1 {
+		t.Errorf("session dropped_events = %d, want 1", s.DroppedEvents)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
@@ -370,6 +454,8 @@ func TestWriterCloseTimeoutStillEndsTheSession(t *testing.T) {
 	w.SetMCPServers(json.RawMessage(`[]`))
 	<-stalled
 	id := w.BeginInteraction(llmRequest(1, []byte("a")), []byte("a"))
+	w.AppendEvent(Event{Kind: "mcp_message", Source: "agent", Target: "mcp:orders",
+		StartedAt: at(1), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -382,10 +468,24 @@ func TestWriterCloseTimeoutStillEndsTheSession(t *testing.T) {
 	if in.Error == nil || !strings.Contains(*in.Error, "recording ended before it was written") || in.DurationMillis == nil {
 		t.Errorf("interaction = %+v, want it inserted and completed with an error", in)
 	}
+	// AC-26: an event still queued when draining ran out of time is counted.
+	if s, _ := c.Session(context.Background()); s.DroppedEvents != 1 {
+		t.Errorf("session dropped_events = %d, want the queued event", s.DroppedEvents)
+	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("closing cassette: %v", err)
 	}
 	assertValidCassette(t, path, "interrupted")
+}
+
+// The Writer counts dropped events itself, so a count from the caller is a
+// mistake, refused before the Writer closes.
+func TestWriterCloseRefusesACallerDroppedCount(t *testing.T) {
+	w, _, _ := newWriter(t, WriterOptions{})
+	if err := w.Close(context.Background(), SessionEnd{Status: "completed", EndedAt: at(30), DroppedEvents: 2}); err == nil {
+		t.Error("Close accepted a dropped events count, want an error")
+	}
+	closeWriter(t, w)
 }
 
 // A write stuck in the kernel ignores cancellation. Close still returns, and

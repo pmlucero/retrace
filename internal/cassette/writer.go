@@ -77,7 +77,9 @@ type Deriver interface {
 
 // EmitFunc appends an event derived from the record being handled and
 // returns the seq assigned to it, ignoring e.Seq. The event is written in the
-// same transaction as that record.
+// same transaction as that record. If it cannot be written, its seq stays a
+// gap, and a later event whose parent it is gets dropped too: both are counted
+// in the session (spec §7.7).
 type EmitFunc func(e Event) int64
 
 // WriterStats counts what a Writer did with the records it was given.
@@ -284,12 +286,20 @@ func (w *Writer) Stats() WriterStats {
 // interactions with an error, and ends the session with end. It does not close
 // the cassette.
 //
+// The Writer sets end.DroppedEvents itself, to the number of events it
+// dropped until the session ended (spec §7.7, ADR 0010), and Close refuses
+// a nonzero value. An event given after that is dropped and counted in
+// Stats, but not in the session: its row is already final.
+//
 // If ctx is done before the queue is drained, the remaining records are
 // dropped (and their interactions marked as lost), the session is still ended,
 // and the error wraps ctx.Err(). If the writing goroutine does not stop even
 // then, Close gives up without ending the session and returns ErrWriterStuck.
 // In every case the cassette is left valid.
 func (w *Writer) Close(ctx context.Context, end SessionEnd) error {
+	if end.DroppedEvents != 0 {
+		return errors.New("closing cassette writer: dropped events are counted by the writer")
+	}
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
@@ -389,7 +399,8 @@ func (w *Writer) dropLocked(r record, reason string) {
 		return
 	case recEvent:
 		// Events are not marked on their interaction: it may already be
-		// complete, and `retrace reindex` can rebuild events (spec §7.6).
+		// complete. The session counts them instead, and their seq is never
+		// handed out again, so it stays a gap (spec §7.7).
 		w.droppedSeqs[r.event.Seq] = true
 		w.stats.DroppedEvents++
 		if w.stats.DroppedEvents == 1 {
@@ -520,15 +531,23 @@ func (w *Writer) derive(live []record) []record {
 	}
 	out := make([]record, 0, len(live))
 	emit := func(e Event) int64 {
-		w.mu.Lock()
-		w.nextSeq++
-		e.Seq = w.nextSeq
-		w.mu.Unlock()
 		var id int64
 		if e.InteractionID != nil {
 			id = *e.InteractionID
 		}
-		out = append(out, record{kind: recEvent, id: id, event: e})
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.nextSeq++
+		e.Seq = w.nextSeq
+		r := record{kind: recEvent, id: id, event: e}
+		// A Deriver may reference an event that was dropped after it was
+		// emitted, such as the user_message of a retried request. Dropping
+		// the child here keeps it from failing the whole batch.
+		if w.blockedLocked(r) {
+			w.dropLocked(r, "an earlier record it depends on was dropped")
+			return e.Seq
+		}
+		out = append(out, r)
 		return e.Seq
 	}
 	for _, r := range live {
@@ -630,6 +649,9 @@ func (w *Writer) finish(ctx context.Context, tx *Tx, end SessionEnd) (unmarked [
 			return nil, err
 		}
 	}
+	// w.mu is held and the Writer is closed, so no event can be dropped
+	// between this count and the end of the session.
+	end.DroppedEvents = w.stats.DroppedEvents
 	if w.stats.Dropped > 0 {
 		w.warnLocked("cassette recording is incomplete",
 			"dropped_records", w.stats.Dropped, "dropped_events", w.stats.DroppedEvents,
@@ -690,10 +712,15 @@ func (w *Writer) finishEmit(ctx context.Context, tx *Tx) EmitFunc {
 	return func(e Event) int64 {
 		w.nextSeq++
 		e.Seq = w.nextSeq
-		if (e.ParentSeq != nil && w.droppedSeqs[*e.ParentSeq]) || tx.AppendEvent(ctx, e) != nil {
-			w.droppedSeqs[e.Seq] = true
-			w.stats.Dropped++
-			w.stats.DroppedEvents++
+		// Not blockedLocked: the interactions finish inserts are still lost,
+		// but their rows now exist, so only the parent can be missing.
+		r := record{kind: recEvent, event: e}
+		if e.ParentSeq != nil && w.droppedSeqs[*e.ParentSeq] {
+			w.dropLocked(r, "an earlier record it depends on was dropped")
+			return e.Seq
+		}
+		if err := tx.AppendEvent(ctx, e); err != nil {
+			w.dropLocked(r, "writing to the cassette failed: "+err.Error())
 			return e.Seq
 		}
 		w.stats.Written++
