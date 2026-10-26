@@ -10,6 +10,21 @@ import (
 
 func i64(n int64) *int64 { return &n }
 
+func TestAPIError(t *testing.T) {
+	tests := map[string]string{
+		`{"type":"rate_limit_error","message":"slow down"}`: "rate_limit_error: slow down",
+		`{"type":"rate_limit_error"}`:                       "rate_limit_error",
+		`{"message":"slow down"}`:                           "slow down",
+		`{}`:                                                "unknown error",
+		`"[REDACTED:00aa11bb]"`:                             "unknown error",
+	}
+	for raw, want := range tests {
+		if got := apiError(json.RawMessage(raw)); got != want {
+			t.Errorf("apiError(%s) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
 func TestParseRequest(t *testing.T) {
 	tests := []struct {
 		name      string

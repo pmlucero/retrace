@@ -12,7 +12,33 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/provider/anthropic"
 )
+
+func TestResponseError(t *testing.T) {
+	blob := ptr("k")
+	tests := []struct {
+		name     string
+		done     cassette.Completion
+		msg      anthropic.Message
+		parseErr error
+		want     string
+	}{
+		{"ok", cassette.Completion{StatusCode: ptr(200), ResponseBlob: blob}, anthropic.Message{Complete: true}, nil, ""},
+		{"api error first", cassette.Completion{StatusCode: ptr(500), Error: ptr("x")}, anthropic.Message{Error: "api_error: boom"}, nil, "api_error: boom"},
+		{"interaction error", cassette.Completion{StatusCode: ptr(200), Error: ptr("recording incomplete")}, anthropic.Message{Complete: true}, nil, "recording incomplete"},
+		{"no response", cassette.Completion{}, anthropic.Message{}, nil, "no response"},
+		{"HTTP status", cassette.Completion{StatusCode: ptr(404), ResponseBlob: blob}, anthropic.Message{}, anthropic.ErrNotMessage, "HTTP 404"},
+		{"unparsed 2xx body", cassette.Completion{StatusCode: ptr(200), ResponseBlob: blob}, anthropic.Message{}, anthropic.ErrNotMessage, "unrecognized response body"},
+		{"stream without message_stop", cassette.Completion{StatusCode: ptr(200), Streamed: true}, anthropic.Message{}, nil, "the stream ended before message_stop"},
+		{"body not recorded", cassette.Completion{StatusCode: ptr(200)}, anthropic.Message{}, nil, "the response body was not recorded"},
+	}
+	for _, tt := range tests {
+		if got := responseError(tt.done, tt.msg, tt.parseErr); got != tt.want {
+			t.Errorf("%s: responseError = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
 
 var update = flag.Bool("update", false, "rewrite the golden files in testdata")
 
