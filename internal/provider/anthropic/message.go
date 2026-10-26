@@ -33,17 +33,19 @@ type Request struct {
 // ParseRequest reads a Messages API request body.
 func ParseRequest(body []byte) (Request, error) {
 	var raw struct {
-		Model    json.RawMessage   `json:"model"`
-		Messages []json.RawMessage `json:"messages"`
+		Model    json.RawMessage `json:"model"`
+		Messages json.RawMessage `json:"messages"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return Request{}, fmt.Errorf("parsing messages request: %w", err)
 	}
 	req := Request{Model: stringValue(raw.Model)}
-	if len(raw.Messages) == 0 {
+	var messages []json.RawMessage
+	// Messages that are not an array (redacted whole) have no user text.
+	if json.Unmarshal(raw.Messages, &messages) != nil || len(messages) == 0 {
 		return req, nil
 	}
-	last := raw.Messages[len(raw.Messages)-1]
+	last := messages[len(messages)-1]
 	var msg struct {
 		Role    string          `json:"role"`
 		Content json.RawMessage `json:"content"`
@@ -56,7 +58,7 @@ func ParseRequest(body []byte) (Request, error) {
 	if !ok {
 		return req, nil
 	}
-	key, ok := conversationKey(raw.Messages)
+	key, ok := conversationKey(messages)
 	if !ok {
 		return req, nil
 	}
@@ -159,12 +161,12 @@ var ErrNotMessage = errors.New("not a messages API response")
 // ParseResponse reads a non-streamed Messages API response body.
 func ParseResponse(body []byte) (Message, error) {
 	var raw struct {
-		Type       string            `json:"type"`
-		Model      json.RawMessage   `json:"model"`
-		StopReason json.RawMessage   `json:"stop_reason"`
-		Content    []json.RawMessage `json:"content"`
-		Usage      json.RawMessage   `json:"usage"`
-		Error      json.RawMessage   `json:"error"`
+		Type       string          `json:"type"`
+		Model      json.RawMessage `json:"model"`
+		StopReason json.RawMessage `json:"stop_reason"`
+		Content    json.RawMessage `json:"content"`
+		Usage      json.RawMessage `json:"usage"`
+		Error      json.RawMessage `json:"error"`
 	}
 	if err := json.Unmarshal(body, &raw); err != nil {
 		return Message{}, fmt.Errorf("parsing messages response: %w", err)
@@ -180,8 +182,10 @@ func ParseResponse(body []byte) (Message, error) {
 		Model: stringValue(raw.Model), StopReason: stringValue(raw.StopReason),
 		Usage: mergeUsage(nil, raw.Usage), Complete: true,
 	}
+	var content []json.RawMessage
+	_ = json.Unmarshal(raw.Content, &content) // content that is not an array (redacted whole) has no blocks
 	var text strings.Builder
-	for _, c := range raw.Content {
+	for _, c := range content {
 		var b contentBlock
 		if json.Unmarshal(c, &b) != nil {
 			continue

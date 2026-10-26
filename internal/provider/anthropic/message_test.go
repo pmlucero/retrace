@@ -46,6 +46,7 @@ func TestParseRequest(t *testing.T) {
 		{name: "trailing assistant", body: `{"model":"m","messages":[{"role":"user","content":"q"},{"role":"assistant","content":"prefill"}]}`,
 			model: "m"},
 		{name: "no messages", body: `{"model":"m","messages":[]}`, model: "m"},
+		{name: "redacted messages", body: `{"model":"m","messages":"[REDACTED:0a1b2c3d]"}`, model: "m"},
 		{name: "redacted model", body: `{"model":{"x":1},"messages":[{"role":"user","content":"hi"}]}`, hasText: true, text: "hi"},
 		{name: "formatting does not change the key", body: `{"model":"m","messages":[{"content":"hi","role":"user"}]}`,
 			model: "m", hasText: true, text: "hi", sameKeyAs: `{"model":"m", "messages":[ {"role":"user", "content":"hi"} ]}`},
@@ -114,6 +115,12 @@ func TestParseResponse(t *testing.T) {
 			name: "redacted usage counts are absent",
 			body: `{"type":"message","model":"m","content":[],"usage":{"input_tokens":"[REDACTED:abcd1234]","output_tokens":7}}`,
 			want: Message{Model: "m", Complete: true, Usage: &Usage{OutputTokens: i64(7)}},
+		},
+		{
+			// --redact '$..content' replaces the whole array: the rest still counts.
+			name: "redacted content",
+			body: `{"type":"message","model":"m","content":"[REDACTED:0a1b2c3d]","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}`,
+			want: Message{Model: "m", StopReason: "end_turn", Complete: true, Usage: &Usage{InputTokens: i64(1), OutputTokens: i64(2)}},
 		},
 		{name: "other JSON", body: `{"type":"list"}`, wantErr: ErrNotMessage},
 	}
@@ -197,6 +204,17 @@ func TestStream(t *testing.T) {
 				"data: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
 			),
 			want: Message{ToolUses: []ToolUse{{ID: "t", Name: "n", Input: json.RawMessage(`{}`)}}},
+		},
+		{
+			name: "redacted block and index leave the rest",
+			events: sseEvents(
+				string(full[0]),
+				"data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":\"[REDACTED:0a1b2c3d]\"}\n\n",
+				"data: {\"type\":\"content_block_delta\",\"index\":\"[REDACTED:0a1b2c3d]\",\"delta\":{\"type\":\"text_delta\",\"text\":\"x\"}}\n\n",
+				"data: {\"type\":\"message_stop\"}\n\n",
+			),
+			want: Message{Model: "claude-sonnet-5-5", Complete: true,
+				Usage: &Usage{InputTokens: i64(20), OutputTokens: i64(1), CacheReadInputTokens: i64(0)}},
 		},
 		{
 			name:   "out of range index is ignored",

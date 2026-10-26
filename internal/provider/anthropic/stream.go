@@ -31,11 +31,13 @@ func (s *Stream) Feed(event []byte) {
 	if !ok {
 		return
 	}
+	// Every field is decoded on its own, so one with an unexpected type
+	// (redacted, spec §3.5) does not hide the others.
 	var ev struct {
-		Type         string          `json:"type"`
-		Index        *int            `json:"index"`
+		Type         json.RawMessage `json:"type"`
+		Index        json.RawMessage `json:"index"`
 		Message      json.RawMessage `json:"message"`
-		ContentBlock contentBlock    `json:"content_block"`
+		ContentBlock json.RawMessage `json:"content_block"`
 		Delta        json.RawMessage `json:"delta"`
 		Usage        json.RawMessage `json:"usage"`
 		Error        json.RawMessage `json:"error"`
@@ -43,7 +45,11 @@ func (s *Stream) Feed(event []byte) {
 	if json.Unmarshal(data, &ev) != nil {
 		return
 	}
-	switch ev.Type {
+	var index *int
+	if n := 0; json.Unmarshal(ev.Index, &n) == nil {
+		index = &n
+	}
+	switch stringValue(ev.Type) {
 	case "message_start":
 		var m struct {
 			Model json.RawMessage `json:"model"`
@@ -53,8 +59,9 @@ func (s *Stream) Feed(event []byte) {
 		s.msg.Model = stringValue(m.Model)
 		s.msg.Usage = mergeUsage(s.msg.Usage, m.Usage)
 	case "content_block_start":
-		if b := s.block(ev.Index); b != nil {
-			cb := ev.ContentBlock
+		if b := s.block(index); b != nil {
+			var cb contentBlock
+			_ = json.Unmarshal(ev.ContentBlock, &cb) // a block that is not an object has no fields
 			b.typ, b.id, b.name, b.input = cb.Type, stringValue(cb.ID), stringValue(cb.Name), cb.Input
 			b.text.WriteString(stringValue(cb.Text))
 		}
@@ -64,7 +71,7 @@ func (s *Stream) Feed(event []byte) {
 			Text        json.RawMessage `json:"text"`
 			PartialJSON json.RawMessage `json:"partial_json"`
 		}
-		b := s.block(ev.Index)
+		b := s.block(index)
 		if b == nil || json.Unmarshal(ev.Delta, &d) != nil {
 			return
 		}
@@ -75,7 +82,7 @@ func (s *Stream) Feed(event []byte) {
 			b.partial.WriteString(stringValue(d.PartialJSON))
 		}
 	case "content_block_stop":
-		if b := s.block(ev.Index); b != nil {
+		if b := s.block(index); b != nil {
 			b.stopped = true
 		}
 	case "message_delta":
