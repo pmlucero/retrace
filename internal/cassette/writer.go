@@ -284,6 +284,11 @@ func (w *Writer) Stats() WriterStats {
 // interactions with an error, and ends the session with end. It does not close
 // the cassette.
 //
+// The Writer sets end.DroppedEvents itself, to the number of events it
+// dropped until the session ended (spec §7.7, ADR 0010). An event given after
+// that is dropped and counted in Stats, but not in the session: its row is
+// already final.
+//
 // If ctx is done before the queue is drained, the remaining records are
 // dropped (and their interactions marked as lost), the session is still ended,
 // and the error wraps ctx.Err(). If the writing goroutine does not stop even
@@ -389,7 +394,8 @@ func (w *Writer) dropLocked(r record, reason string) {
 		return
 	case recEvent:
 		// Events are not marked on their interaction: it may already be
-		// complete, and `retrace reindex` can rebuild events (spec §7.6).
+		// complete. The session counts them instead, and their seq is never
+		// handed out again, so it stays a gap (spec §7.7).
 		w.droppedSeqs[r.event.Seq] = true
 		w.stats.DroppedEvents++
 		if w.stats.DroppedEvents == 1 {
@@ -630,6 +636,9 @@ func (w *Writer) finish(ctx context.Context, tx *Tx, end SessionEnd) (unmarked [
 			return nil, err
 		}
 	}
+	// w.mu is held and the Writer is closed, so no event can be dropped
+	// between this count and the end of the session.
+	end.DroppedEvents = w.stats.DroppedEvents
 	if w.stats.Dropped > 0 {
 		w.warnLocked("cassette recording is incomplete",
 			"dropped_records", w.stats.Dropped, "dropped_events", w.stats.DroppedEvents,
