@@ -44,12 +44,41 @@ type WriterOptions struct {
 	QueueBytes int64 // maximum queued payload bytes; a single larger record is still accepted into an empty queue
 	BatchLen   int   // maximum records per transaction
 	Logger     *slog.Logger
+	// Deriver, if set, derives the semantic events of the recording (spec
+	// §7.4) on the writing goroutine.
+	Deriver Deriver
 
 	// beforeBatch runs before each batch is written. Tests use it to stall the
 	// writer.
 	beforeBatch func(ctx context.Context)
 	closeGrace  time.Duration
 }
+
+// Deriver derives semantic events (spec §7.4) from the records a Writer
+// stores. It runs on the writing goroutine, so derivation never delays the
+// proxy (ADR 0009), and it sees the records in the order they were queued,
+// with the bytes as stored, after redaction.
+//
+// It sees each record the Writer stored, once. A record that was dropped is
+// not shown, and neither is the rest of its interaction, until Close marks
+// the interaction as incomplete: the Deriver then sees that completion (and
+// its request, if that was dropped too), as stored. So it always sees what
+// `retrace reindex` reads (spec §7.6).
+type Deriver interface {
+	// Begin sees an interaction when its request is recorded. request is the
+	// stored request body, or nil.
+	Begin(in Interaction, request []byte, emit EmitFunc)
+	// Chunk sees one SSE event of a streamed response.
+	Chunk(ch Chunk)
+	// Complete sees the end of interaction id. response is the stored
+	// response body, or nil (always nil when streamed).
+	Complete(id int64, done Completion, response []byte, emit EmitFunc)
+}
+
+// EmitFunc appends an event derived from the record being handled and
+// returns the seq assigned to it, ignoring e.Seq. The event is written in the
+// same transaction as that record.
+type EmitFunc func(e Event) int64
 
 // WriterStats counts what a Writer did with the records it was given.
 type WriterStats struct {
@@ -443,7 +472,7 @@ func (w *Writer) writeBatch(batch []record) {
 		w.mu.Unlock()
 	}()
 
-	live := w.filter(batch)
+	live := w.derive(w.filter(batch))
 	if len(live) == 0 {
 		return
 	}
@@ -478,6 +507,55 @@ func (w *Writer) writeBatch(batch []record) {
 		}
 		w.mu.Unlock()
 	}
+}
+
+// derive runs the Deriver over live and returns live with the events it
+// emits placed right after the record they come from. The derived events are
+// written with their record, and a failure to write one is handled like that
+// of any queued event.
+func (w *Writer) derive(live []record) []record {
+	d := w.opts.Deriver
+	if d == nil {
+		return live
+	}
+	out := make([]record, 0, len(live))
+	emit := func(e Event) int64 {
+		w.mu.Lock()
+		w.nextSeq++
+		e.Seq = w.nextSeq
+		w.mu.Unlock()
+		var id int64
+		if e.InteractionID != nil {
+			id = *e.InteractionID
+		}
+		out = append(out, record{kind: recEvent, id: id, event: e})
+		return e.Seq
+	}
+	for _, r := range live {
+		out = append(out, r)
+		switch r.kind {
+		case recBegin:
+			d.Begin(r.begin, blobByKey(r.blobs, r.begin.RequestBlob), emit)
+		case recChunk:
+			d.Chunk(r.chunk)
+		case recComplete:
+			d.Complete(r.id, r.done, blobByKey(r.blobs, r.done.ResponseBlob), emit)
+		}
+	}
+	return out
+}
+
+// blobByKey returns the blob of blobs stored under key, or nil.
+func blobByKey(blobs [][]byte, key *string) []byte {
+	if key == nil {
+		return nil
+	}
+	for _, b := range blobs {
+		if BlobKey(b) == *key {
+			return b
+		}
+	}
+	return nil
 }
 
 // filter drops the records of batch that depend on a dropped record. A record
@@ -571,6 +649,9 @@ func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostIntera
 			return err
 		}
 		startedAt = l.begin.StartedAt
+		if d := w.opts.Deriver; d != nil {
+			d.Begin(*l.begin, nil, w.finishEmit(ctx, tx)) // its request blob was not stored
+		}
 	case err != nil:
 		return err
 	case complete:
@@ -591,7 +672,33 @@ func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostIntera
 		done.DurationMillis = max(0, endedAt.Sub(startedAt).Milliseconds())
 	}
 	done.Error = &msg
-	return tx.CompleteInteraction(ctx, id, done)
+	if err := tx.CompleteInteraction(ctx, id, done); err != nil {
+		return err
+	}
+	// The deriver has seen what was stored of the interaction; it now sees the
+	// completion as stored, so its events match what reindex derives.
+	if d := w.opts.Deriver; d != nil {
+		d.Complete(id, done, nil, w.finishEmit(ctx, tx))
+	}
+	return nil
+}
+
+// finishEmit returns an EmitFunc for finish, which holds w.mu: it writes each
+// event in tx at once, or drops it like any event whose parent was dropped or
+// that cannot be written.
+func (w *Writer) finishEmit(ctx context.Context, tx *Tx) EmitFunc {
+	return func(e Event) int64 {
+		w.nextSeq++
+		e.Seq = w.nextSeq
+		if (e.ParentSeq != nil && w.droppedSeqs[*e.ParentSeq]) || tx.AppendEvent(ctx, e) != nil {
+			w.droppedSeqs[e.Seq] = true
+			w.stats.Dropped++
+			w.stats.DroppedEvents++
+			return e.Seq
+		}
+		w.stats.Written++
+		return e.Seq
+	}
 }
 
 func cloneAll(blobs [][]byte) [][]byte {

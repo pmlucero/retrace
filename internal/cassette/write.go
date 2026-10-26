@@ -42,7 +42,7 @@ func (t *Tx) InsertSession(ctx context.Context, s Session) error {
 }
 
 // EndSession records how the session ended (spec §3.1). The session row only
-// changes here and in SetMCPServers.
+// changes here, in SetMCPServers and in SetDerivation.
 func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
 	res, err := t.tx.ExecContext(ctx,
 		`UPDATE session SET status = ?, ended_at = ?, agent_exit_code = ?`,
@@ -60,6 +60,18 @@ func (t *Tx) SetMCPServers(ctx context.Context, servers json.RawMessage) error {
 	res, err := t.tx.ExecContext(ctx, `UPDATE session SET mcp_servers = ?`, jsonOr(servers, "[]"))
 	if err != nil {
 		return fmt.Errorf("updating session MCP servers: %w", err)
+	}
+	return expectOneRow(res, "session")
+}
+
+// SetDerivation records the versions of the deriver and the price table that
+// produced the session's events (spec §7.2). `retrace reindex` calls it after
+// rebuilding them (spec §7.6).
+func (t *Tx) SetDerivation(ctx context.Context, deriverVersion int, pricingVersion string) error {
+	res, err := t.tx.ExecContext(ctx, `UPDATE session SET deriver_version = ?, pricing_version = ?`,
+		deriverVersion, pricingVersion)
+	if err != nil {
+		return fmt.Errorf("updating session derivation versions: %w", err)
 	}
 	return expectOneRow(res, "session")
 }
@@ -184,6 +196,16 @@ func (t *Tx) AppendEvent(ctx context.Context, e Event) error {
 		e.Provenance, e.DeriverVersion)
 	if err != nil {
 		return fmt.Errorf("appending event %d: %w", e.Seq, err)
+	}
+	return nil
+}
+
+// DeleteEvents removes every event. Events are append-only (ADR 0009):
+// only `retrace reindex` removes them, to replace them in the same
+// transaction (spec §7.6).
+func (t *Tx) DeleteEvents(ctx context.Context) error {
+	if _, err := t.tx.ExecContext(ctx, `DELETE FROM events`); err != nil {
+		return fmt.Errorf("deleting events: %w", err)
 	}
 	return nil
 }
