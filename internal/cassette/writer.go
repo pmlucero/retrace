@@ -77,7 +77,9 @@ type Deriver interface {
 
 // EmitFunc appends an event derived from the record being handled and
 // returns the seq assigned to it, ignoring e.Seq. The event is written in the
-// same transaction as that record.
+// same transaction as that record. If it cannot be written, its seq stays a
+// gap, and a later event whose parent it is gets dropped too: both are counted
+// in the session (spec §7.7).
 type EmitFunc func(e Event) int64
 
 // WriterStats counts what a Writer did with the records it was given.
@@ -526,15 +528,23 @@ func (w *Writer) derive(live []record) []record {
 	}
 	out := make([]record, 0, len(live))
 	emit := func(e Event) int64 {
-		w.mu.Lock()
-		w.nextSeq++
-		e.Seq = w.nextSeq
-		w.mu.Unlock()
 		var id int64
 		if e.InteractionID != nil {
 			id = *e.InteractionID
 		}
-		out = append(out, record{kind: recEvent, id: id, event: e})
+		w.mu.Lock()
+		defer w.mu.Unlock()
+		w.nextSeq++
+		e.Seq = w.nextSeq
+		r := record{kind: recEvent, id: id, event: e}
+		// A Deriver may reference an event that was dropped after it was
+		// emitted, such as the user_message of a retried request. Dropping
+		// the child here keeps it from failing the whole batch.
+		if w.blockedLocked(r) {
+			w.dropLocked(r, "an earlier record it depends on was dropped")
+			return e.Seq
+		}
+		out = append(out, r)
 		return e.Seq
 	}
 	for _, r := range live {

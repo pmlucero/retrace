@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -193,5 +194,93 @@ func TestTxDeleteEventsAndSetDerivation(t *testing.T) {
 	}
 	if s, _ := c.Session(ctx); s.DeriverVersion != 7 || s.PricingVersion != "2099-01-01" {
 		t.Errorf("session versions = %d, %q", s.DeriverVersion, s.PricingVersion)
+	}
+}
+
+// retryDeriver emits a user_message once per distinct request body, as the
+// real Deriver does once per distinct user message (spec §7.4), and a
+// model_response with a tool_use child for each completion.
+type retryDeriver struct {
+	users    map[string]int64 // request body → seq of its user_message
+	requests map[int64]int64  // interaction id → seq of its user_message
+}
+
+func (d *retryDeriver) Begin(in Interaction, request []byte, emit EmitFunc) {
+	seq, ok := d.users[string(request)]
+	if !ok {
+		kind := "user_message"
+		if string(request) == "bad" {
+			kind = "invalid" // fails the CHECK constraint
+		}
+		id := in.ID
+		seq = emit(Event{InteractionID: &id, Kind: kind, Source: "user", Target: "model",
+			StartedAt: in.StartedAt, Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+		d.users[string(request)] = seq
+	}
+	d.requests[in.ID] = seq
+}
+
+func (d *retryDeriver) Chunk(Chunk) {}
+
+func (d *retryDeriver) Complete(id int64, _ Completion, _ []byte, emit EmitFunc) {
+	parent := d.requests[id]
+	resp := emit(Event{ParentSeq: &parent, InteractionID: &id, Kind: "model_response", Source: "model",
+		Target: "agent", StartedAt: at(1), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+	emit(Event{ParentSeq: &resp, InteractionID: &id, Kind: "tool_use", Source: "model", Target: "agent",
+		StartedAt: at(1), Tool: ptr("search"), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+}
+
+// AC-26: when a user_message fails to write, the later retries of the same
+// request still point at its seq, so their events are dropped as children of
+// a dropped event, also those derived while closing. The session counts every
+// one of them, and the interactions stay complete: reindex rebuilds the events
+// (spec §7.6, §7.7).
+func TestWriterCountsTheDroppedChildrenOfADroppedUserMessage(t *testing.T) {
+	ctx := context.Background()
+	d := &retryDeriver{users: map[string]int64{}, requests: map[int64]int64{}}
+	w, c, _ := newWriter(t, WriterOptions{Deriver: d})
+
+	req := func(sec int, body string) int64 {
+		return w.BeginInteraction(llmRequest(sec, []byte(body)), []byte(body))
+	}
+	complete := func(id int64) { w.CompleteInteraction(id, Completion{StatusCode: ptr(200), DurationMillis: 1}) }
+	first := req(1, "bad") // its user_message (seq 1) fails; seqs 2 and 3 are its children
+	complete(first)
+	// The retry is derived once the writer knows that seq 1 was dropped.
+	waitFor(t, func() bool { return w.Stats().DroppedEvents == 3 })
+	retry := req(2, "bad") // seqs 4 and 5, children of seq 1
+	complete(retry)
+	other := req(3, "good") // seqs 6, 7 and 8 are written
+	complete(other)
+	waitFor(t, func() bool { return w.Stats().Written >= 9 }) // 6 interaction records and 3 events
+	// A retry still in flight whose chunk fails to write: Close completes it,
+	// and derives seqs 9 and 10, at the end of the log.
+	lost := req(4, "bad")
+	w.AppendChunk(Chunk{InteractionID: lost, Index: 0, Data: []byte("x")})
+	w.AppendChunk(Chunk{InteractionID: lost, Index: 0, Data: []byte("x")}) // duplicate key
+	closeWriter(t, w)
+
+	events, err := c.Events(ctx)
+	if err != nil {
+		t.Fatalf("Events: %v", err)
+	}
+	var stored []int64
+	for _, e := range events {
+		stored = append(stored, e.Seq)
+	}
+	if want := []int64{6, 7, 8}; fmt.Sprint(stored) != fmt.Sprint(want) {
+		t.Errorf("stored seqs %v, want %v", stored, want)
+	}
+	if s, _ := c.Session(ctx); s.DroppedEvents != 7 {
+		t.Errorf("session dropped_events = %d, want 7 (seqs 1-5, 9 and 10)", s.DroppedEvents)
+	}
+	all := interactionByID(t, c)
+	for _, id := range []int64{first, retry, other} {
+		if in := all[id]; in.Error != nil || in.DurationMillis == nil {
+			t.Errorf("interaction %d = %+v, want it complete: a dropped event does not mark it", id, in)
+		}
+	}
+	if in := all[lost]; in.Error == nil || !strings.Contains(*in.Error, RecordingIncomplete) {
+		t.Errorf("interaction %d = %+v, want it marked as incomplete", lost, in)
 	}
 }
