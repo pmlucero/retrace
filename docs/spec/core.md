@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.9
+- Version: 0.10
 - Last updated: 2026-10-26
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -286,18 +286,35 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 | `mcp_message` | `agent → mcp:<name>` | Other MCP methods (`initialize`, `tools/list`, …) | `arguments.method` |
 | `divergence` | `retrace → agent` | Cassette miss | `result` = `{channel, upstream, received_fingerprint, diff: [{path, expected, received}]}` |
 
+**Deriving LLM events.** LLM events are derived from `POST /v1/messages` interactions on the LLM channel, whatever their query string. Other LLM paths produce no events.
+
+- Events are derived from what the cassette stores, after redaction (§3.5), so that `reindex` (§7.6) derives the same events and a redacted value never reaches an event. Each event has the `provenance` of its interaction.
+- `user_message`: its text is the message's string content, or its `text` blocks joined with `\n`. A message is identified by the request's `messages` up to and including it, so a repeated request emits no second `user_message`, while the same text sent again later in the conversation does. It starts at the interaction's `started_at` and has no duration.
+- `model_response`: there is one for every interaction, also when the response is an error or never arrived. Then `status` is `error`, and `error` holds the API error (`<type>: <message>`, from the body or from an SSE `error` event) or the interaction's `error`. An interaction whose recording is incomplete (§7.3) also gives `error`. It starts at the interaction's `started_at` and lasts its `duration_ms`. `requested_model` comes from the request, and `model` and tokens from the response: `input_tokens`, `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`. For SSE, usage fields in `message_delta` replace those of `message_start`. `parent_seq` is the `user_message` of the request's trailing user message, if there is one.
+- `tool_use`: `arguments` is the block's `input`. A streamed input that is not valid JSON is kept as a JSON string. It happens when the response ends, and has no duration.
+- Order: the events of a request are appended when the request is recorded, and those of a response when it is complete, so `seq` follows causality: an agent cannot send a request based on a response before that response's events exist. Derivation never delays forwarding.
+
 **Linking `tool_call` to `tool_use`.** Agents often rename MCP tools when exposing them to the model (e.g. `weather__get_forecast`), so linking is best-effort. A `tool_call` is linked to the most recent unlinked `tool_use` whose canonical arguments are equal and whose tool name equals or ends with the MCP tool name. If none qualifies, `parent_seq` stays null.
 
 ### 7.5 Cost estimation
 
 - `cost_usd` is computed from usage tokens (input, output, cache read and cache write) and a **price table embedded in the binary**, identified by `pricing_version`.
-- If the model is not in the table, `cost_usd` is null. It MUST NOT be guessed.
+- The table holds prices per million tokens, by model id, from Anthropic's published pricing. `pricing_version` is the date the table was last checked, e.g. `2026-10-26`.
+- Cache writes are priced by TTL when `usage.cache_creation` breaks them down, and at the 5-minute rate otherwise, which is the API default.
+- Prices that depend on the request are applied when `usage` says so and the table has them: prompt-length tiers, fast mode (`usage.speed`) and US-only inference (`usage.inference_geo`).
+- If the model is not in the table, `cost_usd` is null. It MUST NOT be guessed. The same holds when `usage` shows a price the table does not have, such as a service tier other than `standard` or a prompt beyond the table's tiers.
+- The cost covers tokens only. Charges per server tool use, such as web searches, are not included.
 - Cost is always labeled "estimated" in the CLI output.
 
 ### 7.6 Schema versioning
 
 - `PRAGMA user_version` holds the schema version. retrace refuses to write to a cassette with a newer schema version, and migrates older ones forward when opening them for read.
-- `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver. Interactions are never modified.
+- `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver (§9.8). Interactions are never modified.
+  - It replaces the events in one transaction, so a failure leaves them as they were. It is the only operation that removes events, as [ADR 0009](../adr/0009-append-only-event-log.md) foresees.
+  - Events that are not derived from interactions (`divergence`) are kept, and placed among the rebuilt events by `started_at`.
+  - Interactions are taken in the order the recording handled them: requests by `id`, responses by when they completed (`started_at` plus `duration_ms`), so the rebuilt `seq` order matches the original one up to the millisecond.
+  - It updates the session's `deriver_version` and `pricing_version`.
+  - It refuses a session whose status is `recording`, because it may still be in progress, and a cassette whose `deriver_version` is newer than its own.
   - The rebuilt log holds every event the deriver can derive from the stored interactions, so `reindex` sets `dropped_events` to `0` (§7.7). The exception is a session with status `diverged`: its `divergence` event comes from a cassette miss, not from an interaction, so a dropped one cannot be rebuilt. There `reindex` keeps the count and warns that it may include events it has now recovered.
   - If any interaction is marked as incomplete (its `error` contains `recording incomplete`), `reindex` warns with their count: events derived from partial data may still be missing.
 
@@ -446,6 +463,14 @@ retrace show <id> [--json] [--raw <interaction-id>]
 | `2` | Usage error, or unsupported option (reserved strategies, `--model` with `--tools live`) |
 | `3` | `run`: replay stopped on a divergence (`strict`) |
 | `4` | `record` / `run`: the agent exited with a non-zero code. Its code is stored in `agent_exit_code` |
+
+### 9.8 `retrace reindex`
+
+```text
+retrace reindex <id>
+```
+
+Rebuilds the events of session `<id>` (§7.6) and prints how many there are, with the deriver and pricing versions used. It exits `0` on success, `2` for an invalid id, and `1` when the session does not exist or cannot be reindexed.
 
 ## 10. Security and privacy
 
