@@ -226,6 +226,15 @@ var scenarios = []struct {
 				response: `{"type":"message","model":"claude-test","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":1}}`, durationMillis: 50},
 		},
 	},
+	{
+		// A request body that is not JSON, or was not stored, gives no
+		// user_message, but the response still gets its model_response.
+		name: "requests_without_json",
+		exchanges: []exchange{
+			{request: `not json`, status: 200, response: weatherAnswer, durationMillis: 20},
+			{startMillis: 100, status: 200, response: weatherAnswer, durationMillis: 20},
+		},
+	},
 }
 
 // AC-05 (LLM): events are derived with their §7.4 fields, including tokens

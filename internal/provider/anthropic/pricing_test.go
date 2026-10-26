@@ -70,7 +70,9 @@ func TestCost(t *testing.T) {
 		{name: "unknown speed", model: "claude-opus-4-7", usage: with(func(u *Usage) { u.Speed = "warp" })},
 		{name: "us inference", model: "claude-sonnet-5-5", usage: with(func(u *Usage) { u.InferenceGeo = "us" }), want: ptr(13.2)},
 		{name: "global inference", model: "claude-sonnet-5-5", usage: with(func(u *Usage) { u.InferenceGeo = "global" }), want: ptr(12)},
-		{name: "us inference not priced for the model", model: "claude-haiku-4-5", usage: with(func(u *Usage) { u.InferenceGeo = "us" })},
+		// Within the model's prompt tier, so it is the geography that has no price.
+		{name: "us inference not priced for the model", model: "claude-haiku-4-5",
+			usage: &Usage{InputTokens: i64(10), OutputTokens: i64(10), InferenceGeo: "us"}},
 		{name: "unknown geography", model: "claude-sonnet-5-5", usage: with(func(u *Usage) { u.InferenceGeo = "eu" })},
 		{name: "standard tier", model: "claude-sonnet-5-5", usage: with(func(u *Usage) { u.ServiceTier = "standard" }), want: ptr(12)},
 		{name: "priority tier", model: "claude-sonnet-5-5", usage: with(func(u *Usage) { u.ServiceTier = "priority" })},
