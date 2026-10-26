@@ -57,7 +57,7 @@ func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
 	if err != nil {
 		return fmt.Errorf("ending session: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
 }
 
 // SetMCPServers replaces the session's MCP server metadata. It is called when
@@ -68,7 +68,7 @@ func (t *Tx) SetMCPServers(ctx context.Context, servers json.RawMessage) error {
 	if err != nil {
 		return fmt.Errorf("updating session MCP servers: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
 }
 
 // SetDerivation records the versions of the deriver and the price table that
@@ -80,7 +80,7 @@ func (t *Tx) SetDerivation(ctx context.Context, deriverVersion int, pricingVersi
 	if err != nil {
 		return fmt.Errorf("updating session derivation versions: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
 }
 
 // SetDroppedEvents replaces the session's count of dropped events (spec
@@ -94,7 +94,7 @@ func (t *Tx) SetDroppedEvents(ctx context.Context, n int) error {
 	if err != nil {
 		return fmt.Errorf("updating session dropped events: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
 }
 
 // SessionEnd holds the fields set when a session ends.
@@ -235,13 +235,14 @@ func (t *Tx) DeleteEvents(ctx context.Context) error {
 	return nil
 }
 
-func expectOneRow(res sql.Result, what string) error {
+// expectSessionRow checks that an update changed the one session row.
+func expectSessionRow(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("updating %s: %w", what, err)
+		return fmt.Errorf("updating session: %w", err)
 	}
 	if n != 1 {
-		return fmt.Errorf("updating %s: %w", what, ErrNotFound)
+		return fmt.Errorf("updating session: %w", ErrNotFound)
 	}
 	return nil
 }
