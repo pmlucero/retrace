@@ -97,8 +97,8 @@ func TestWriterRunsTheDeriverOnStoredRecords(t *testing.T) {
 }
 
 // A dropped record is not shown to the deriver, and neither is the rest of
-// its interaction (see Deriver).
-func TestWriterDoesNotDeriveLostInteractions(t *testing.T) {
+// its interaction, until Close completes it as incomplete (see Deriver).
+func TestWriterDerivesLostInteractionsOnClose(t *testing.T) {
 	ctx := context.Background()
 	d := newFakeDeriver()
 	hook, stalled, release := stall()
@@ -110,20 +110,27 @@ func TestWriterDoesNotDeriveLostInteractions(t *testing.T) {
 	lost := w.BeginInteraction(llmRequest(2, []byte("b")), []byte("b"))
 	w.AppendChunk(Chunk{InteractionID: lost, Index: 0, Data: []byte("x")}) // queue full
 	w.AppendChunk(Chunk{InteractionID: lost, Index: 1, Data: []byte("y")}) // dropped
+	missing := w.BeginInteraction(llmRequest(3, []byte("c")), []byte("c")) // dropped
 	release()
 	waitFor(t, func() bool { return w.Stats().Written >= 4 })
 	w.CompleteInteraction(lost, Completion{StatusCode: ptr(200), DurationMillis: 1}) // blocked by the drop
 	w.CompleteInteraction(first, Completion{StatusCode: ptr(200), DurationMillis: 1})
 	closeWriter(t, w)
 
-	// The queued chunk x is dropped with the rest of interaction 2.
-	want := []string{"begin 1 a", "begin 2 b", "complete 1 "}
+	// The queued chunk x is dropped with the rest of interaction 2. On close,
+	// interactions 2 and 3 are completed as incomplete, and 3's request,
+	// whose body was not stored, is shown first.
+	want := []string{"begin 1 a", "begin 2 b", "complete 1 ", "complete 2 ", "begin 3 ", "complete 3 "}
 	if !slices.Equal(d.seen, want) {
 		t.Errorf("deriver saw %q, want %q", d.seen, want)
 	}
 	events, _ := c.Events(ctx)
-	if len(events) != 3 {
-		t.Errorf("got %d events, want 3: two requests and one completion", len(events))
+	perInteraction := map[int64]int{}
+	for _, e := range events {
+		perInteraction[*e.InteractionID]++
+	}
+	if len(events) != 6 || perInteraction[first] != 2 || perInteraction[lost] != 2 || perInteraction[missing] != 2 {
+		t.Errorf("events per interaction = %v, want 2 each", perInteraction)
 	}
 }
 

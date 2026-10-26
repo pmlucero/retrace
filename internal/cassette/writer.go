@@ -59,9 +59,11 @@ type WriterOptions struct {
 // proxy (ADR 0009), and it sees the records in the order they were queued,
 // with the bytes as stored, after redaction.
 //
-// It sees each record the Writer accepted, once. A record that was dropped is
-// not shown, and neither is the rest of its interaction: `retrace reindex`
-// derives those from what was stored (spec §7.6).
+// It sees each record the Writer stored, once. A record that was dropped is
+// not shown, and neither is the rest of its interaction, until Close marks
+// the interaction as incomplete: the Deriver then sees that completion (and
+// its request, if that was dropped too), as stored. So it always sees what
+// `retrace reindex` reads (spec §7.6).
 type Deriver interface {
 	// Begin sees an interaction when its request is recorded. request is the
 	// stored request body, or nil.
@@ -647,6 +649,9 @@ func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostIntera
 			return err
 		}
 		startedAt = l.begin.StartedAt
+		if d := w.opts.Deriver; d != nil {
+			d.Begin(*l.begin, nil, w.finishEmit(ctx, tx)) // its request blob was not stored
+		}
 	case err != nil:
 		return err
 	case complete:
@@ -667,7 +672,33 @@ func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostIntera
 		done.DurationMillis = max(0, endedAt.Sub(startedAt).Milliseconds())
 	}
 	done.Error = &msg
-	return tx.CompleteInteraction(ctx, id, done)
+	if err := tx.CompleteInteraction(ctx, id, done); err != nil {
+		return err
+	}
+	// The deriver has seen what was stored of the interaction; it now sees the
+	// completion as stored, so its events match what reindex derives.
+	if d := w.opts.Deriver; d != nil {
+		d.Complete(id, done, nil, w.finishEmit(ctx, tx))
+	}
+	return nil
+}
+
+// finishEmit returns an EmitFunc for finish, which holds w.mu: it writes each
+// event in tx at once, or drops it like any event whose parent was dropped or
+// that cannot be written.
+func (w *Writer) finishEmit(ctx context.Context, tx *Tx) EmitFunc {
+	return func(e Event) int64 {
+		w.nextSeq++
+		e.Seq = w.nextSeq
+		if (e.ParentSeq != nil && w.droppedSeqs[*e.ParentSeq]) || tx.AppendEvent(ctx, e) != nil {
+			w.droppedSeqs[e.Seq] = true
+			w.stats.Dropped++
+			w.stats.DroppedEvents++
+			return e.Seq
+		}
+		w.stats.Written++
+		return e.Seq
+	}
 }
 
 func cloneAll(blobs [][]byte) [][]byte {
