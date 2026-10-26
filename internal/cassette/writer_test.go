@@ -454,6 +454,8 @@ func TestWriterCloseTimeoutStillEndsTheSession(t *testing.T) {
 	w.SetMCPServers(json.RawMessage(`[]`))
 	<-stalled
 	id := w.BeginInteraction(llmRequest(1, []byte("a")), []byte("a"))
+	w.AppendEvent(Event{Kind: "mcp_message", Source: "agent", Target: "mcp:orders",
+		StartedAt: at(1), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -465,6 +467,10 @@ func TestWriterCloseTimeoutStillEndsTheSession(t *testing.T) {
 	in := interactionByID(t, c)[id]
 	if in.Error == nil || !strings.Contains(*in.Error, "recording ended before it was written") || in.DurationMillis == nil {
 		t.Errorf("interaction = %+v, want it inserted and completed with an error", in)
+	}
+	// AC-26: an event still queued when draining ran out of time is counted.
+	if s, _ := c.Session(context.Background()); s.DroppedEvents != 1 {
+		t.Errorf("session dropped_events = %d, want the queued event", s.DroppedEvents)
 	}
 	if err := c.Close(); err != nil {
 		t.Fatalf("closing cassette: %v", err)

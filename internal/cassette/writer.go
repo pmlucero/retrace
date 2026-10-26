@@ -712,10 +712,15 @@ func (w *Writer) finishEmit(ctx context.Context, tx *Tx) EmitFunc {
 	return func(e Event) int64 {
 		w.nextSeq++
 		e.Seq = w.nextSeq
-		if (e.ParentSeq != nil && w.droppedSeqs[*e.ParentSeq]) || tx.AppendEvent(ctx, e) != nil {
-			w.droppedSeqs[e.Seq] = true
-			w.stats.Dropped++
-			w.stats.DroppedEvents++
+		// Not blockedLocked: the interactions finish inserts are still lost,
+		// but their rows now exist, so only the parent can be missing.
+		r := record{kind: recEvent, event: e}
+		if e.ParentSeq != nil && w.droppedSeqs[*e.ParentSeq] {
+			w.dropLocked(r, "an earlier record it depends on was dropped")
+			return e.Seq
+		}
+		if err := tx.AppendEvent(ctx, e); err != nil {
+			w.dropLocked(r, "writing to the cassette failed: "+err.Error())
 			return e.Seq
 		}
 		w.stats.Written++
