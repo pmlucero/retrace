@@ -343,8 +343,8 @@ func TestOpenMigratesV1CassetteWithNoDroppedEvents(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer c.Close()
-	if c.SchemaVersion() != 2 {
-		t.Errorf("schema = %d, want 2", c.SchemaVersion())
+	if c.SchemaVersion() != len(migrations) {
+		t.Errorf("schema = %d, want %d", c.SchemaVersion(), len(migrations))
 	}
 	s, err := c.Session(ctx)
 	if err != nil {
@@ -365,8 +365,8 @@ func TestOpenMigratesV1CassetteWithNoDroppedEvents(t *testing.T) {
 func TestCreateWritesCurrentSchema(t *testing.T) {
 	ctx := context.Background()
 	c, _ := newCassette(t)
-	if c.SchemaVersion() != 2 {
-		t.Errorf("schema = %d, want 2", c.SchemaVersion())
+	if c.SchemaVersion() != len(migrations) {
+		t.Errorf("schema = %d, want %d", c.SchemaVersion(), len(migrations))
 	}
 	var (
 		notNull int
