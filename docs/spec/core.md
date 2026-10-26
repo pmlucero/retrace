@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.8
-- Last updated: 2026-10-23
+- Version: 0.9
+- Last updated: 2026-10-26
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -220,6 +220,7 @@ All timestamps are RFC 3339 UTC strings with microsecond precision. Durations ar
 | `deriver_version` | INTEGER | Version of the event derivation logic |
 | `pricing_version` | TEXT | Version of the embedded price table (§7.5) |
 | `labels` | JSON | Free-form key/value pairs (`--label k=v`) |
+| `dropped_events` | INTEGER | Events missing from the semantic log because the cassette writer could not write them (§7.7). Written when the session ends |
 
 The schema version is held in `PRAGMA user_version`.
 
@@ -241,7 +242,7 @@ The schema version is held in `PRAGMA user_version`.
 | `ttfb_ms`, `duration_ms` | INTEGER NULL | Time to first byte, and total time |
 | `provenance` | TEXT | `recorded` (record mode), `replayed` or `live` |
 | `source_interaction_id` | INTEGER NULL | For `replayed`: the interaction id in the parent cassette |
-| `error` | TEXT NULL | Transport-level error (connection reset, timeout), or why the recording of the interaction is incomplete (e.g. records dropped because the cassette writer could not keep up). Recording never delays the proxy to avoid this |
+| `error` | TEXT NULL | Transport-level error (connection reset, timeout), or why the recording of the interaction is incomplete (e.g. records dropped because the cassette writer could not keep up). The message then contains `recording incomplete`. Recording never delays the proxy to avoid this |
 
 **`chunks`**: `(interaction_id, idx, offset_ms, data BLOB)`. Each row holds one raw SSE event as received, including its framing.
 
@@ -253,7 +254,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 
 | Column | Type | Description |
 |---|---|---|
-| `seq` | INTEGER PK | Strictly increasing order within the session |
+| `seq` | INTEGER PK | Strictly increasing order within the session. Assigned without gaps; a missing `seq` marks a dropped event (§7.7) |
 | `parent_seq` | INTEGER NULL | Causal parent (see below) |
 | `interaction_id` | INTEGER NULL | Raw interaction this event was derived from |
 | `kind` | TEXT | See the kinds table |
@@ -297,6 +298,17 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 
 - `PRAGMA user_version` holds the schema version. retrace refuses to write to a cassette with a newer schema version, and migrates older ones forward when opening them for read.
 - `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver. Interactions are never modified.
+  - The rebuilt log holds every event the deriver can derive from the stored interactions, so `reindex` sets `dropped_events` to `0` (§7.7). The exception is a session with status `diverged`: its `divergence` event comes from a cassette miss, not from an interaction, so a dropped one cannot be rebuilt. There `reindex` keeps the count and warns that it may include events it has now recovered.
+  - If any interaction is marked as incomplete (its `error` contains `recording incomplete`), `reindex` warns with their count: events derived from partial data may still be missing.
+
+### 7.7 Gaps in the event log
+
+The cassette writer never delays forwarding ([ADR 0009](../adr/0009-append-only-event-log.md)). When it cannot keep up, or a write fails, it drops records instead of waiting. A dropped interaction record is marked on its interaction (§7.3). A dropped event cannot be: its interaction may already be complete. So the session records the gap itself ([ADR 0010](../adr/0010-record-event-log-gaps.md)):
+
+- `session.dropped_events` counts the events that were assigned a `seq` but not written, for any reason, before the session ended. It is written once, when the session ends, together with `status` and `ended_at`. Only `reindex` changes it afterwards (§7.6). While the status is `recording` it is `0` and says nothing: the session never ended, so its completeness is unknown.
+- `seq` values are assigned without gaps, and the seq of a dropped event is never reused. Every missing `seq` below the highest one written is a dropped event, so readers can tell where each gap is. Events dropped at the end of the log leave no missing `seq`; the counter still includes them. A session's log is written by one writer, from its start to its end: a cassette is never reopened to record more, so no later writer can hand out the seq of a dropped event again.
+- A session with `dropped_events > 0` has an incomplete trajectory. Readers MUST NOT present it as complete: `ls` (§9.5), `show` (§9.6) and `diff` (§8.4) mark or warn, and `reindex` (§7.6) rebuilds the missing events from the interactions.
+- Only the count of missing events is stored. Writer statistics such as queue depth stay in the logs, because monitoring retrace itself is not a goal ([vision](../vision.md), §4).
 
 ## 8. Diff
 
@@ -340,6 +352,8 @@ duration     38.2s                         11.9s
 The model names and values above are illustrative.
 
 `--format json` emits a stable JSON document with the same information, for CI and for the future UI.
+
+When either session has `dropped_events > 0` (§7.7), the text output starts with a warning that names the session and the count, and says that the divergence point may be caused by missing events. The JSON document carries `dropped_events` for each session. The exit code is unchanged.
 
 Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These follow `diff(1)`.
 
@@ -410,6 +424,8 @@ retrace ls [--json]
 
 Lists the cassettes in `--dir`, newest first, with these columns: `ID`, `CREATED`, `MODE`, `PARENT`, `STATUS`, `STEPS`, `TOKENS`, `COST (est.)`, `DURATION`.
 
+When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+gaps` (e.g. `completed+gaps`), because its steps and totals come from an incomplete log. `--json` carries `dropped_events` for each session.
+
 ### 9.6 `retrace show`
 
 ```text
@@ -417,6 +433,7 @@ retrace show <id> [--json] [--raw <interaction-id>]
 ```
 
 - The default output is the session summary (metadata and totals) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status.
+- When `dropped_events > 0` (§7.7), the summary warns that the event log is incomplete and gives the count, and the timeline shows a marker line where `seq` values are missing, with how many events are missing there. `--json` emits only the events that exist; consumers find gaps from `seq`.
 - `--json`: emits events as JSONL, one event per line, as a stable format.
 - `--raw`: dumps one interaction (headers, bodies, SSE chunks with offsets).
 
@@ -452,6 +469,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
 - **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
 - **AC-25** `record --redact '$..email'` stores no `email` value from request bodies, response bodies or SSE events (verified by scanning the raw file bytes), while the agent and the upstream receive the original bodies.
+- **AC-26** When the cassette writer drops events during `record` (forced with a stalled writer), the ended session has `dropped_events` equal to the number of dropped events, including events dropped at the end of the log, the missing `seq` values are exactly those of the other dropped events, and `reindex` restores the events of complete interactions and sets `dropped_events` to `0`.
 
 ### Exact replay
 
@@ -479,6 +497,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-20** `diff` of a session with a diverging swap-model replay reports the correct step, event, tool and argument diff, and exits `1`.
 - **AC-21** `diff --format json` output validates against a JSON schema committed in the repo.
 - **AC-22** `ls` and `show` (text and `--json`) display the fields listed in §9.5 and §9.6.
+- **AC-27** For a session with `dropped_events > 0`, `ls` shows `+gaps` after its status and `dropped_events` in `--json`, `show` warns with the count and marks each gap in its timeline, and `diff` warns in text output and reports `dropped_events` in `--format json`.
 
 ### Demo (manual)
 

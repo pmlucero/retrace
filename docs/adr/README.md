@@ -16,6 +16,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0007](0007-request-matching-fingerprints.md) | Request matching by canonical fingerprint | Accepted |
 | [0008](0008-secret-redaction.md) | Secret redaction in cassettes | Accepted |
 | [0009](0009-append-only-event-log.md) | Cassette as an append-only event log | Accepted |
+| [0010](0010-record-event-log-gaps.md) | Record gaps in the semantic event log | Accepted |
 
 ## Statuses
 
