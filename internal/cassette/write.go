@@ -46,7 +46,7 @@ func (t *Tx) InsertSession(ctx context.Context, s Session) error {
 }
 
 // EndSession records how the session ended (spec §3.1). The session row only
-// changes here, in SetMCPServers and in SetDerivation.
+// changes here, in SetMCPServers, in SetDerivation and in SetDroppedEvents.
 func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
 	if end.DroppedEvents < 0 {
 		return fmt.Errorf("ending session: negative dropped events %d", end.DroppedEvents)
@@ -79,6 +79,20 @@ func (t *Tx) SetDerivation(ctx context.Context, deriverVersion int, pricingVersi
 		deriverVersion, pricingVersion)
 	if err != nil {
 		return fmt.Errorf("updating session derivation versions: %w", err)
+	}
+	return expectOneRow(res, "session")
+}
+
+// SetDroppedEvents replaces the session's count of dropped events (spec
+// §7.7). Only `retrace reindex` calls it, after rebuilding the events: it is
+// the one change to that count after the session ends (ADR 0010).
+func (t *Tx) SetDroppedEvents(ctx context.Context, n int) error {
+	if n < 0 {
+		return fmt.Errorf("updating session dropped events: negative count %d", n)
+	}
+	res, err := t.tx.ExecContext(ctx, `UPDATE session SET dropped_events = ?`, n)
+	if err != nil {
+		return fmt.Errorf("updating session dropped events: %w", err)
 	}
 	return expectOneRow(res, "session")
 }
