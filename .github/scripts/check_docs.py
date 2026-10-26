@@ -7,14 +7,20 @@ Checks:
   * ADRs in docs/adr/ follow ADR 0000: file naming, sequential numbering,
     title line, Status and Date lines, required sections, and an index in
     docs/adr/README.md that matches each ADR's title and status.
+  * docs/architecture/overview.json parses as JSON, and every cited source
+    (path, line, end_line) exists at the revision pinned in
+    meta.repository.revision. This needs that commit in the local clone, so
+    CI checks out the full history.
 
 External (http/https) links are not checked: they are slow and flaky in CI.
 
 Usage: check_docs.py [repo-root]
 """
 
+import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -30,6 +36,8 @@ LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^(```|~~~)")
 SKIP_DIRS = {".git", "node_modules"}
+
+ARCH_JSON = Path("docs/architecture/overview.json")
 
 
 def strip_code(lines):
@@ -159,15 +167,104 @@ def check_adrs(root):
     return errors
 
 
+def git(root, *args):
+    """Run git in root; return (ok, stdout)."""
+    try:
+        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+    except OSError as e:
+        return False, str(e)
+    return r.returncode == 0, r.stdout
+
+
+def is_line(n):
+    return isinstance(n, int) and not isinstance(n, bool) and n >= 1
+
+
+def find_sources(node, where="$"):
+    """Yield (json_path, source) for every entry of every "sources" list."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "sources" and isinstance(v, list):
+                for i, src in enumerate(v):
+                    yield f"{where}.sources[{i}]", src
+            else:
+                yield from find_sources(v, f"{where}.{k}")
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from find_sources(v, f"{where}[{i}]")
+
+
+def check_architecture(root):
+    """Return (errors, number of citations checked)."""
+    path = root / ARCH_JSON
+    if not path.exists():
+        return [], 0
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        return [f"{ARCH_JSON}:{e.lineno}: invalid JSON: {e.msg}"], 0
+
+    rev = data.get("meta", {}).get("repository", {}).get("revision")
+    if not isinstance(rev, str) or not rev:
+        return [f"{ARCH_JSON}: missing meta.repository.revision to pin the cited sources"], 0
+    ok, _ = git(root, "cat-file", "-e", f"{rev}^{{commit}}")
+    if not ok:
+        return [
+            f"{ARCH_JSON}: pinned revision {rev} is not in this clone; "
+            "fetch the full history (git fetch --unshallow, or fetch-depth: 0 in CI) "
+            "or pin a commit that exists on main"
+        ], 0
+
+    errors, files = [], {}
+    sources = list(find_sources(data))
+    for where, src in sources:
+        prefix = f"{ARCH_JSON}: {where}"
+        if not isinstance(src, dict) or not isinstance(src.get("path"), str):
+            errors.append(f"{prefix}: source must be an object with a string 'path'")
+            continue
+        cited = src["path"]
+        if cited not in files:
+            ok, text = git(root, "cat-file", "blob", f"{rev}:{cited}")
+            files[cited] = len(text.splitlines()) if ok else None
+        nlines = files[cited]
+        if nlines is None:
+            errors.append(f"{prefix}: {cited} is not a file at {rev[:7]}")
+            continue
+        line, end = src.get("line"), src.get("end_line")
+        if end is not None and line is None:
+            errors.append(f"{prefix}: {cited} has 'end_line' without 'line'")
+            continue
+        if line is None:
+            continue
+        if not is_line(line) or (end is not None and (not is_line(end) or end < line)):
+            errors.append(
+                f"{prefix}: {cited} has line={line!r}, end_line={end!r}; "
+                "both must be integers >= 1 with end_line >= line"
+            )
+            continue
+        last = end if end is not None else line
+        if last > nlines:
+            span = f"{line}-{end}" if end is not None else f"{line}"
+            errors.append(
+                f"{prefix}: {cited}:{span} is out of range at {rev[:7]} "
+                f"(the file has {nlines} lines); fix the citation or re-pin the revision"
+            )
+    return errors, len(sources)
+
+
 def main():
     root = Path(sys.argv[1] if len(sys.argv) > 1 else ".").resolve()
     md_files = sorted(
         p for p in root.rglob("*.md") if not SKIP_DIRS.intersection(p.relative_to(root).parts)
     )
-    errors = check_links(root, md_files) + check_adrs(root)
+    arch_errors, citations = check_architecture(root)
+    errors = check_links(root, md_files) + check_adrs(root) + arch_errors
     for e in errors:
         print(f"::error::{e}" if "GITHUB_ACTIONS" in os.environ else e)
-    print(f"checked {len(md_files)} Markdown files: {len(errors)} error(s)")
+    print(
+        f"checked {len(md_files)} Markdown files and {citations} architecture citations: "
+        f"{len(errors)} error(s)"
+    )
     return 1 if errors else 0
 
 
