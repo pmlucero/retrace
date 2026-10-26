@@ -112,7 +112,7 @@ func TestRoundTripSurvivesCloseAndReopen(t *testing.T) {
 				return err
 			}
 		}
-		return tx.EndSession(ctx, SessionEnd{Status: "completed", EndedAt: at(3), AgentExitCode: ptr(0)})
+		return tx.EndSession(ctx, SessionEnd{Status: "completed", EndedAt: at(3), AgentExitCode: ptr(0), DroppedEvents: 2})
 	})
 	if err := c.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
@@ -136,6 +136,7 @@ func TestRoundTripSurvivesCloseAndReopen(t *testing.T) {
 		t.Fatalf("Session: %v", err)
 	}
 	wantSession.Status, wantSession.EndedAt, wantSession.AgentExitCode = "completed", ptr(at(3)), ptr(0)
+	wantSession.DroppedEvents = 2
 	if !reflect.DeepEqual(gotSession, wantSession) {
 		t.Errorf("session:\n got %+v\nwant %+v", gotSession, wantSession)
 	}
@@ -316,6 +317,85 @@ func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	var version int
 	if err := c.db.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil || version != 2 {
 		t.Errorf("user_version = %d (err %v), want 2", version, err)
+	}
+}
+
+// Schema v2 adds session.dropped_events (spec §7.7, ADR 0010). A v1 cassette
+// migrates to v2 when opened, with dropped_events 0, and can then be ended
+// with a count.
+func TestOpenMigratesV1CassetteWithNoDroppedEvents(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v1.cassette")
+	v1, err := open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v1.migrate(ctx, migrations[:1]); err != nil {
+		t.Fatalf("migrate to v1: %v", err)
+	}
+	write(t, v1, func(tx *Tx) error { return tx.InsertSession(ctx, testSession()) })
+	if err := v1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer c.Close()
+	if c.SchemaVersion() != 2 {
+		t.Errorf("schema = %d, want 2", c.SchemaVersion())
+	}
+	s, err := c.Session(ctx)
+	if err != nil {
+		t.Fatalf("Session: %v", err)
+	}
+	if !reflect.DeepEqual(s, testSession()) {
+		t.Errorf("migrated session:\n got %+v\nwant %+v", s, testSession())
+	}
+
+	write(t, c, func(tx *Tx) error {
+		return tx.EndSession(ctx, SessionEnd{Status: "completed", EndedAt: at(3), DroppedEvents: 4})
+	})
+	if s, err = c.Session(ctx); err != nil || s.DroppedEvents != 4 {
+		t.Errorf("dropped events after EndSession = %d (err %v), want 4", s.DroppedEvents, err)
+	}
+}
+
+func TestCreateWritesCurrentSchema(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	if c.SchemaVersion() != 2 {
+		t.Errorf("schema = %d, want 2", c.SchemaVersion())
+	}
+	var (
+		notNull int
+		dflt    sql.NullString
+	)
+	err := c.db.QueryRowContext(ctx,
+		`SELECT "notnull", dflt_value FROM pragma_table_info('session') WHERE name = 'dropped_events' AND type = 'INTEGER'`).
+		Scan(&notNull, &dflt)
+	if err != nil || notNull != 1 || dflt.String != "0" {
+		t.Errorf("session.dropped_events: notnull = %d, default = %v (err %v), want INTEGER NOT NULL DEFAULT 0", notNull, dflt, err)
+	}
+}
+
+func TestSessionDroppedEventsAreSetOnlyByEndSession(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+
+	s := testSession()
+	s.DroppedEvents = 1
+	if err := c.Write(ctx, func(tx *Tx) error { return tx.InsertSession(ctx, s) }); err == nil {
+		t.Error("InsertSession with dropped events: want error")
+	}
+	write(t, c, func(tx *Tx) error { return tx.InsertSession(ctx, testSession()) })
+	if got, err := c.Session(ctx); err != nil || got.DroppedEvents != 0 {
+		t.Errorf("dropped events while recording = %d (err %v), want 0", got.DroppedEvents, err)
+	}
+	end := SessionEnd{Status: "completed", EndedAt: at(3), DroppedEvents: -1}
+	if err := c.Write(ctx, func(tx *Tx) error { return tx.EndSession(ctx, end) }); err == nil {
+		t.Error("EndSession with negative dropped events: want error")
 	}
 }
 

@@ -33,6 +33,10 @@ type Session struct {
 	DeriverVersion  int
 	PricingVersion  string
 	Labels          map[string]string
+	// DroppedEvents is the number of events missing from the semantic log
+	// because the writer could not write them (spec §7.7). It is set when the
+	// session ends, and says nothing while Status is recording.
+	DroppedEvents int
 }
 
 // Interaction is one HTTP exchange through the proxy (spec §7.3). It is

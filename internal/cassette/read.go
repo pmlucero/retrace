@@ -21,11 +21,11 @@ func (c *Cassette) Session(ctx context.Context) (Session, error) {
 	err := c.db.QueryRowContext(ctx, `
 		SELECT id, mode, parent_session_id, status, created_at, ended_at, command, cwd,
 			agent_exit_code, model_override, on_miss, mcp_servers, redaction, retrace_version,
-			deriver_version, pricing_version, labels
+			deriver_version, pricing_version, labels, dropped_events
 		FROM session`).Scan(
 		&s.ID, &s.Mode, &parent, &s.Status, &createdAt, &endedAt, &command, &s.Cwd,
 		&agentExitCode, &modelOverride, &s.OnMiss, &mcpServers, &redaction, &s.RetraceVersion,
-		&s.DeriverVersion, &s.PricingVersion, &labels)
+		&s.DeriverVersion, &s.PricingVersion, &labels, &s.DroppedEvents)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Session{}, fmt.Errorf("reading session of %s: %w", c.path, ErrNotFound)
 	}
