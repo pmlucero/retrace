@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/derive"
+	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
 )
@@ -186,7 +188,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		}
 		return ExitError
 	}
-	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Logger: log})
+	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Logger: log, Deriver: derive.New()})
 	if err != nil {
 		return failed("cannot record into the cassette", err)
 	}
@@ -314,9 +316,7 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 			ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
 			Command: opts.command, Cwd: cwd, OnMiss: "strict",
 			MCPServers: serversJSON, Redaction: redaction, RetraceVersion: Version(),
-			Labels: opts.labels,
-			// DeriverVersion and PricingVersion stay zero until event
-			// derivation and the price table exist (M2c).
+			Labels: opts.labels, DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 		})
 	})
 	if err != nil {

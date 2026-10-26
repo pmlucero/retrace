@@ -14,6 +14,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,8 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/derive"
+	"github.com/pmlucero/retrace/internal/provider/anthropic"
 )
 
 // The agent in these tests is this test binary, run again as
@@ -49,7 +52,7 @@ func TestHelperAgent(t *testing.T) {
 	base := os.Getenv("ANTHROPIC_BASE_URL")
 	// The URL is the proxy that retrace injected: calling it is the point.
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, base+"/v1/messages", //nolint:gosec // G704
-		strings.NewReader(`{"model":"claude-test","max_tokens":16,"messages":[]}`))
+		strings.NewReader(`{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"Weather in Paris?"}]}`))
 	req.Header.Set("X-Api-Key", agentAPIKey)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: see above
@@ -105,7 +108,9 @@ func fakeAnthropic(t *testing.T) *httptest.Server {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn"}`)
+		_, _ = io.WriteString(w, `{"type":"message","role":"assistant","model":"claude-sonnet-5-5",`+
+			`"content":[{"type":"text","text":"Checking."},{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"Paris"}}],`+
+			`"stop_reason":"tool_use","usage":{"input_tokens":100,"output_tokens":10}}`)
 	}))
 	t.Cleanup(up.Close)
 	return up
@@ -139,7 +144,7 @@ func openCassette(t *testing.T, path string) *cassette.Cassette {
 	return c
 }
 
-// AC-01, AC-02, AC-06
+// AC-01, AC-02, AC-05, AC-06
 func TestRecordRunsTheAgentAndRecordsItsCalls(t *testing.T) {
 	t.Setenv(agentModeEnv, "call")
 	dir := t.TempDir()
@@ -185,6 +190,31 @@ func TestRecordRunsTheAgentAndRecordsItsCalls(t *testing.T) {
 	}
 	if len(all) != 1 || all[0].StatusCode == nil || *all[0].StatusCode != 200 || all[0].Path != "/v1/messages" {
 		t.Errorf("interactions = %+v, want one 200 POST /v1/messages", all)
+	}
+
+	// AC-05 (LLM): the call's events, with tokens, cost and participants.
+	if s.DeriverVersion != derive.Version || s.PricingVersion != anthropic.PricingVersion() {
+		t.Errorf("session deriver v%d, pricing %q; want v%d, %q", s.DeriverVersion, s.PricingVersion, derive.Version, anthropic.PricingVersion())
+	}
+	events, err := c.Events(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range events {
+		got = append(got, fmt.Sprintf("%s %s->%s", e.Kind, e.Source, e.Target))
+	}
+	if want := []string{"user_message user->model", "model_response model->agent", "tool_use model->agent"}; !slices.Equal(got, want) {
+		t.Fatalf("events = %q, want %q", got, want)
+	}
+	resp := events[1]
+	if resp.Model == nil || *resp.Model != "claude-sonnet-5-5" || resp.TokensIn == nil || *resp.TokensIn != 100 ||
+		resp.TokensOut == nil || *resp.TokensOut != 10 || resp.CostUSD == nil || *resp.CostUSD != 0.0003 {
+		t.Errorf("model_response = %+v, want model, 100/10 tokens and $0.0003", resp)
+	}
+	if tu := events[2]; tu.Tool == nil || *tu.Tool != "get_weather" || string(tu.Arguments) != `{"city":"Paris"}` ||
+		tu.ParentSeq == nil || *tu.ParentSeq != resp.Seq {
+		t.Errorf("tool_use = %+v, want get_weather with its arguments, under the model_response", tu)
 	}
 
 	if !strings.Contains(string(s.Redaction), `"body":["$..max_tokens"]`) {
