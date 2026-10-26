@@ -61,5 +61,15 @@ func runReindex(ctx context.Context, env *Env, args []string) int {
 	}
 	fmt.Fprintf(env.Stdout, "reindexed %s: %d events (deriver v%d, pricing %s)\n",
 		id, res.Events, derive.Version, anthropic.PricingVersion())
+	// The events were rebuilt either way, so these are warnings and the exit
+	// code stays 0 (spec §7.6, ADR 0010).
+	if res.DroppedEvents > 0 {
+		log.Warn("the session diverged, so its count of dropped events was kept: a dropped divergence event cannot be rebuilt, and the count may include events this reindex recovered",
+			"session", id, "dropped_events", res.DroppedEvents)
+	}
+	if res.IncompleteInteractions > 0 {
+		log.Warn("some interactions are marked as recording incomplete: events derived from their partial data may still be missing",
+			"session", id, "interactions", res.IncompleteInteractions)
+	}
 	return ExitOK
 }

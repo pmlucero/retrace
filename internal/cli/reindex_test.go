@@ -65,6 +65,81 @@ func TestReindexRebuildsTheEventsOfARecording(t *testing.T) {
 	}
 }
 
+// AC-26, spec §7.6: reindex warns on stderr when the session keeps its
+// dropped events or has interactions marked incomplete, and still exits 0.
+func TestReindexWarnsAboutGaps(t *testing.T) {
+	tests := []struct {
+		name       string
+		status     string
+		dropped    int
+		err        string // the interaction's error
+		wantStderr []string
+		wantNot    []string
+	}{
+		{name: "gaps are recovered", status: "completed", dropped: 2,
+			wantNot: []string{"dropped_events", "recording incomplete"}},
+		{name: "diverged session keeps its count", status: "diverged", dropped: 2,
+			wantStderr: []string{"count of dropped events was kept", "dropped_events=2"},
+			wantNot:    []string{"recording incomplete"}},
+		{name: "incomplete interaction", status: "interrupted",
+			err:        cassette.RecordingIncomplete + ": 1 record(s) not written: queue full",
+			wantStderr: []string{"marked as recording incomplete", "interactions=1"},
+			wantNot:    []string{"dropped_events"}},
+		{name: "other interaction errors", status: "completed", err: "upstream connection reset",
+			wantNot: []string{"dropped_events", "recording incomplete"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ctx := context.Background()
+			c, err := cassette.Create(ctx, cassette.Path(dir, "s"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now()
+			err = c.Write(ctx, func(tx *cassette.Tx) error {
+				if err := tx.InsertSession(ctx, cassette.Session{ID: "s", Mode: "record", Status: "recording",
+					CreatedAt: start, Command: []string{"a"}, OnMiss: "strict"}); err != nil {
+					return err
+				}
+				if err := tx.BeginInteraction(ctx, cassette.Interaction{ID: 1, Channel: "llm", Upstream: "anthropic",
+					HTTPMethod: "POST", Path: "/v1/messages", StartedAt: start, Provenance: "recorded"}); err != nil {
+					return err
+				}
+				done := cassette.Completion{DurationMillis: 10}
+				if tt.err != "" {
+					done.Error = &tt.err
+				}
+				if err := tx.CompleteInteraction(ctx, 1, done); err != nil {
+					return err
+				}
+				return tx.EndSession(ctx, cassette.SessionEnd{Status: tt.status, EndedAt: start, DroppedEvents: tt.dropped})
+			})
+			if cerr := c.Close(); err != nil || cerr != nil {
+				t.Fatal(err, cerr)
+			}
+
+			r := runReindexCmd(dir, "s")
+			if r.code != ExitOK {
+				t.Fatalf("reindex exit code %d, stderr:\n%s", r.code, r.stderr)
+			}
+			if !strings.HasPrefix(r.stdout.String(), "reindexed s: ") {
+				t.Errorf("stdout = %q", r.stdout)
+			}
+			for _, s := range tt.wantStderr {
+				if !strings.Contains(r.stderr.String(), s) {
+					t.Errorf("stderr lacks %q:\n%s", s, r.stderr)
+				}
+			}
+			for _, s := range tt.wantNot {
+				if strings.Contains(r.stderr.String(), s) {
+					t.Errorf("stderr has %q:\n%s", s, r.stderr)
+				}
+			}
+		})
+	}
+}
+
 func TestReindexErrors(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
