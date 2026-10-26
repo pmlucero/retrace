@@ -7,10 +7,12 @@ Checks:
   * ADRs in docs/adr/ follow ADR 0000: file naming, sequential numbering,
     title line, Status and Date lines, required sections, and an index in
     docs/adr/README.md that matches each ADR's title and status.
-  * docs/architecture/overview.json parses as JSON, and every cited source
-    (path, line, end_line) exists at the revision pinned in
-    meta.repository.revision. This needs that commit in the local clone, so
-    CI checks out the full history.
+  * docs/architecture/overview.json parses as JSON, meta.repository.revision
+    is a full commit SHA on main, and every cited source (path, line,
+    end_line) exists at that revision. Citations are permalinks, so this
+    keeps them valid; it does not detect that the code at HEAD has moved
+    away from them. It needs the pinned commit and main in the local clone,
+    so CI checks out the full history.
 
 External (http/https) links are not checked: they are slow and flaky in CI.
 
@@ -38,6 +40,8 @@ FENCE_RE = re.compile(r"^(```|~~~)")
 SKIP_DIRS = {".git", "node_modules"}
 
 ARCH_JSON = Path("docs/architecture/overview.json")
+SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+MAIN_REFS = ["refs/remotes/origin/main", "refs/heads/main"]
 
 
 def strip_code(lines):
@@ -170,13 +174,19 @@ def check_adrs(root):
 def git(root, *args):
     """Run git in root; return (ok, stdout)."""
     try:
-        r = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True)
+        r = subprocess.run(
+            ["git", "-C", str(root), *args],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
     except OSError as e:
         return False, str(e)
     return r.returncode == 0, r.stdout
 
 
 def is_line(n):
+    """A 1-based line number. bool is excluded because True is an int."""
     return isinstance(n, int) and not isinstance(n, bool) and n >= 1
 
 
@@ -204,15 +214,25 @@ def check_architecture(root):
     except json.JSONDecodeError as e:
         return [f"{ARCH_JSON}:{e.lineno}: invalid JSON: {e.msg}"], 0
 
-    rev = data.get("meta", {}).get("repository", {}).get("revision")
-    if not isinstance(rev, str) or not rev:
-        return [f"{ARCH_JSON}: missing meta.repository.revision to pin the cited sources"], 0
+    rev = data
+    for key in ("meta", "repository", "revision"):
+        rev = rev.get(key) if isinstance(rev, dict) else None
+    if not isinstance(rev, str) or not SHA_RE.match(rev):
+        return [f"{ARCH_JSON}: meta.repository.revision must be a full 40-character commit SHA"], 0
     ok, _ = git(root, "cat-file", "-e", f"{rev}^{{commit}}")
     if not ok:
         return [
             f"{ARCH_JSON}: pinned revision {rev} is not in this clone; "
             "fetch the full history (git fetch --unshallow, or fetch-depth: 0 in CI) "
             "or pin a commit that exists on main"
+        ], 0
+    main = next((ref for ref in MAIN_REFS if git(root, "rev-parse", "-q", "--verify", ref)[0]), None)
+    if main is None:
+        return [f"{ARCH_JSON}: cannot find {' or '.join(MAIN_REFS)} to check the pinned revision"], 0
+    if not git(root, "merge-base", "--is-ancestor", rev, main)[0]:
+        return [
+            f"{ARCH_JSON}: pinned revision {rev[:7]} is not on {main}; "
+            "pin a commit that is already on main, so the permalinks survive the merge"
         ], 0
 
     errors, files = [], {}
