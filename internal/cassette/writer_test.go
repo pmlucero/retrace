@@ -472,6 +472,16 @@ func TestWriterCloseTimeoutStillEndsTheSession(t *testing.T) {
 	assertValidCassette(t, path, "interrupted")
 }
 
+// The Writer counts dropped events itself, so a count from the caller is a
+// mistake, refused before the Writer closes.
+func TestWriterCloseRefusesACallerDroppedCount(t *testing.T) {
+	w, _, _ := newWriter(t, WriterOptions{})
+	if err := w.Close(context.Background(), SessionEnd{Status: "completed", EndedAt: at(30), DroppedEvents: 2}); err == nil {
+		t.Error("Close accepted a dropped events count, want an error")
+	}
+	closeWriter(t, w)
+}
+
 // A write stuck in the kernel ignores cancellation. Close still returns, and
 // the cassette is left as it is: valid, and still recording.
 func TestWriterCloseGivesUpOnAStuckWriter(t *testing.T) {

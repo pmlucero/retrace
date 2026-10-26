@@ -287,9 +287,9 @@ func (w *Writer) Stats() WriterStats {
 // the cassette.
 //
 // The Writer sets end.DroppedEvents itself, to the number of events it
-// dropped until the session ended (spec §7.7, ADR 0010). An event given after
-// that is dropped and counted in Stats, but not in the session: its row is
-// already final.
+// dropped until the session ended (spec §7.7, ADR 0010), and Close refuses
+// a nonzero value. An event given after that is dropped and counted in
+// Stats, but not in the session: its row is already final.
 //
 // If ctx is done before the queue is drained, the remaining records are
 // dropped (and their interactions marked as lost), the session is still ended,
@@ -297,6 +297,9 @@ func (w *Writer) Stats() WriterStats {
 // then, Close gives up without ending the session and returns ErrWriterStuck.
 // In every case the cassette is left valid.
 func (w *Writer) Close(ctx context.Context, end SessionEnd) error {
+	if end.DroppedEvents != 0 {
+		return errors.New("closing cassette writer: dropped events are counted by the writer")
+	}
 	w.mu.Lock()
 	if w.closed {
 		w.mu.Unlock()
