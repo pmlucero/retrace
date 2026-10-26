@@ -51,7 +51,7 @@ type command struct {
 }
 
 // commands are added by the milestones that implement them (docs/plan/mvp.md).
-var commands = []command{recordCommand}
+var commands = []command{recordCommand, reindexCommand}
 
 // Run parses global flags, dispatches to a subcommand and returns the exit code.
 // getenv is injected so tests can control environment variables.
