@@ -195,3 +195,36 @@ func TestTxDeleteEventsAndSetDerivation(t *testing.T) {
 		t.Errorf("session versions = %d, %q", s.DeriverVersion, s.PricingVersion)
 	}
 }
+
+// ADR 0010: reindex changes dropped_events after the session has ended.
+func TestTxSetDroppedEvents(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	write(t, c, func(tx *Tx) error {
+		if err := tx.InsertSession(ctx, testSession()); err != nil {
+			return err
+		}
+		return tx.EndSession(ctx, SessionEnd{Status: "completed", EndedAt: at(3), DroppedEvents: 5})
+	})
+	tests := []struct {
+		name    string
+		n       int
+		want    int // the stored count afterwards
+		wantErr bool
+	}{
+		{"reset", 0, 0, false},
+		{"set", 2, 2, false},
+		{"negative", -1, 2, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := c.Write(ctx, func(tx *Tx) error { return tx.SetDroppedEvents(ctx, tt.n) })
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("SetDroppedEvents(%d) error = %v, want error %v", tt.n, err, tt.wantErr)
+			}
+			if s, err := c.Session(ctx); err != nil || s.DroppedEvents != tt.want {
+				t.Errorf("dropped events = %d (err %v), want %d", s.DroppedEvents, err, tt.want)
+			}
+		})
+	}
+}

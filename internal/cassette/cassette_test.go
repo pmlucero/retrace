@@ -380,7 +380,7 @@ func TestCreateWritesCurrentSchema(t *testing.T) {
 	}
 }
 
-func TestSessionDroppedEventsAreSetOnlyByEndSession(t *testing.T) {
+func TestSessionDroppedEventsAreSetWhenTheSessionEnds(t *testing.T) {
 	ctx := context.Background()
 	c, _ := newCassette(t)
 
