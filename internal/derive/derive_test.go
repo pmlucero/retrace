@@ -97,6 +97,17 @@ func or(s, fallback string) string {
 // derives events, and returns the closed-and-reopened cassette.
 func record(t *testing.T, exchanges []exchange) *cassette.Cassette {
 	t.Helper()
+	c, st := recordWith(t, exchanges, nil)
+	if st.Dropped != 0 {
+		t.Fatalf("writer dropped records: %+v", st)
+	}
+	return c
+}
+
+// recordWith is record, with prepare run on the cassette's path before the
+// writer starts, and the writer's stats returned.
+func recordWith(t *testing.T, exchanges []exchange, prepare func(path string)) (*cassette.Cassette, cassette.WriterStats) {
+	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "s.cassette")
 	c, err := cassette.Create(ctx, path)
@@ -109,6 +120,9 @@ func record(t *testing.T, exchanges []exchange) *cassette.Cassette {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if prepare != nil {
+		prepare(path)
 	}
 	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Deriver: New()})
 	if err != nil {
@@ -129,9 +143,7 @@ func record(t *testing.T, exchanges []exchange) *cassette.Cassette {
 	if err := w.Close(ctx, cassette.SessionEnd{Status: "completed", EndedAt: t0.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
-	if st := w.Stats(); st.Dropped != 0 {
-		t.Fatalf("writer dropped records: %+v", st)
-	}
+	st := w.Stats()
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +152,7 @@ func record(t *testing.T, exchanges []exchange) *cassette.Cassette {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = c.Close() })
-	return c
+	return c, st
 }
 
 // sse builds the data line of one SSE event.
