@@ -329,6 +329,9 @@ func (b *recordingBody) Read(p []byte) (int, error) {
 		// sends after reading the response is then always queued after this
 		// completion, and its events after this response's (spec §7.4).
 		// The transport often returns the last bytes together with EOF.
+		// The cost is deliberate: for a JSON body, finish redacts and hashes
+		// it before those bytes are forwarded, which is about a millisecond
+		// per megabyte with redaction rules, and far less without (spec §3.5).
 		b.ex.finish()
 	case err != nil:
 		b.ex.readErr = err
