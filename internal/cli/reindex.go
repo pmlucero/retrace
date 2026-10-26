@@ -51,7 +51,7 @@ func runReindex(ctx context.Context, env *Env, args []string) int {
 		log.Error("cannot open the cassette", "error", err)
 		return ExitError
 	}
-	n, err := derive.Reindex(ctx, c)
+	res, err := derive.Reindex(ctx, c)
 	if cerr := c.Close(); err == nil && cerr != nil {
 		err = cerr
 	}
@@ -60,6 +60,6 @@ func runReindex(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 	fmt.Fprintf(env.Stdout, "reindexed %s: %d events (deriver v%d, pricing %s)\n",
-		id, n, derive.Version, anthropic.PricingVersion())
+		id, res.Events, derive.Version, anthropic.PricingVersion())
 	return ExitOK
 }
