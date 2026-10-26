@@ -660,7 +660,7 @@ func (w *Writer) finishLost(ctx context.Context, tx *Tx, id int64, l *lostIntera
 		return nil
 	}
 
-	msg := fmt.Sprintf("recording incomplete: %d record(s) not written: %s", l.dropped, l.reason)
+	msg := fmt.Sprintf("%s: %d record(s) not written: %s", RecordingIncomplete, l.dropped, l.reason)
 	done := Completion{}
 	if l.done != nil {
 		done = *l.done

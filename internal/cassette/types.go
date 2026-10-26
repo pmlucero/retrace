@@ -39,6 +39,12 @@ type Session struct {
 	DroppedEvents int
 }
 
+// RecordingIncomplete is the marker that Interaction.Error contains when
+// records of the interaction were dropped instead of written (spec §7.3).
+// Readers such as reindex find incomplete interactions by it (spec §7.6), so
+// it is defined once, here.
+const RecordingIncomplete = "recording incomplete"
+
 // Interaction is one HTTP exchange through the proxy (spec §7.3). It is
 // inserted when the request arrives and completed once when the response ends.
 type Interaction struct {
