@@ -8,6 +8,8 @@ The overview in the [README](../../README.md#how-it-works) is generated with [Ar
 
 Nothing checks automatically that the images still match the JSON. Whoever changes `overview.json` regenerates both images in the same PR.
 
+CI (`.github/scripts/check_docs.py`) checks that `overview.json` parses, that `meta.repository.revision` is a full commit SHA on `main`, and that every cited path and line range exists at that revision. It keeps the permalinks valid. It does not notice that the code at `HEAD` has moved away from a citation, so re-check the cited lines when you re-pin.
+
 ## Regenerating
 
 Update the diagram when a milestone changes the architecture or its status tags. Use Archify 3.2.0; a newer version can change the JSON schema or the rendering, so upgrading it is a change of its own.
