@@ -17,7 +17,11 @@ type Tx struct {
 }
 
 // InsertSession writes the session row. A cassette has exactly one.
+// DroppedEvents must be 0: it is set by EndSession (spec §7.7).
 func (t *Tx) InsertSession(ctx context.Context, s Session) error {
+	if s.DroppedEvents != 0 {
+		return fmt.Errorf("inserting session %s: dropped events are set by EndSession", s.ID)
+	}
 	command, err := json.Marshal(s.Command)
 	if err != nil {
 		return fmt.Errorf("encoding session command: %w", err)
@@ -44,9 +48,12 @@ func (t *Tx) InsertSession(ctx context.Context, s Session) error {
 // EndSession records how the session ended (spec §3.1). The session row only
 // changes here, in SetMCPServers and in SetDerivation.
 func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
+	if end.DroppedEvents < 0 {
+		return fmt.Errorf("ending session: negative dropped events %d", end.DroppedEvents)
+	}
 	res, err := t.tx.ExecContext(ctx,
-		`UPDATE session SET status = ?, ended_at = ?, agent_exit_code = ?`,
-		end.Status, FormatTime(end.EndedAt), end.AgentExitCode)
+		`UPDATE session SET status = ?, ended_at = ?, agent_exit_code = ?, dropped_events = ?`,
+		end.Status, FormatTime(end.EndedAt), end.AgentExitCode, end.DroppedEvents)
 	if err != nil {
 		return fmt.Errorf("ending session: %w", err)
 	}
@@ -81,6 +88,10 @@ type SessionEnd struct {
 	Status        string
 	EndedAt       time.Time
 	AgentExitCode *int
+	// DroppedEvents is the number of events that were assigned a seq but not
+	// written (spec §7.7, ADR 0010). It is written in the same update as
+	// Status and EndedAt.
+	DroppedEvents int
 }
 
 // PutBlob stores data once, keyed by its SHA-256, and returns the key. Storing
