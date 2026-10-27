@@ -1,7 +1,8 @@
 // Package jsonvalue decodes and encodes JSON while keeping what
 // encoding/json's generic decoding loses: member order and number text.
 // Redaction (spec §3.5) needs both to write a body back as it was, apart from
-// the masked values.
+// the masked values; request canonicalization (ADR 0007) needs number text.
+// Sharing one decoder means both parse a body the same way.
 package jsonvalue
 
 import (
