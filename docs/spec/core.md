@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.11
-- Last updated: 2026-10-26
+- Version: 0.12
+- Last updated: 2026-10-27
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -156,8 +156,10 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
 
    Body redaction rules (§3.5) are applied first.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
+   An interaction whose recording is incomplete (its `error` contains `recording incomplete`, §7.2) is in no queue, because the cassette does not hold the response the agent received and replay never fabricates one silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). This refines point 2 of ADR 0007, which predates incomplete recordings. A request that would match it is a cassette miss, and it is not reported as unconsumed (§4.4).
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
+   When the request matches an interaction whose recording is incomplete, no diff is computed. The divergence event sets `incomplete_interaction` to that interaction's id, and the error message the agent receives says the matching recording is incomplete, so the user knows to record the session again rather than debug the agent.
 
 ## 6. Divergence handling
 
@@ -284,7 +286,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 | `tool_call` | `agent → mcp:<name>` | MCP `tools/call` request | `tool`, `arguments`; `parent_seq` = matching `tool_use` (see below) |
 | `tool_result` | `mcp:<name> → agent` | MCP `tools/call` response | `result`, `status`, `error`; `parent_seq` = its `tool_call` |
 | `mcp_message` | `agent → mcp:<name>` | Other MCP methods (`initialize`, `tools/list`, …) | `arguments.method` |
-| `divergence` | `retrace → agent` | Cassette miss | `result` = `{channel, upstream, received_fingerprint, diff: [{path, expected, received}]}` |
+| `divergence` | `retrace → agent` | Cassette miss | `result` = `{channel, upstream, received_fingerprint, diff: [{path, expected, received}], incomplete_interaction?}` (§5 step 4) |
 
 **Deriving LLM events.** LLM events are derived from `POST /v1/messages` interactions on the LLM channel, whatever their query string. Other LLM paths produce no events.
 
@@ -504,6 +506,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-11** JSON-RPC ids in replayed MCP responses match the incoming request ids, and `Mcp-Session-Id` is freshly issued.
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
+- **AC-28** In exact mode, an LLM request that matches no queued interaction, including one that matches only an interaction whose recording is incomplete, gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
 
 ### Swap-model and strict
 
