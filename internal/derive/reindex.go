@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
@@ -96,7 +95,7 @@ func Reindex(ctx context.Context, c *cassette.Cassette) (ReindexResult, error) {
 func incomplete(interactions []cassette.Interaction) int {
 	n := 0
 	for _, in := range interactions {
-		if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+		if in.Incomplete() {
 			n++
 		}
 	}

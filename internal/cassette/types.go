@@ -2,6 +2,7 @@ package cassette
 
 import (
 	"encoding/json"
+	"strings"
 	"time"
 )
 
@@ -67,6 +68,12 @@ type Interaction struct {
 	Provenance          string // recorded, replayed or live
 	SourceInteractionID *int64
 	Error               *string
+}
+
+// Incomplete reports whether the recording of the interaction is incomplete:
+// its error contains RecordingIncomplete (spec §7.3).
+func (in Interaction) Incomplete() bool {
+	return in.Error != nil && strings.Contains(*in.Error, RecordingIncomplete)
 }
 
 // Completion holds the fields set when an interaction's response ends.
