@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -485,12 +486,13 @@ func TestProxyDoesNotStoreBodiesItCannotRedact(t *testing.T) {
 func TestProxyStopsRecordingAStreamItCannotRedact(t *testing.T) {
 	deep := `{"email":"x@example.com","n":` + strings.Repeat("[", 2000) + strings.Repeat("]", 2000) + `}`
 	email, _ := redact.ParsePath("$..email")
-	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"ok\":true}\n\n")
-		_, _ = io.WriteString(w, "data: "+deep+"\n\n")
-		_, _ = io.WriteString(w, "data: {\"ok\":true}\n\n")
-	}), 0, redact.NewRules(nil, []redact.Path{email}))
+	stream := "data: {\"ok\":true}\n\n" + "data: " + deep + "\n\n" + "data: {\"ok\":true}\n\n"
+	// The whole stream arrives in one read, so the events after the
+	// unredactable one reach the proxy together with it.
+	h := newHarnessOpts(t, nil, harnessOptions{
+		rules:     redact.NewRules(nil, []redact.Path{email}),
+		transport: oneReadTransport{contentType: "text/event-stream", body: stream},
+	})
 
 	resp, err := post(h.server.URL+"/llm/anthropic/v1/messages", `{}`)
 	if err != nil {
@@ -510,6 +512,41 @@ func TestProxyStopsRecordingAStreamItCannotRedact(t *testing.T) {
 		t.Errorf("got %d chunks, want only the one before the event", len(chunks))
 	}
 }
+
+// oneReadTransport answers every request with body, which the response hands
+// over in a single Read.
+type oneReadTransport struct {
+	contentType string
+	body        string
+}
+
+func (o oneReadTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{"Content-Type": {o.contentType}},
+		Body:   &oneRead{data: []byte(o.body)}, ContentLength: -1, Request: r,
+	}, nil
+}
+
+// oneRead returns all of data in its first Read, whatever the buffer size, so
+// the test does not depend on how a reader would split it.
+type oneRead struct {
+	data []byte
+	done bool
+}
+
+func (o *oneRead) Read(p []byte) (int, error) {
+	if o.done {
+		return 0, io.EOF
+	}
+	if len(p) < len(o.data) {
+		return 0, fmt.Errorf("read buffer of %d bytes, want at least %d", len(p), len(o.data))
+	}
+	o.done = true
+	return copy(p, o.data), nil
+}
+
+func (o *oneRead) Close() error { return nil }
 
 func TestProxyRejectsUnknownRoutes(t *testing.T) {
 	h := newHarness(t, http.NotFoundHandler())
