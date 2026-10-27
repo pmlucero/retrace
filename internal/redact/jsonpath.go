@@ -5,6 +5,8 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/pmlucero/retrace/internal/jsonvalue"
 )
 
 // Path is a parsed body redaction rule: the JSONPath subset of spec §3.5.
@@ -123,45 +125,45 @@ func parseBracket(s string) (step, string, error) {
 
 // selection is a value a rule selected, and how deep it is in the body.
 type selection struct {
-	value *jsonValue
+	value *jsonvalue.Value
 	depth int
 }
 
 // selectAll returns every value p selects in root, without changing it.
-func (p Path) selectAll(root *jsonValue, out []selection) []selection {
+func (p Path) selectAll(root *jsonvalue.Value, out []selection) []selection {
 	return walk(root, p.steps, 0, out)
 }
 
-func walk(v *jsonValue, steps []step, depth int, out []selection) []selection {
+func walk(v *jsonvalue.Value, steps []step, depth int, out []selection) []selection {
 	if len(steps) == 0 {
 		return append(out, selection{value: v, depth: depth})
 	}
 	s, rest := steps[0], steps[1:]
 	switch s.kind {
 	case stepChild:
-		if obj, ok := (*v).(*jsonObject); ok {
-			for i := range obj.members {
-				if obj.members[i].key == s.name {
-					out = walk(&obj.members[i].value, rest, depth+1, out)
+		if obj, ok := (*v).(*jsonvalue.Object); ok {
+			for i := range obj.Members {
+				if obj.Members[i].Key == s.name {
+					out = walk(&obj.Members[i].Value, rest, depth+1, out)
 				}
 			}
 		}
 	case stepIndex:
-		if arr, ok := (*v).(jsonArray); ok && s.index < len(arr) {
+		if arr, ok := (*v).(jsonvalue.Array); ok && s.index < len(arr) {
 			out = walk(&arr[s.index], rest, depth+1, out)
 		}
 	case stepWildcard:
-		forEachChild(*v, func(c *jsonValue) { out = walk(c, rest, depth+1, out) })
+		forEachChild(*v, func(c *jsonvalue.Value) { out = walk(c, rest, depth+1, out) })
 	case stepRecursive:
 		// The name may match here and at any depth below.
-		if obj, ok := (*v).(*jsonObject); ok {
-			for i := range obj.members {
-				if obj.members[i].key == s.name {
-					out = walk(&obj.members[i].value, rest, depth+1, out)
+		if obj, ok := (*v).(*jsonvalue.Object); ok {
+			for i := range obj.Members {
+				if obj.Members[i].Key == s.name {
+					out = walk(&obj.Members[i].Value, rest, depth+1, out)
 				}
 			}
 		}
-		forEachChild(*v, func(c *jsonValue) { out = walk(c, steps, depth+1, out) })
+		forEachChild(*v, func(c *jsonvalue.Value) { out = walk(c, steps, depth+1, out) })
 	}
 	return out
 }
@@ -172,7 +174,7 @@ func walk(v *jsonValue, steps []step, depth int, out []selection) []selection {
 // original content whatever the rule order (spec §3.5).
 func maskSelections(sel []selection) int {
 	slices.SortStableFunc(sel, func(a, b selection) int { return a.depth - b.depth })
-	done := map[*jsonValue]bool{}
+	done := map[*jsonvalue.Value]bool{}
 	for _, s := range sel {
 		if !done[s.value] {
 			done[s.value] = true
@@ -182,13 +184,23 @@ func maskSelections(sel []selection) int {
 	return len(done)
 }
 
-func forEachChild(v jsonValue, fn func(*jsonValue)) {
+// masked returns the redaction marker for v. A string is hashed as it is, like
+// a header value, so a secret gets the same marker wherever it appears; other
+// values are hashed over their JSON text (spec §3.5).
+func masked(v jsonvalue.Value) jsonvalue.Value {
+	if s, ok := v.(string); ok {
+		return mask(s)
+	}
+	return mask(string(jsonvalue.Encode(v)))
+}
+
+func forEachChild(v jsonvalue.Value, fn func(*jsonvalue.Value)) {
 	switch t := v.(type) {
-	case *jsonObject:
-		for i := range t.members {
-			fn(&t.members[i].value)
+	case *jsonvalue.Object:
+		for i := range t.Members {
+			fn(&t.Members[i].Value)
 		}
-	case jsonArray:
+	case jsonvalue.Array:
 		for i := range t {
 			fn(&t[i])
 		}

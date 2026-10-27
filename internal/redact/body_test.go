@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/pmlucero/retrace/internal/jsonvalue"
 )
 
 func mustRules(t *testing.T, paths ...string) *Rules {
@@ -41,7 +43,7 @@ func TestParsePath(t *testing.T) {
 // spec §3.5: body redaction
 func TestRulesBody(t *testing.T) {
 	m := func(jsonText string) string { // strings hash as they are, other values over their JSON text
-		if v, err := decodeJSON([]byte(jsonText)); err == nil {
+		if v, err := jsonvalue.Decode([]byte(jsonText)); err == nil {
 			if str, ok := v.(string); ok {
 				return mask(str)
 			}
@@ -118,7 +120,7 @@ func TestRulesBodyStringsHashLikeHeaders(t *testing.T) {
 
 // A body too deep to decode safely is reported, never stored unredacted.
 func TestRulesBodyRefusesTooDeepJSON(t *testing.T) {
-	deep := strings.Repeat("[", maxDepth+1) + strings.Repeat("]", maxDepth+1)
+	deep := strings.Repeat("[", jsonvalue.MaxDepth+1) + strings.Repeat("]", jsonvalue.MaxDepth+1)
 	deeper := strings.Repeat("[", 20000) + strings.Repeat("]", 20000) // past encoding/json's own limit too
 	for _, in := range []string{deep, `{"email":` + deep + `}`, deeper} {
 		got, err := mustRules(t, "$..email").Body([]byte(in))
@@ -126,7 +128,7 @@ func TestRulesBodyRefusesTooDeepJSON(t *testing.T) {
 			t.Errorf("Body(deep) = %d bytes, %v; want ErrNotRedactable and nothing", len(got), err)
 		}
 	}
-	ok := strings.Repeat("[", maxDepth) + strings.Repeat("]", maxDepth)
+	ok := strings.Repeat("[", jsonvalue.MaxDepth) + strings.Repeat("]", jsonvalue.MaxDepth)
 	if _, err := mustRules(t, "$..email").Body([]byte(ok)); err != nil {
 		t.Errorf("Body at the depth limit: %v", err)
 	}

@@ -1,4 +1,8 @@
-package redact
+// Package jsonvalue decodes and encodes JSON while keeping what
+// encoding/json's generic decoding loses: member order and number text.
+// Redaction (spec §3.5) needs both to write a body back as it was, apart from
+// the masked values.
+package jsonvalue
 
 import (
 	"bytes"
@@ -8,33 +12,36 @@ import (
 	"io"
 )
 
-// jsonValue is a decoded JSON value that keeps what encoding/json's generic
-// decoding loses: member order and number text. It is one of *jsonObject,
-// jsonArray, string, json.Number, bool or nil.
-type jsonValue any
+// Value is a decoded JSON value. It is one of *Object, Array, string,
+// json.Number, bool or nil.
+type Value any
 
-type jsonObject struct {
-	members []jsonMember
+// Object is a JSON object with its members in their original order,
+// duplicates included.
+type Object struct {
+	Members []Member
 }
 
-type jsonMember struct {
-	key   string
-	value jsonValue
+// Member is one name/value pair of an Object.
+type Member struct {
+	Key   string
+	Value Value
 }
 
-type jsonArray []jsonValue
+// Array is a JSON array.
+type Array []Value
 
-// maxDepth caps nesting while decoding. It is below encoding/json's own
+// MaxDepth caps nesting while decoding. It is below encoding/json's own
 // limit (10000), whose error cannot be told apart from malformed JSON: a body
 // that is merely too deep must be refused, never stored as "not JSON"
 // (spec §3.5). Real API bodies nest a few dozen levels at most.
-const maxDepth = 1000
+const MaxDepth = 1000
 
-// errTooDeep reports a body nested deeper than maxDepth.
-var errTooDeep = fmt.Errorf("JSON nested deeper than %d levels", maxDepth)
+// ErrTooDeep reports a body nested deeper than MaxDepth.
+var ErrTooDeep = fmt.Errorf("JSON nested deeper than %d levels", MaxDepth)
 
-// decodeJSON parses data as exactly one JSON value.
-func decodeJSON(data []byte) (jsonValue, error) {
+// Decode parses data as exactly one JSON value.
+func Decode(data []byte) (Value, error) {
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.UseNumber()
 	v, err := decodeValue(dec, 0)
@@ -47,19 +54,19 @@ func decodeJSON(data []byte) (jsonValue, error) {
 	return v, nil
 }
 
-func decodeValue(dec *json.Decoder, depth int) (jsonValue, error) {
+func decodeValue(dec *json.Decoder, depth int) (Value, error) {
 	tok, err := dec.Token()
 	if err != nil {
 		return nil, err
 	}
 	switch t := tok.(type) {
 	case json.Delim:
-		if depth >= maxDepth {
-			return nil, errTooDeep
+		if depth >= MaxDepth {
+			return nil, ErrTooDeep
 		}
 		switch t {
 		case '{':
-			obj := &jsonObject{}
+			obj := &Object{}
 			for dec.More() {
 				keyTok, err := dec.Token()
 				if err != nil {
@@ -70,12 +77,12 @@ func decodeValue(dec *json.Decoder, depth int) (jsonValue, error) {
 				if err != nil {
 					return nil, err
 				}
-				obj.members = append(obj.members, jsonMember{key: key, value: v})
+				obj.Members = append(obj.Members, Member{Key: key, Value: v})
 			}
 			_, err := dec.Token() // '}'
 			return obj, err
 		case '[':
-			arr := jsonArray{}
+			arr := Array{}
 			for dec.More() {
 				v, err := decodeValue(dec, depth+1)
 				if err != nil {
@@ -92,27 +99,27 @@ func decodeValue(dec *json.Decoder, depth int) (jsonValue, error) {
 	}
 }
 
-// encodeJSON writes v compactly, in member order, without HTML escaping.
-func encodeJSON(v jsonValue) []byte {
+// Encode writes v compactly, in member order, without HTML escaping.
+func Encode(v Value) []byte {
 	var b bytes.Buffer
 	writeValue(&b, v)
 	return b.Bytes()
 }
 
-func writeValue(b *bytes.Buffer, v jsonValue) {
+func writeValue(b *bytes.Buffer, v Value) {
 	switch t := v.(type) {
-	case *jsonObject:
+	case *Object:
 		b.WriteByte('{')
-		for i, m := range t.members {
+		for i, m := range t.Members {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			writeString(b, m.key)
+			writeString(b, m.Key)
 			b.WriteByte(':')
-			writeValue(b, m.value)
+			writeValue(b, m.Value)
 		}
 		b.WriteByte('}')
-	case jsonArray:
+	case Array:
 		b.WriteByte('[')
 		for i, e := range t {
 			if i > 0 {
@@ -141,14 +148,4 @@ func writeString(b *bytes.Buffer, s string) {
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(s)       // a string always encodes
 	b.Truncate(b.Len() - 1) // Encode appends a newline
-}
-
-// masked returns the redaction marker for v. A string is hashed as it is, like
-// a header value, so a secret gets the same marker wherever it appears; other
-// values are hashed over their JSON text (spec §3.5).
-func masked(v jsonValue) jsonValue {
-	if s, ok := v.(string); ok {
-		return mask(s)
-	}
-	return mask(string(encodeJSON(v)))
 }
