@@ -70,10 +70,11 @@ type Interaction struct {
 	Error               *string
 }
 
-// Incomplete reports whether the recording of the interaction is incomplete:
-// its error contains RecordingIncomplete (spec §7.3).
+// Incomplete reports whether the recording of the interaction is incomplete
+// (spec §7.3): its error contains RecordingIncomplete, or it has no duration
+// because the recording stopped before it completed, e.g. retrace was killed.
 func (in Interaction) Incomplete() bool {
-	return in.Error != nil && strings.Contains(*in.Error, RecordingIncomplete)
+	return in.DurationMillis == nil || in.Error != nil && strings.Contains(*in.Error, RecordingIncomplete)
 }
 
 // Completion holds the fields set when an interaction's response ends.

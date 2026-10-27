@@ -564,3 +564,23 @@ func journalMode(t *testing.T, path string) string {
 	}
 	return mode
 }
+
+func TestInteractionIncomplete(t *testing.T) {
+	duration := int64(5)
+	msg := func(s string) *string { return &s }
+	tests := []struct {
+		name string
+		in   Interaction
+		want bool
+	}{
+		{name: "complete", in: Interaction{DurationMillis: &duration}, want: false},
+		{name: "transport error", in: Interaction{DurationMillis: &duration, Error: msg("connection reset")}, want: false},
+		{name: "records dropped", in: Interaction{DurationMillis: &duration, Error: msg(RecordingIncomplete + ": queue full")}, want: true},
+		{name: "in flight when the recording stopped", in: Interaction{}, want: true},
+	}
+	for _, tt := range tests {
+		if got := tt.in.Incomplete(); got != tt.want {
+			t.Errorf("%s: Incomplete() = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

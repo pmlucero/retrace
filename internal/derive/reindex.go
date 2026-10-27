@@ -90,8 +90,8 @@ func Reindex(ctx context.Context, c *cassette.Cassette) (ReindexResult, error) {
 	return ReindexResult{Events: len(events), DroppedEvents: dropped, IncompleteInteractions: incomplete(interactions)}, nil
 }
 
-// incomplete counts the interactions whose records were dropped during the
-// recording (spec §7.3).
+// incomplete counts the interactions whose recording is incomplete (spec
+// §7.3): records were dropped, or the recording stopped before they completed.
 func incomplete(interactions []cassette.Interaction) int {
 	n := 0
 	for _, in := range interactions {
