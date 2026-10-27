@@ -1,0 +1,157 @@
+// Package replay answers requests from a cassette (spec §4). Serve writes one
+// recorded response back to the agent; deciding which recorded interaction
+// answers a request is request matching (spec §5).
+package replay
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/textproto"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/pmlucero/retrace/internal/cassette"
+)
+
+// ErrUnservable reports that an interaction holds no complete response to
+// replay: it has no status or headers, or its body was not recorded. Serve
+// returns it before writing anything, so the caller can still answer.
+var ErrUnservable = errors.New("interaction has no recorded response to replay")
+
+// Source reads what Serve needs from the cassette being replayed.
+// *cassette.Cassette implements it.
+type Source interface {
+	Chunks(ctx context.Context, interactionID int64) ([]cassette.Chunk, error)
+	Blob(ctx context.Context, key string) ([]byte, error)
+}
+
+var _ Source = (*cassette.Cassette)(nil)
+
+// Options configures Serve.
+type Options struct {
+	// Realtime emits each SSE chunk at its recorded offset from the response
+	// headers (--realtime), instead of immediately.
+	Realtime bool
+	// Clock times realtime replay. Nil selects the system clock.
+	Clock Clock
+}
+
+// Serve writes the recorded response of in to w: its status, its headers and
+// then its body, or its SSE chunks byte for byte, flushing after each one
+// (spec §4.1, AC-10). It returns when the response is written, when writing
+// to the agent fails, or when ctx is done.
+func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options) error {
+	if in.StatusCode == nil || in.ResponseHeaders == nil {
+		return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
+	}
+	var recorded http.Header
+	if err := json.Unmarshal(in.ResponseHeaders, &recorded); err != nil {
+		return fmt.Errorf("serving interaction %d: response headers: %w", in.ID, err)
+	}
+
+	// Read everything before writing the headers, so a cassette error can
+	// still be answered with an error status.
+	var (
+		body   []byte
+		chunks []cassette.Chunk
+		err    error
+	)
+	if in.Streamed {
+		if chunks, err = src.Chunks(ctx, in.ID); err != nil {
+			return fmt.Errorf("serving interaction %d: %w", in.ID, err)
+		}
+	} else {
+		if in.ResponseBlob == nil {
+			return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
+		}
+		if body, err = src.Blob(ctx, *in.ResponseBlob); err != nil {
+			return fmt.Errorf("serving interaction %d: %w", in.ID, err)
+		}
+	}
+
+	h := w.Header()
+	copyHeaders(h, recorded)
+	if !in.Streamed && len(body) > 0 {
+		h.Set("Content-Length", strconv.Itoa(len(body)))
+	}
+	w.WriteHeader(*in.StatusCode)
+	if !in.Streamed {
+		if len(body) == 0 {
+			return nil
+		}
+		if _, err := w.Write(body); err != nil {
+			return fmt.Errorf("serving interaction %d: writing body: %w", in.ID, err)
+		}
+		return nil
+	}
+	return serveChunks(ctx, w, in.ID, chunks, opts)
+}
+
+// serveChunks writes chunks after the headers were written, flushing the
+// headers first: recorded offsets count from when they arrived (spec §3.3).
+func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []cassette.Chunk, opts Options) error {
+	rc := http.NewResponseController(w)
+	if err := rc.Flush(); err != nil {
+		return fmt.Errorf("serving interaction %d: flushing headers: %w", id, err)
+	}
+	clock := opts.Clock
+	if clock == nil {
+		clock = systemClock{}
+	}
+	start := clock.Now()
+	for _, ch := range chunks {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("serving interaction %d: chunk %d: %w", id, ch.Index, err)
+		}
+		if opts.Realtime {
+			at := time.Duration(ch.OffsetMillis) * time.Millisecond
+			if d := at - clock.Now().Sub(start); d > 0 {
+				if err := clock.Sleep(ctx, d); err != nil {
+					return fmt.Errorf("serving interaction %d: chunk %d: %w", id, ch.Index, err)
+				}
+			}
+		}
+		if _, err := w.Write(ch.Data); err != nil {
+			return fmt.Errorf("serving interaction %d: writing chunk %d: %w", id, ch.Index, err)
+		}
+		if err := rc.Flush(); err != nil {
+			return fmt.Errorf("serving interaction %d: flushing chunk %d: %w", id, ch.Index, err)
+		}
+	}
+	return nil
+}
+
+// hopByHop are the headers that describe one connection rather than the
+// response (RFC 9110 §7.6.1). The reverse proxy did not pass them to the
+// agent, and the replaying server sets its own.
+var hopByHop = []string{
+	"Connection", "Proxy-Connection", "Keep-Alive", "Proxy-Authenticate",
+	"Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade",
+}
+
+// copyHeaders copies the recorded headers into dst, except the hop-by-hop
+// ones and Content-Length: the stored body is redacted and may differ in
+// length from the one recorded, and a stream has none.
+func copyHeaders(dst, recorded http.Header) {
+	drop := map[string]bool{"Content-Length": true}
+	for _, name := range hopByHop {
+		drop[name] = true
+	}
+	for _, v := range recorded["Connection"] {
+		for name := range strings.SplitSeq(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				drop[textproto.CanonicalMIMEHeaderKey(name)] = true
+			}
+		}
+	}
+	for name, values := range recorded {
+		if drop[textproto.CanonicalMIMEHeaderKey(name)] {
+			continue
+		}
+		dst[name] = append(dst[name], values...)
+	}
+}
