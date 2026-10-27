@@ -264,9 +264,13 @@ func (r *replayRecorder) complete(errMsg *string) {
 		done.StatusCode, done.ResponseHeaders, done.TTFBMillis = r.src.StatusCode, r.src.ResponseHeaders, &ttfb
 		done.Streamed = r.src.Streamed
 		if !r.src.Streamed && errMsg == nil {
-			key := cassette.BlobKey(r.body)
+			body := r.body
+			if body == nil {
+				body = []byte{} // an empty body is stored as an empty blob, not NULL
+			}
+			key := cassette.BlobKey(body)
 			done.ResponseBlob = &key
-			blobs = append(blobs, r.body)
+			blobs = append(blobs, body)
 		}
 	}
 	r.h.cfg.Writer.CompleteInteraction(r.id, done, blobs...)
