@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
@@ -20,31 +21,55 @@ var (
 	ErrNewerDeriver = errors.New("the events were derived by a newer version of retrace")
 )
 
+// ReindexResult is what Reindex did, and what the caller should warn about
+// (spec §7.6).
+type ReindexResult struct {
+	// Events is the number of events written.
+	Events int
+	// DroppedEvents is the session's count of dropped events after the
+	// reindex. It is 0 unless the session diverged: a dropped divergence event
+	// cannot be rebuilt, so the count is kept, and may include events that
+	// were recovered.
+	DroppedEvents int
+	// IncompleteInteractions is the number of interactions marked as
+	// incomplete. Events derived from their partial data may still be missing.
+	IncompleteInteractions int
+}
+
 // Reindex rebuilds the events of c from its interactions with the current
-// Deriver, and returns how many events it wrote (spec §7.6). It replaces the
-// events in one transaction, keeps those that are not derived from
-// interactions (divergence), and records the deriver and pricing versions in
-// the session. Interactions are never modified.
-func Reindex(ctx context.Context, c *cassette.Cassette) (int, error) {
+// Deriver (spec §7.6). It replaces the events in one transaction, keeps those
+// that are not derived from interactions (divergence), records the deriver and
+// pricing versions in the session, and resets its count of dropped events
+// unless the session diverged (spec §7.7, ADR 0010). Interactions are never
+// modified.
+func Reindex(ctx context.Context, c *cassette.Cassette) (ReindexResult, error) {
 	s, err := c.Session(ctx)
 	if err != nil {
-		return 0, err
+		return ReindexResult{}, err
 	}
 	if s.Status == "recording" {
-		return 0, fmt.Errorf("reindexing %s: %w", s.ID, ErrRecording)
+		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, ErrRecording)
 	}
 	if s.DeriverVersion > Version {
-		return 0, fmt.Errorf("reindexing %s (deriver v%d, this retrace has v%d): %w", s.ID, s.DeriverVersion, Version, ErrNewerDeriver)
+		return ReindexResult{}, fmt.Errorf("reindexing %s (deriver v%d, this retrace has v%d): %w", s.ID, s.DeriverVersion, Version, ErrNewerDeriver)
 	}
-	derived, err := deriveAll(ctx, c)
+	interactions, err := c.Interactions(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("reindexing %s: %w", s.ID, err)
+		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, err)
+	}
+	derived, err := deriveAll(ctx, c, interactions)
+	if err != nil {
+		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, err)
 	}
 	old, err := c.Events(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("reindexing %s: %w", s.ID, err)
+		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, err)
 	}
 	events := merge(derived, notDerived(old))
+	dropped := 0
+	if s.Status == "diverged" {
+		dropped = s.DroppedEvents
+	}
 
 	err = c.Write(ctx, func(tx *cassette.Tx) error {
 		if err := tx.DeleteEvents(ctx); err != nil {
@@ -55,21 +80,32 @@ func Reindex(ctx context.Context, c *cassette.Cassette) (int, error) {
 				return err
 			}
 		}
+		if err := tx.SetDroppedEvents(ctx, dropped); err != nil {
+			return err
+		}
 		return tx.SetDerivation(ctx, Version, anthropic.PricingVersion())
 	})
 	if err != nil {
-		return 0, fmt.Errorf("reindexing %s: %w", s.ID, err)
+		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, err)
 	}
-	return len(events), nil
+	return ReindexResult{Events: len(events), DroppedEvents: dropped, IncompleteInteractions: incomplete(interactions)}, nil
 }
 
-// deriveAll runs a Deriver over the interactions of c in the order the
-// recording handled them, and returns the events in seq order from 1.
-func deriveAll(ctx context.Context, c *cassette.Cassette) ([]cassette.Event, error) {
-	interactions, err := c.Interactions(ctx)
-	if err != nil {
-		return nil, err
+// incomplete counts the interactions whose records were dropped during the
+// recording (spec §7.3).
+func incomplete(interactions []cassette.Interaction) int {
+	n := 0
+	for _, in := range interactions {
+		if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+			n++
+		}
 	}
+	return n
+}
+
+// deriveAll runs a Deriver over interactions of c in the order the recording
+// handled them, and returns the events in seq order from 1.
+func deriveAll(ctx context.Context, c *cassette.Cassette, interactions []cassette.Interaction) ([]cassette.Event, error) {
 	var events []cassette.Event
 	emit := func(e cassette.Event) int64 {
 		e.Seq = int64(len(events) + 1)

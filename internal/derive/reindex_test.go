@@ -73,13 +73,13 @@ func TestReindexReproducesRecordedEvents(t *testing.T) {
 			c := record(t, sc.exchanges)
 			ctx := context.Background()
 			recorded, _ := c.Events(ctx)
-			n, err := Reindex(ctx, c)
+			res, err := Reindex(ctx, c)
 			if err != nil {
 				t.Fatal(err)
 			}
 			rebuilt, _ := c.Events(ctx)
-			if n != len(rebuilt) || !reflect.DeepEqual(recorded, rebuilt) {
-				t.Errorf("reindex wrote %d events:\n%s\nrecording had:\n%s", n, eventsJSONL(t, rebuilt), eventsJSONL(t, recorded))
+			if res.Events != len(rebuilt) || !reflect.DeepEqual(recorded, rebuilt) {
+				t.Errorf("reindex wrote %d events:\n%s\nrecording had:\n%s", res.Events, eventsJSONL(t, rebuilt), eventsJSONL(t, recorded))
 			}
 		})
 	}
@@ -91,7 +91,7 @@ func TestReindexDerivesMissingEventsAndUpdatesTheSession(t *testing.T) {
 		{request: weatherQuestion, status: 200, response: weatherToolUse, durationMillis: 900},
 		{startMillis: 1000, request: weatherFollowUp, durationMillis: -1}, // in flight when the recording stopped
 	})
-	n, err := Reindex(ctx, c)
+	res, err := Reindex(ctx, c)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,8 +100,8 @@ func TestReindexDerivesMissingEventsAndUpdatesTheSession(t *testing.T) {
 	for _, e := range events {
 		kinds = append(kinds, e.Kind)
 	}
-	if n != 3 || strings.Join(kinds, ",") != "user_message,model_response,tool_use" {
-		t.Errorf("reindex wrote %d events: %v", n, kinds)
+	if res.Events != 3 || strings.Join(kinds, ",") != "user_message,model_response,tool_use" {
+		t.Errorf("reindex wrote %d events: %v", res.Events, kinds)
 	}
 	s, _ := c.Session(ctx)
 	if s.DeriverVersion != Version || s.PricingVersion != anthropic.PricingVersion() {
@@ -166,6 +166,72 @@ func TestReindexKeepsDivergenceEvents(t *testing.T) {
 	want := "1:user_message<--,2:model_response<-1,3:tool_use<-2,4:divergence<--,5:divergence<-4,6:model_response<--"
 	if strings.Join(got, ",") != want {
 		t.Errorf("events = %s\nwant     %s", strings.Join(got, ","), want)
+	}
+}
+
+// AC-26: reindex rebuilds the events a writer dropped and resets the count,
+// except for a diverged session, and reports interactions marked incomplete
+// (spec §7.6, ADR 0010).
+func TestReindexDroppedEvents(t *testing.T) {
+	incompleteErr := cassette.RecordingIncomplete + ": 1 record(s) not written: queue full"
+	tests := []struct {
+		name           string
+		status         string
+		dropped        int
+		exchanges      []exchange
+		wantEvents     int
+		wantDropped    int
+		wantIncomplete int
+	}{
+		{
+			name: "completed session is reset", status: "completed", dropped: 3,
+			exchanges:  []exchange{{request: weatherQuestion, status: 200, response: weatherToolUse, durationMillis: 900}},
+			wantEvents: 3,
+		},
+		{
+			name: "diverged session keeps its count", status: "diverged", dropped: 2,
+			exchanges:  []exchange{{request: weatherQuestion, status: 200, response: weatherToolUse, durationMillis: 900}},
+			wantEvents: 3, wantDropped: 2,
+		},
+		{
+			name: "diverged session without gaps", status: "diverged",
+			exchanges:  []exchange{{request: weatherQuestion, status: 200, response: weatherToolUse, durationMillis: 900}},
+			wantEvents: 3,
+		},
+		{
+			name: "incomplete interactions are counted", status: "interrupted", dropped: 1,
+			exchanges: []exchange{
+				{request: weatherQuestion, status: 200, response: weatherToolUse, durationMillis: 900, err: incompleteErr},
+				{startMillis: 1000, request: weatherFollowUp, durationMillis: 50, err: "upstream connection reset"},
+			},
+			wantEvents: 4, wantIncomplete: 1,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			c := rawCassette(t, "recording", Version, tt.exchanges)
+			err := c.Write(ctx, func(tx *cassette.Tx) error {
+				return tx.EndSession(ctx, cassette.SessionEnd{Status: tt.status, EndedAt: t0.Add(time.Second), DroppedEvents: tt.dropped})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			res, err := Reindex(ctx, c)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := ReindexResult{Events: tt.wantEvents, DroppedEvents: tt.wantDropped, IncompleteInteractions: tt.wantIncomplete}
+			if res != want {
+				t.Errorf("Reindex = %+v, want %+v", res, want)
+			}
+			if events, _ := c.Events(ctx); len(events) != tt.wantEvents {
+				t.Errorf("cassette has %d events, want %d", len(events), tt.wantEvents)
+			}
+			if s, _ := c.Session(ctx); s.DroppedEvents != tt.wantDropped {
+				t.Errorf("session dropped events = %d, want %d", s.DroppedEvents, tt.wantDropped)
+			}
+		})
 	}
 }
 

@@ -51,7 +51,7 @@ func runReindex(ctx context.Context, env *Env, args []string) int {
 		log.Error("cannot open the cassette", "error", err)
 		return ExitError
 	}
-	n, err := derive.Reindex(ctx, c)
+	res, err := derive.Reindex(ctx, c)
 	if cerr := c.Close(); err == nil && cerr != nil {
 		err = cerr
 	}
@@ -60,6 +60,16 @@ func runReindex(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 	fmt.Fprintf(env.Stdout, "reindexed %s: %d events (deriver v%d, pricing %s)\n",
-		id, n, derive.Version, anthropic.PricingVersion())
+		id, res.Events, derive.Version, anthropic.PricingVersion())
+	// The events were rebuilt either way, so these are warnings and the exit
+	// code stays 0 (spec §7.6, ADR 0010).
+	if res.DroppedEvents > 0 {
+		log.Warn("the session diverged, so its count of dropped events was kept: a dropped divergence event cannot be rebuilt, and the count may include events this reindex recovered",
+			"session", id, "dropped_events", res.DroppedEvents)
+	}
+	if res.IncompleteInteractions > 0 {
+		log.Warn("some interactions are marked as recording incomplete: events derived from their partial data may still be missing",
+			"session", id, "interactions", res.IncompleteInteractions)
+	}
 	return ExitOK
 }

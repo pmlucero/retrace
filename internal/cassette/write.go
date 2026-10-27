@@ -46,7 +46,7 @@ func (t *Tx) InsertSession(ctx context.Context, s Session) error {
 }
 
 // EndSession records how the session ended (spec §3.1). The session row only
-// changes here, in SetMCPServers and in SetDerivation.
+// changes here, in SetMCPServers, in SetDerivation and in SetDroppedEvents.
 func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
 	if end.DroppedEvents < 0 {
 		return fmt.Errorf("ending session: negative dropped events %d", end.DroppedEvents)
@@ -57,7 +57,7 @@ func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
 	if err != nil {
 		return fmt.Errorf("ending session: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
 }
 
 // SetMCPServers replaces the session's MCP server metadata. It is called when
@@ -68,7 +68,7 @@ func (t *Tx) SetMCPServers(ctx context.Context, servers json.RawMessage) error {
 	if err != nil {
 		return fmt.Errorf("updating session MCP servers: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
 }
 
 // SetDerivation records the versions of the deriver and the price table that
@@ -80,7 +80,21 @@ func (t *Tx) SetDerivation(ctx context.Context, deriverVersion int, pricingVersi
 	if err != nil {
 		return fmt.Errorf("updating session derivation versions: %w", err)
 	}
-	return expectOneRow(res, "session")
+	return expectSessionRow(res)
+}
+
+// SetDroppedEvents replaces the session's count of dropped events (spec
+// §7.7). Only `retrace reindex` calls it, after rebuilding the events: it is
+// the one change to that count after the session ends (ADR 0010).
+func (t *Tx) SetDroppedEvents(ctx context.Context, n int) error {
+	if n < 0 {
+		return fmt.Errorf("updating session dropped events: negative count %d", n)
+	}
+	res, err := t.tx.ExecContext(ctx, `UPDATE session SET dropped_events = ?`, n)
+	if err != nil {
+		return fmt.Errorf("updating session dropped events: %w", err)
+	}
+	return expectSessionRow(res)
 }
 
 // SessionEnd holds the fields set when a session ends.
@@ -221,13 +235,14 @@ func (t *Tx) DeleteEvents(ctx context.Context) error {
 	return nil
 }
 
-func expectOneRow(res sql.Result, what string) error {
+// expectSessionRow checks that an update changed the one session row.
+func expectSessionRow(res sql.Result) error {
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("updating %s: %w", what, err)
+		return fmt.Errorf("updating session: %w", err)
 	}
 	if n != 1 {
-		return fmt.Errorf("updating %s: %w", what, ErrNotFound)
+		return fmt.Errorf("updating session: %w", ErrNotFound)
 	}
 	return nil
 }
