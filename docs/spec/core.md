@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.12
+- Version: 0.13
 - Last updated: 2026-10-27
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -108,7 +108,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - Rules apply to every JSON body retrace stores, on both channels: request bodies, non-streamed response bodies, and the `data` of each SSE event. A body that is not JSON is stored as it is.
 - Each matched value, whatever its type, is replaced by the string `[REDACTED:<sha256-prefix-8>]`. A string is hashed as it is, so it gets the same marker as the same value in a header. Any other value is hashed over its JSON text. A value selected by several rules, or nested inside another selected value, is masked once, over its original content.
 - A body with no match is stored byte for byte. A body with a match is re-encoded compactly, keeping member order and number formats. In an SSE event, a `data` field split over several lines is written back as one `data:` line when something in it is masked. The other lines and their endings are kept.
-- A body nested more than 1000 levels deep cannot be redacted safely, so it is not stored, and the interaction's `error` says why.
+- A body nested more than 1000 levels deep cannot be redacted safely, so it is not stored, and the interaction's `error` says why. The same applies to an SSE event that cannot be redacted (the rest of the stream is not stored either), and to a body or SSE event larger than the proxy's in-memory limit for one body or event. In each case the interaction's recording is incomplete (§7.3), so replaying it is a cassette miss (§5).
 - Redaction runs on the forwarding path. It parses each stored JSON body once, which takes milliseconds for a megabyte, against model latencies of hundreds of milliseconds.
 - The agent and the upstream always receive the original bodies. Only what is written to the cassette is redacted.
 - The rules are stored in the session's `redaction` metadata (§7.2). M3 applies them to incoming requests before fingerprinting them (§5).
@@ -145,6 +145,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. Forwarded ones get `provenance = live`.
 - At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error.
+- A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction.
 
 ## 5. Request matching
 
@@ -154,12 +155,12 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
    - **LLM**: the body without `metadata`.
    - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`.
 
-   Body redaction rules (§3.5) are applied first.
+   Body redaction rules (§3.5) are applied first. A body that is not valid JSON is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
-   An interaction whose recording is incomplete (its `error` contains `recording incomplete`, §7.2) is in no queue, because the cassette does not hold the response the agent received and replay never fabricates one silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). This refines point 2 of ADR 0007, which predates incomplete recordings. A request that would match it is a cassette miss, and it is not reported as unconsumed (§4.4).
+   When an interaction's recording is incomplete (§7.3), replay never fabricates its response silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). Such an interaction keeps its place in its queue but cannot be served: a request that reaches it is a cassette miss, and it stays at the head, so the divergence shows up at the step where it happened. It is not reported as unconsumed (§4.4). This refines point 2 of ADR 0007, which predates incomplete recordings.
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
-   When the request matches an interaction whose recording is incomplete, no diff is computed. The divergence event sets `incomplete_interaction` to that interaction's id, and the error message the agent receives says the matching recording is incomplete, so the user knows to record the session again rather than debug the agent.
+   When the request reaches an interaction whose recording is incomplete, no diff is computed. The divergence event sets `incomplete_interaction` to that interaction's id, and the error message the agent receives says the matching recording is incomplete, so the user knows to record the session again rather than debug the agent.
 
 ## 6. Divergence handling
 
@@ -246,6 +247,8 @@ The schema version is held in `PRAGMA user_version`.
 | `source_interaction_id` | INTEGER NULL | For `replayed`: the interaction id in the parent cassette |
 | `error` | TEXT NULL | Transport-level error (connection reset, timeout), or why the recording of the interaction is incomplete (e.g. records dropped because the cassette writer could not keep up). The message then contains `recording incomplete`. Recording never delays the proxy to avoid this |
 
+**Incomplete recordings.** An interaction's recording is incomplete when its `error` contains `recording incomplete`, or when it has no `duration_ms` because recording stopped before it completed (for example, retrace was killed). The cassette then does not hold the response the agent received. Replay (§5), event derivation (§7.4) and `reindex` (§7.6) use this definition.
+
 **`chunks`**: `(interaction_id, idx, offset_ms, data BLOB)`. Each row holds one raw SSE event as received, including its framing.
 
 **`blobs`**: `(sha256 TEXT PK, size INTEGER, data BLOB)`. Content-addressed and deduplicated.
@@ -318,7 +321,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
   - It updates the session's `deriver_version` and `pricing_version`.
   - It refuses a session whose status is `recording`, because it may still be in progress, and a cassette whose `deriver_version` is newer than its own.
   - The rebuilt log holds every event the deriver can derive from the stored interactions, so `reindex` sets `dropped_events` to `0` (§7.7). The exception is a session with status `diverged`: its `divergence` event comes from a cassette miss, not from an interaction, so a dropped one cannot be rebuilt. There `reindex` keeps the count and warns that it may include events it has now recovered.
-  - If any interaction is marked as incomplete (its `error` contains `recording incomplete`), `reindex` warns with their count: events derived from partial data may still be missing.
+  - If any interaction's recording is incomplete (§7.3), `reindex` warns with their count: events derived from partial data may still be missing. This includes interactions left without a `duration_ms`, for example the request in flight when an `interrupted` session ended.
 
 ### 7.7 Gaps in the event log
 
@@ -506,7 +509,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-11** JSON-RPC ids in replayed MCP responses match the incoming request ids, and `Mcp-Session-Id` is freshly issued.
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
-- **AC-28** In exact mode, an LLM request that matches no queued interaction, including one that matches only an interaction whose recording is incomplete, gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
+- **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
 
 ### Swap-model and strict
 
