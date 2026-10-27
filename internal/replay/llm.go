@@ -137,11 +137,8 @@ func (h *LLMHandler) serve(w http.ResponseWriter, r *http.Request, start time.Ti
 		in.RequestBlob = &key
 		blobs = append(blobs, stored)
 	}
-	rec := &replayRecorder{
-		ResponseWriter: w, h: h, src: src, start: start,
-		id: h.cfg.Writer.BeginInteraction(in, blobs...),
-	}
-	err = Serve(r.Context(), rec, &capture{Source: h.cfg.Source, rec: rec}, src, h.cfg.Options)
+	rec := &replayRecorder{h: h, src: src, start: start, id: h.cfg.Writer.BeginInteraction(in, blobs...)}
+	err = serve(r.Context(), w, h.cfg.Source, src, h.cfg.Options, rec)
 	switch {
 	case err == nil:
 		rec.complete(nil) // a no-op unless Serve wrote no body at all
@@ -207,77 +204,45 @@ func (h *LLMHandler) miss(w http.ResponseWriter, start time.Time, res missResult
 	_, _ = w.Write(resp) // the agent may be gone; the miss is already recorded
 }
 
-// capture is the Source of one served interaction. It keeps what Serve reads,
-// so the recorder knows the response before the first byte is written.
-type capture struct {
-	Source
-	rec *replayRecorder
-}
-
-func (c *capture) Chunks(ctx context.Context, id int64) ([]cassette.Chunk, error) {
-	chunks, err := c.Source.Chunks(ctx, id)
-	c.rec.writes = len(chunks)
-	return chunks, err
-}
-
-func (c *capture) Blob(ctx context.Context, key string) ([]byte, error) {
-	b, err := c.Source.Blob(ctx, key)
-	c.rec.body = b
-	if len(b) > 0 {
-		c.rec.writes = 1
-	}
-	return b, err
-}
-
-// replayRecorder records a replayed response in the new session as Serve
+// replayRecorder records a replayed response in the new session as serve
 // writes it: each SSE chunk with the offset at which it was served, and the
 // completion just before the last write reaches the agent. A request the agent
 // sends after reading the response is then always queued after this
-// completion, as in record mode (spec §7.4). It relies on Serve writing a body
-// in one Write and each chunk in its own Write. It is used by one request's
+// completion, as in record mode (spec §7.4). As there, a last write that fails
+// leaves the interaction recorded as complete. It is used by one request's
 // goroutine only.
 type replayRecorder struct {
-	http.ResponseWriter
 	h           *LLMHandler
 	src         cassette.Interaction
 	id          int64
 	start       time.Time
-	body        []byte // the non-streamed body, as read
-	writes      int    // writes Serve will make after the headers
-	written     int
+	body        []byte // the non-streamed body, as served
+	chunks      int    // chunks recorded so far
 	headerAt    time.Time
 	wroteHeader bool
 	done        bool
 }
 
-// Unwrap lets http.ResponseController reach the underlying writer to flush.
-func (r *replayRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
-
-func (r *replayRecorder) WriteHeader(code int) {
-	if !r.wroteHeader {
-		r.wroteHeader, r.headerAt = true, r.h.clock.Now()
-		if r.writes == 0 {
-			r.complete(nil)
-		}
-	}
-	r.ResponseWriter.WriteHeader(code)
-}
-
-func (r *replayRecorder) Write(b []byte) (int, error) {
-	if !r.wroteHeader {
-		r.WriteHeader(http.StatusOK)
-	}
-	if r.src.Streamed && !r.done {
-		r.h.cfg.Writer.AppendChunk(cassette.Chunk{
-			InteractionID: r.id, Index: r.written,
-			OffsetMillis: r.h.clock.Now().Sub(r.headerAt).Milliseconds(), Data: b,
-		})
-	}
-	r.written++
-	if r.written >= r.writes {
+func (r *replayRecorder) headers(empty bool) {
+	r.wroteHeader, r.headerAt = true, r.h.clock.Now()
+	if empty {
 		r.complete(nil)
 	}
-	return r.ResponseWriter.Write(b)
+}
+
+func (r *replayRecorder) write(data []byte, last bool) {
+	if r.src.Streamed {
+		r.h.cfg.Writer.AppendChunk(cassette.Chunk{
+			InteractionID: r.id, Index: r.chunks,
+			OffsetMillis: r.h.clock.Now().Sub(r.headerAt).Milliseconds(), Data: data,
+		})
+		r.chunks++
+	} else {
+		r.body = data
+	}
+	if last {
+		r.complete(nil)
+	}
 }
 
 // complete queues the completion of the replayed interaction once. errMsg

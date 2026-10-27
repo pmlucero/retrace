@@ -46,6 +46,26 @@ type Options struct {
 // (spec §4.1, AC-10). It returns when the response is written, when writing
 // to the agent fails, or when ctx is done.
 func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options) error {
+	return serve(ctx, w, src, in, opts, noObserver{})
+}
+
+// observer sees a response as serve writes it, each step just before it
+// reaches the agent. The LLM handler records the replayed interaction with it.
+type observer interface {
+	// headers runs before the status is written. empty reports that no body
+	// or chunk follows.
+	headers(empty bool)
+	// write runs before the body or a chunk is written. last reports the final
+	// write of the response.
+	write(data []byte, last bool)
+}
+
+type noObserver struct{}
+
+func (noObserver) headers(bool)       {}
+func (noObserver) write([]byte, bool) {}
+
+func serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options, obs observer) error {
 	if err := servable(in); err != nil {
 		return err
 	}
@@ -76,17 +96,23 @@ func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.I
 	if !in.Streamed && len(body) > 0 {
 		h.Set("Content-Length", strconv.Itoa(len(body)))
 	}
+	empty := len(body) == 0
+	if in.Streamed {
+		empty = len(chunks) == 0
+	}
+	obs.headers(empty)
 	w.WriteHeader(*in.StatusCode)
 	if !in.Streamed {
 		if len(body) == 0 {
 			return nil
 		}
+		obs.write(body, true)
 		if _, err := w.Write(body); err != nil {
 			return fmt.Errorf("serving interaction %d: writing body: %w", in.ID, err)
 		}
 		return nil
 	}
-	return serveChunks(ctx, w, in.ID, chunks, opts)
+	return serveChunks(ctx, w, in.ID, chunks, opts, obs)
 }
 
 // servable returns an error wrapping ErrUnservable when Serve would refuse in
@@ -110,7 +136,7 @@ func servable(in cassette.Interaction) error {
 
 // serveChunks writes chunks after the headers were written, flushing the
 // headers first: recorded offsets count from when they arrived (spec §3.3).
-func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []cassette.Chunk, opts Options) error {
+func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []cassette.Chunk, opts Options, obs observer) error {
 	rc := http.NewResponseController(w)
 	if err := rc.Flush(); err != nil {
 		return fmt.Errorf("serving interaction %d: flushing headers: %w", id, err)
@@ -120,7 +146,7 @@ func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []
 		clock = systemClock{}
 	}
 	start := clock.Now()
-	for _, ch := range chunks {
+	for i, ch := range chunks {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("serving interaction %d: chunk %d: %w", id, ch.Index, err)
 		}
@@ -132,6 +158,7 @@ func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []
 				}
 			}
 		}
+		obs.write(ch.Data, i == len(chunks)-1)
 		if _, err := w.Write(ch.Data); err != nil {
 			return fmt.Errorf("serving interaction %d: writing chunk %d: %w", id, ch.Index, err)
 		}
