@@ -17,10 +17,13 @@ import (
 // stream included: a streamed recording cannot answer a non-streaming
 // request, or the other way around.
 //
-// A body that is not JSON, or is nested deeper than jsonvalue.MaxDepth, is
-// its own canonical form and is returned as it is. The API rejects such a
-// body, so replaying the same bytes must find the recorded rejection. It
-// cannot collide with a JSON body, whose canonical form is always valid JSON.
+// A body that is not valid JSON is fingerprinted over its raw bytes (spec §5),
+// so it is returned as it is: replaying the same bytes finds what was
+// recorded for them. A body nested deeper than jsonvalue.MaxDepth cannot be
+// decoded safely and is returned as it is too. Such a body is only stored
+// when no body redaction rule is set (spec §3.5). Neither can collide with a
+// decodable body, whose canonical form is valid JSON nested at most MaxDepth
+// levels deep.
 func Canonicalize(body []byte) []byte {
 	v, err := jsonvalue.Decode(body)
 	if err != nil {
