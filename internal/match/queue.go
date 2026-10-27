@@ -1,5 +1,3 @@
-// Package match matches replayed requests to recorded interactions
-// (ADR 0007).
 package match
 
 import (
