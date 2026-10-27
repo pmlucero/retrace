@@ -83,7 +83,7 @@ func TestReindexWarnsAboutGaps(t *testing.T) {
 			wantNot:    []string{"recording incomplete"}},
 		{name: "incomplete interaction", status: "interrupted",
 			err:        cassette.RecordingIncomplete + ": 1 record(s) not written: queue full",
-			wantStderr: []string{"marked as recording incomplete", "interactions=1"},
+			wantStderr: []string{"have an incomplete recording", "interactions=1"},
 			wantNot:    []string{"dropped_events"}},
 		{name: "other interaction errors", status: "completed", err: "upstream connection reset",
 			wantNot: []string{"dropped_events", "recording incomplete"}},
