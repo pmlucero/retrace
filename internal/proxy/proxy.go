@@ -283,7 +283,7 @@ func (ex *exchange) finish() {
 				blobs = append(blobs, stored)
 			}
 		}
-		msgs := ex.notes
+		msgs := incompleteNote(ex.notes)
 		switch {
 		case errors.Is(ex.readErr, context.Canceled), ex.readErr == nil && !ex.eof:
 			// The server cancels the upstream request when the agent leaves.
@@ -299,10 +299,21 @@ func (ex *exchange) finish() {
 	})
 }
 
+// incompleteNote joins notes, the parts of the exchange that were forwarded
+// but not recorded, under the cassette.RecordingIncomplete marker, so that
+// replay and reindex know the cassette does not hold what the agent received
+// (spec §7.2). It returns nil when every part was recorded.
+func incompleteNote(notes []string) []string {
+	if len(notes) == 0 {
+		return nil
+	}
+	return []string{cassette.RecordingIncomplete + ": " + strings.Join(notes, "; ")}
+}
+
 // fail completes the interaction with no response.
 func (ex *exchange) fail(msg string) {
 	ex.once.Do(func() {
-		full := strings.Join(append(ex.notes, msg), "; ")
+		full := strings.Join(append(incompleteNote(ex.notes), msg), "; ")
 		ex.p.writer.CompleteInteraction(ex.id, cassette.Completion{
 			DurationMillis: time.Since(ex.start).Milliseconds(), Error: &full,
 		})

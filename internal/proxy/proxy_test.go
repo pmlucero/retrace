@@ -371,6 +371,17 @@ func TestProxyForwardsButDoesNotRecordOversizedBodies(t *testing.T) {
 	if chunks, _ := h.c.Chunks(context.Background(), stream.ID); len(chunks) != 1 {
 		t.Errorf("stream: got %d chunks, want the one before the oversized event", len(chunks))
 	}
+	for _, in := range all {
+		if !incomplete(in) {
+			t.Errorf("%s: error %v, want it marked as incomplete", in.Path, in.Error)
+		}
+	}
+}
+
+// incomplete reports whether in carries the marker of an incomplete recording
+// (spec §7.2).
+func incomplete(in cassette.Interaction) bool {
+	return in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete)
 }
 
 // AC-25
@@ -463,6 +474,9 @@ func TestProxyDoesNotStoreBodiesItCannotRedact(t *testing.T) {
 	}
 	if in.Error == nil || strings.Count(*in.Error, "forwarded but not recorded") != 2 {
 		t.Errorf("error = %v, want both bodies explained", in.Error)
+	}
+	if !incomplete(in) || strings.Count(*in.Error, cassette.RecordingIncomplete) != 1 {
+		t.Errorf("error = %v, want it marked as incomplete once", in.Error)
 	}
 }
 
