@@ -141,7 +141,11 @@ func (h *LLMHandler) serve(w http.ResponseWriter, r *http.Request, start time.Ti
 	err = serve(r.Context(), w, h.cfg.Source, src, h.cfg.Options, rec)
 	switch {
 	case err == nil:
-		rec.complete(nil) // a no-op unless Serve wrote no body at all
+		rec.complete(nil) // a safety net: the headers or the last write already completed it
+	case !rec.wroteHeader && errors.Is(err, context.Canceled):
+		// The agent left while the cassette was being read.
+		msg := "the agent closed the connection before the response arrived"
+		rec.complete(&msg)
 	case !rec.wroteHeader:
 		// The cassette could not be read: nothing was sent yet.
 		h.log.Error("reading the cassette", "interaction", src.ID, "error", err)
