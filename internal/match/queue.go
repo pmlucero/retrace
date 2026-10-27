@@ -16,6 +16,9 @@ type Queues struct {
 	queued   []cassette.Interaction // in recorded order
 	consumed []bool                 // parallel to queued
 	heads    map[string][]int       // fingerprint -> indices into queued, head first
+	// incomplete holds, per fingerprint, the first interaction with that
+	// fingerprint whose recording is incomplete. It is in no queue.
+	incomplete map[string]cassette.Interaction
 }
 
 // NewQueues places each interaction of ins in the queue of its fingerprint,
@@ -27,17 +30,22 @@ type Queues struct {
 // An interaction whose recording is incomplete (its error contains
 // cassette.RecordingIncomplete) is in no queue, because the cassette does not
 // hold the response the agent received: a request that would match it is a
-// miss, and it is not reported by Unconsumed (spec §5 step 2). An interaction
+// miss, and it is not reported by Unconsumed (spec §5 step 2, AC-28). Such an
+// interaction is still fingerprinted, so that IncompleteFor can explain the
+// miss. An interaction
 // with only a transport error was recorded faithfully, so it is queued and
 // served as recorded, error included.
 func NewQueues(ins []cassette.Interaction, fingerprint func(cassette.Interaction) (fp string, ok bool)) *Queues {
-	q := &Queues{heads: make(map[string][]int)}
+	q := &Queues{heads: make(map[string][]int), incomplete: make(map[string]cassette.Interaction)}
 	for _, in := range ins {
-		if in.Incomplete() {
-			continue
-		}
 		fp, ok := fingerprint(in)
 		if !ok {
+			continue
+		}
+		if in.Incomplete() {
+			if _, seen := q.incomplete[fp]; !seen {
+				q.incomplete[fp] = in
+			}
 			continue
 		}
 		q.heads[fp] = append(q.heads[fp], len(q.queued))
@@ -65,6 +73,16 @@ func (q *Queues) Next(fp string) (cassette.Interaction, bool) {
 	}
 	q.consumed[i] = true
 	return q.queued[i], true
+}
+
+// IncompleteFor returns the first interaction in recorded order with
+// fingerprint fp whose recording is incomplete. After a miss on fp, it tells
+// whether the request matched an interaction that is in no queue because its
+// recording is incomplete, which the divergence event reports (AC-28). It
+// never consumes anything.
+func (q *Queues) IncompleteFor(fp string) (cassette.Interaction, bool) {
+	in, ok := q.incomplete[fp] // read-only after NewQueues
+	return in, ok
 }
 
 // NextUnconsumed returns the first queued interaction, in recorded order, that
