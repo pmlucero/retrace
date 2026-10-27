@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.11
-- Last updated: 2026-10-26
+- Version: 0.12
+- Last updated: 2026-10-27
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -156,6 +156,7 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
 
    Body redaction rules (§3.5) are applied first.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
+   An interaction whose recording is incomplete (its `error` contains `recording incomplete`, §7.2) is in no queue, because the cassette does not hold the response the agent received. A request that would match it is a cassette miss, and it is not reported as unconsumed (§4.4).
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
 
