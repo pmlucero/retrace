@@ -20,6 +20,8 @@ coverage.*
 
 # Tooling
 node_modules/
+# Git worktrees that Claude Code creates for isolated agents
+/.claude/worktrees/
 
 # Generated architecture diagram (docs/architecture/README.md)
 /docs/architecture/overview.html
