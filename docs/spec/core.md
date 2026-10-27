@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.12
+- Version: 0.13
 - Last updated: 2026-10-27
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -127,6 +127,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 - Every request on both channels MUST be answered from the cassette via matching (§5). The proxy MUST NOT open any upstream connection, and a test MUST enforce this.
 - Streaming responses are replayed chunk by chunk, immediately by default or with recorded timing under `--realtime`.
+- A replayed response carries the recorded status and headers, except hop-by-hop headers and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction.
 
 ### 4.2 `swap-model`
 
@@ -154,9 +155,9 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
    - **LLM**: the body without `metadata`.
    - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`.
 
-   Body redaction rules (§3.5) are applied first.
+   Body redaction rules (§3.5) are applied first. A body that is not valid JSON is fingerprinted over its raw bytes.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
-   An interaction whose recording is incomplete (its `error` contains `recording incomplete`, §7.2) is in no queue, because the cassette does not hold the response the agent received and replay never fabricates one silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). This refines point 2 of ADR 0007, which predates incomplete recordings. A request that would match it is a cassette miss, and it is not reported as unconsumed (§4.4).
+   An interaction's recording is incomplete when its `error` contains `recording incomplete` (§7.2), or when it has no `duration_ms` because recording stopped before it completed (for example, retrace was killed). The cassette then does not hold the response the agent received, and replay never fabricates one silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). Such an interaction keeps its place in its queue but cannot be served: a request that reaches it is a cassette miss, and it stays at the head, so the divergence shows up at the step where it happened. It is not reported as unconsumed (§4.4). This refines point 2 of ADR 0007, which predates incomplete recordings.
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
    When the request matches an interaction whose recording is incomplete, no diff is computed. The divergence event sets `incomplete_interaction` to that interaction's id, and the error message the agent receives says the matching recording is incomplete, so the user knows to record the session again rather than debug the agent.
@@ -506,7 +507,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-11** JSON-RPC ids in replayed MCP responses match the incoming request ids, and `Mcp-Session-Id` is freshly issued.
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
-- **AC-28** In exact mode, an LLM request that matches no queued interaction, including one that matches only an interaction whose recording is incomplete, gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
+- **AC-28** In exact mode, an LLM request that matches no queued interaction, including one that reaches an interaction whose recording is incomplete, gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
 
 ### Swap-model and strict
 
