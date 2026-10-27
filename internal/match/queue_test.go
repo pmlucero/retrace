@@ -8,11 +8,18 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 )
 
-// rec is a recorded interaction for the tests. Its fingerprint is stored in
-// the interaction, so the tests do not depend on how fingerprints are
-// computed.
+// rec is a complete recorded interaction for the tests. Its fingerprint is
+// stored in the interaction, so the tests do not depend on how fingerprints
+// are computed.
 func rec(id int64, channel, fp string) cassette.Interaction {
-	return cassette.Interaction{ID: id, Channel: channel, Fingerprint: &fp}
+	duration := int64(10)
+	return cassette.Interaction{ID: id, Channel: channel, Fingerprint: &fp, DurationMillis: &duration}
+}
+
+// inFlight is in as if the recording stopped before it completed.
+func inFlight(in cassette.Interaction) cassette.Interaction {
+	in.DurationMillis = nil
+	return in
 }
 
 func withError(in cassette.Interaction, msg string) cassette.Interaction {
@@ -75,25 +82,33 @@ func TestQueues(t *testing.T) {
 		},
 		{
 			// AC-28 (queues)
-			name: "incomplete recording is in no queue and not unconsumed",
+			name: "incomplete interaction blocks its queue and is not unconsumed",
 			recorded: []cassette.Interaction{
 				rec(1, "llm", "a"),
 				withError(rec(2, "llm", "a"), cassette.RecordingIncomplete+": 3 record(s) not written: queue full"),
 				withError(rec(3, "llm", "b"), cassette.RecordingIncomplete),
 			},
-			requests: []string{"a", "a", "b"},
-			served:   []int64{1, 0, 0},
+			requests: []string{"a", "a", "a", "b"},
+			served:   []int64{1, 0, 0, 0},
 			left:     []int64{},
 		},
 		{
 			// AC-28 (queues)
-			name: "complete interactions move up past an earlier incomplete one",
+			name: "incomplete first interaction makes the first request miss",
 			recorded: []cassette.Interaction{
 				withError(rec(1, "llm", "a"), cassette.RecordingIncomplete),
 				rec(2, "llm", "a"),
 			},
 			requests: []string{"a", "a"},
-			served:   []int64{2, 0},
+			served:   []int64{0, 0},
+			left:     []int64{2},
+		},
+		{
+			// AC-28 (queues)
+			name:     "interaction still in flight when the recording stopped blocks its queue",
+			recorded: []cassette.Interaction{inFlight(rec(1, "llm", "a")), rec(2, "llm", "b")},
+			requests: []string{"a", "b"},
+			served:   []int64{0, 2},
 			left:     []int64{},
 		},
 		{
@@ -152,39 +167,42 @@ func TestQueues(t *testing.T) {
 }
 
 // AC-28 (queues)
-func TestQueuesIncompleteFor(t *testing.T) {
+func TestQueuesBlocked(t *testing.T) {
 	recorded := []cassette.Interaction{
 		rec(1, "llm", "a"),
 		withError(rec(2, "llm", "b"), cassette.RecordingIncomplete+": 1 record(s) not written: queue full"),
-		withError(rec(3, "llm", "b"), cassette.RecordingIncomplete),
+		rec(3, "llm", "b"),
 		withError(rec(4, "mcp", "c"), cassette.RecordingIncomplete),
 		withError(rec(5, "llm", "d"), "reading upstream body: connection reset"),
+		rec(6, "llm", "e"),
+		inFlight(rec(7, "llm", "e")),
 	}
 	q := NewQueues(recorded, storedFingerprint)
-	if _, ok := q.Next("b"); ok {
-		t.Fatal(`Next("b") served an incomplete interaction`)
+	for _, fp := range []string{"b", "e", "e"} {
+		q.Next(fp)
 	}
 	tests := []struct {
 		fp   string
-		want int64 // 0 when there is none
+		want int64 // 0 when the queue is not blocked
 	}{
-		{fp: "b", want: 2}, // the first in recorded order
-		{fp: "a", want: 0}, // complete
+		{fp: "a", want: 0}, // complete head
+		{fp: "b", want: 2}, // stays at the head after a miss
 		{fp: "c", want: 0}, // not on a matched channel
 		{fp: "d", want: 0}, // transport error only
+		{fp: "e", want: 7}, // reached after a served interaction
 		{fp: "x", want: 0}, // never recorded
 	}
 	for _, tt := range tests {
-		in, ok := q.IncompleteFor(tt.fp)
+		in, ok := q.Blocked(tt.fp)
 		if !ok {
 			in.ID = 0
 		}
 		if in.ID != tt.want {
-			t.Errorf("IncompleteFor(%q) = %d, want %d", tt.fp, in.ID, tt.want)
+			t.Errorf("Blocked(%q) = %d, want %d", tt.fp, in.ID, tt.want)
 		}
 	}
-	if left := q.Unconsumed(); !slices.Equal(ids(left), []int64{1, 5}) {
-		t.Errorf("Unconsumed() = %v, want [1 5]", ids(left))
+	if left := q.Unconsumed(); !slices.Equal(ids(left), []int64{1, 3, 5}) {
+		t.Errorf("Unconsumed() = %v, want [1 3 5]", ids(left))
 	}
 }
 
