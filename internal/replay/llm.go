@@ -212,9 +212,10 @@ func (h *LLMHandler) miss(w http.ResponseWriter, start time.Time, res missResult
 // writes it: each SSE chunk with the offset at which it was served, and the
 // completion just before the last write reaches the agent. A request the agent
 // sends after reading the response is then always queued after this
-// completion, as in record mode (spec §7.4). As there, a last write that fails
-// leaves the interaction recorded as complete. It is used by one request's
-// goroutine only.
+// completion, as in record mode (spec §7.4). As there, each step is recorded
+// before its write: a chunk whose write fails is still recorded as served, and
+// a last write that fails leaves the interaction recorded as complete. It is
+// used by one request's goroutine only.
 type replayRecorder struct {
 	h           *LLMHandler
 	src         cassette.Interaction

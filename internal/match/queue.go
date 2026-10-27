@@ -32,7 +32,9 @@ type Queues struct {
 // (spec §5 step 2, AC-28).
 //
 // An interaction with only a transport error was recorded faithfully, so it
-// is queued and served as recorded, error included.
+// is queued like any other. The spec does not yet say how it replays
+// (core.md §5): until it does, the replay LLM handler answers it as a cassette
+// miss, so nothing is fabricated (ADR 0006).
 func NewQueues(ins []cassette.Interaction, fingerprint func(cassette.Interaction) (fp string, ok bool)) *Queues {
 	q := &Queues{pending: make(map[string][]int)}
 	for _, in := range ins {
