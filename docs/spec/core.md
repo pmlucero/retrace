@@ -321,7 +321,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
   - It updates the session's `deriver_version` and `pricing_version`.
   - It refuses a session whose status is `recording`, because it may still be in progress, and a cassette whose `deriver_version` is newer than its own.
   - The rebuilt log holds every event the deriver can derive from the stored interactions, so `reindex` sets `dropped_events` to `0` (§7.7). The exception is a session with status `diverged`: its `divergence` event comes from a cassette miss, not from an interaction, so a dropped one cannot be rebuilt. There `reindex` keeps the count and warns that it may include events it has now recovered.
-  - If any interaction's recording is incomplete (§7.3), `reindex` warns with their count: events derived from partial data may still be missing. An interaction with no `duration_ms` only occurs in a session still `recording`, which `reindex` refuses, so in practice the warning counts the marked ones.
+  - If any interaction's recording is incomplete (§7.3), `reindex` warns with their count: events derived from partial data may still be missing. This includes interactions left without a `duration_ms`, for example the request in flight when an `interrupted` session ended.
 
 ### 7.7 Gaps in the event log
 
