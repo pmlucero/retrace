@@ -3,7 +3,6 @@
 package match
 
 import (
-	"strings"
 	"sync"
 
 	"github.com/pmlucero/retrace/internal/cassette"
@@ -34,7 +33,7 @@ type Queues struct {
 func NewQueues(ins []cassette.Interaction, fingerprint func(cassette.Interaction) (fp string, ok bool)) *Queues {
 	q := &Queues{heads: make(map[string][]int)}
 	for _, in := range ins {
-		if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+		if in.Incomplete() {
 			continue
 		}
 		fp, ok := fingerprint(in)
@@ -71,7 +70,8 @@ func (q *Queues) Next(fp string) (cassette.Interaction, bool) {
 // NextUnconsumed returns the first queued interaction, in recorded order, that
 // was not consumed and satisfies keep, without consuming it. It is the
 // reference for the structural diff of a miss (spec §5 step 4), where keep
-// selects the channel and server of the missed request.
+// selects the channel and server of the missed request. keep runs with q
+// locked, so it must not call methods of q.
 func (q *Queues) NextUnconsumed(keep func(cassette.Interaction) bool) (cassette.Interaction, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
