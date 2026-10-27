@@ -151,8 +151,14 @@ func newReplayHarness(t *testing.T, src *cassette.Cassette, rules *redact.Rules,
 // the response body.
 func (r *replayHarness) post(body string) (int, string) {
 	r.t.Helper()
+	return r.postTo("/v1/messages", body)
+}
+
+// postTo sends body to path under the LLM route.
+func (r *replayHarness) postTo(path, body string) (int, string) {
+	r.t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
-		r.server.URL+"/llm/anthropic/v1/messages", strings.NewReader(body))
+		r.server.URL+"/llm/anthropic"+path, strings.NewReader(body))
 	if err != nil {
 		r.t.Fatal(err)
 	}
@@ -458,7 +464,9 @@ func TestLLMHandlerMissOnIncompleteRecording(t *testing.T) {
 	}
 }
 
-// AC-28
+// A head with only a transport error has no response to replay. The spec
+// does not say yet how it replays (core.md §5); until it does, it is a miss,
+// so nothing is fabricated (ADR 0006).
 func TestLLMHandlerMissOnUnservableHead(t *testing.T) {
 	src := sourceCassette(t, recorded{request: `{"q":"a"}`, noResponse: true})
 	r := newReplayHarness(t, src, nil, Options{})
@@ -547,5 +555,133 @@ func TestLLMHandlerCassetteReadError(t *testing.T) {
 	}
 	if len(ins) != 1 || ins[0].Error == nil || !strings.Contains(*ins[0].Error, "disk I/O error") || ins[0].StatusCode != nil {
 		t.Errorf("recorded %+v, want one interaction with the read error and no response", ins)
+	}
+}
+
+// blockingClock blocks every realtime sleep until the request is canceled.
+type blockingClock struct{ fakeClock }
+
+func (c *blockingClock) Sleep(ctx context.Context, _ time.Duration) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestLLMHandlerRecordsAnAbandonedStream(t *testing.T) {
+	chunks := []cassette.Chunk{
+		{Index: 0, OffsetMillis: 0, Data: []byte("data: {\"type\":\"message_start\"}\n\n")},
+		{Index: 1, OffsetMillis: 100, Data: []byte("data: {\"type\":\"message_stop\"}\n\n")},
+	}
+	src := sourceCassette(t, recorded{request: `{"q":"a"}`, chunks: chunks})
+	clock := &blockingClock{fakeClock: *newFakeClock()}
+	r := newReplayHarness(t, src, nil, Options{Realtime: true, Clock: clock})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.server.URL+"/llm/anthropic/v1/messages",
+		strings.NewReader(`{"q":"a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := make([]byte, len(chunks[0].Data))
+	if _, err := io.ReadFull(resp.Body, first); err != nil || string(first) != string(chunks[0].Data) {
+		t.Fatalf("first chunk %q, %v", first, err)
+	}
+	cancel() // the agent leaves while the second chunk waits for its offset
+	_ = resp.Body.Close()
+
+	ins, _ := r.stop()
+	if len(ins) != 1 {
+		t.Fatalf("recorded %d interactions, want 1", len(ins))
+	}
+	in := ins[0]
+	if in.Error == nil || !strings.Contains(*in.Error, "agent closed the connection") || in.Incomplete() {
+		t.Errorf("error %v, want the agent leaving, not an incomplete recording", in.Error)
+	}
+	got, err := r.out.Chunks(context.Background(), in.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || string(got[0].Data) != string(chunks[0].Data) {
+		t.Errorf("recorded %d chunks, want only the one served", len(got))
+	}
+}
+
+// blockingSource blocks every read of the cassette until the request is
+// canceled.
+type blockingSource struct {
+	Source
+	reading chan struct{}
+}
+
+func (s blockingSource) Blob(ctx context.Context, _ string) ([]byte, error) {
+	close(s.reading)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func TestLLMHandlerRecordsAnAgentThatLeavesBeforeTheResponse(t *testing.T) {
+	r := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})
+	reading := make(chan struct{})
+	r.h.cfg.Source = blockingSource{Source: r.h.cfg.Source, reading: reading}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-reading
+		cancel()
+	}()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, r.server.URL+"/llm/anthropic/v1/messages",
+		strings.NewReader(`{"q":"a"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		_ = resp.Body.Close()
+		t.Fatal("request succeeded, want it canceled")
+	}
+
+	ins, _ := r.stop()
+	if len(ins) != 1 || ins[0].Error == nil || !strings.Contains(*ins[0].Error, "before the response arrived") {
+		t.Errorf("recorded %+v, want the agent leaving before the response", ins)
+	}
+}
+
+func TestLLMHandlerRecordsEmptyResponses(t *testing.T) {
+	src := sourceCassette(t,
+		recorded{request: `{"q":"json"}`, body: ""},
+		recorded{request: `{"q":"sse"}`, chunks: []cassette.Chunk{}},
+	)
+	r := newReplayHarness(t, src, nil, Options{})
+	for _, req := range []string{`{"q":"json"}`, `{"q":"sse"}`} {
+		if status, body := r.post(req); status != http.StatusOK || body != "" {
+			t.Errorf("%s: got %d %q, want an empty 200", req, status, body)
+		}
+	}
+	ins, _ := r.stop()
+	if len(ins) != 2 {
+		t.Fatalf("recorded %d interactions, want 2", len(ins))
+	}
+	if in := ins[0]; in.Streamed || in.ResponseBlob == nil || r.blob(in.ResponseBlob) != "" || in.Incomplete() {
+		t.Errorf("empty body recorded as %+v", in)
+	}
+	if in := ins[1]; !in.Streamed || in.ResponseBlob != nil || in.Incomplete() {
+		t.Errorf("empty stream recorded as %+v", in)
+	}
+}
+
+func TestLLMHandlerRedactsTheQuery(t *testing.T) {
+	r := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})
+	if status, _ := r.postTo("/v1/messages?beta=true&key=sk-secret", `{"q":"a"}`); status != http.StatusOK {
+		t.Fatalf("status %d", status)
+	}
+	ins, _ := r.stop()
+	if len(ins) != 1 {
+		t.Fatalf("recorded %d interactions, want 1", len(ins))
+	}
+	if p := ins[0].Path; strings.Contains(p, "sk-secret") || !strings.HasPrefix(p, "/v1/messages?beta=true&key=") {
+		t.Errorf("path stored as %q, want the key masked", p)
 	}
 }
