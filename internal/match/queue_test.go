@@ -74,6 +74,7 @@ func TestQueues(t *testing.T) {
 			left:     []int64{},
 		},
 		{
+			// AC-28 (queues)
 			name: "incomplete recording is in no queue and not unconsumed",
 			recorded: []cassette.Interaction{
 				rec(1, "llm", "a"),
@@ -136,6 +137,43 @@ func TestQueues(t *testing.T) {
 				t.Errorf("Unconsumed() = %v, want %v", got, tt.left)
 			}
 		})
+	}
+}
+
+// AC-28 (queues)
+func TestQueuesIncompleteFor(t *testing.T) {
+	recorded := []cassette.Interaction{
+		rec(1, "llm", "a"),
+		withError(rec(2, "llm", "b"), cassette.RecordingIncomplete+": 1 record(s) not written: queue full"),
+		withError(rec(3, "llm", "b"), cassette.RecordingIncomplete),
+		withError(rec(4, "mcp", "c"), cassette.RecordingIncomplete),
+		withError(rec(5, "llm", "d"), "reading upstream body: connection reset"),
+	}
+	q := NewQueues(recorded, storedFingerprint)
+	if _, ok := q.Next("b"); ok {
+		t.Fatal(`Next("b") served an incomplete interaction`)
+	}
+	tests := []struct {
+		fp   string
+		want int64 // 0 when there is none
+	}{
+		{fp: "b", want: 2}, // the first in recorded order
+		{fp: "a", want: 0}, // complete
+		{fp: "c", want: 0}, // not on a matched channel
+		{fp: "d", want: 0}, // transport error only
+		{fp: "x", want: 0}, // never recorded
+	}
+	for _, tt := range tests {
+		in, ok := q.IncompleteFor(tt.fp)
+		if !ok {
+			in.ID = 0
+		}
+		if in.ID != tt.want {
+			t.Errorf("IncompleteFor(%q) = %d, want %d", tt.fp, in.ID, tt.want)
+		}
+	}
+	if left := q.Unconsumed(); !slices.Equal(ids(left), []int64{1, 5}) {
+		t.Errorf("Unconsumed() = %v, want [1 5]", ids(left))
 	}
 }
 
