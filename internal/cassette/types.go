@@ -74,7 +74,7 @@ type Interaction struct {
 // (spec §7.3): its error contains RecordingIncomplete, or it has no duration
 // because the recording stopped before it completed, e.g. retrace was killed.
 func (in Interaction) Incomplete() bool {
-	return in.DurationMillis == nil || in.Error != nil && strings.Contains(*in.Error, RecordingIncomplete)
+	return in.DurationMillis == nil || (in.Error != nil && strings.Contains(*in.Error, RecordingIncomplete))
 }
 
 // Completion holds the fields set when an interaction's response ends.
