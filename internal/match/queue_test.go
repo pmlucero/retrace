@@ -86,6 +86,17 @@ func TestQueues(t *testing.T) {
 			left:     []int64{},
 		},
 		{
+			// AC-28 (queues)
+			name: "complete interactions move up past an earlier incomplete one",
+			recorded: []cassette.Interaction{
+				withError(rec(1, "llm", "a"), cassette.RecordingIncomplete),
+				rec(2, "llm", "a"),
+			},
+			requests: []string{"a", "a"},
+			served:   []int64{2, 0},
+			left:     []int64{},
+		},
+		{
 			name:     "transport error with a complete recording is served as recorded",
 			recorded: []cassette.Interaction{withError(rec(1, "llm", "a"), "reading upstream body: connection reset")},
 			requests: []string{"a"},
