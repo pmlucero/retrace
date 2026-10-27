@@ -480,6 +480,37 @@ func TestProxyDoesNotStoreBodiesItCannotRedact(t *testing.T) {
 	}
 }
 
+// An SSE event that cannot be redacted stops the recording of the stream, and
+// the interaction is marked as incomplete (spec §3.5, §7.2).
+func TestProxyStopsRecordingAStreamItCannotRedact(t *testing.T) {
+	deep := `{"email":"x@example.com","n":` + strings.Repeat("[", 2000) + strings.Repeat("]", 2000) + `}`
+	email, _ := redact.ParsePath("$..email")
+	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"ok\":true}\n\n")
+		_, _ = io.WriteString(w, "data: "+deep+"\n\n")
+		_, _ = io.WriteString(w, "data: {\"ok\":true}\n\n")
+	}), 0, redact.NewRules(nil, []redact.Path{email}))
+
+	resp, err := post(h.server.URL+"/llm/anthropic/v1/messages", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(got), deep) || strings.Count(string(got), `{"ok":true}`) != 2 {
+		t.Fatal("the agent did not get the whole stream")
+	}
+
+	in := h.interactions()[0]
+	if !incomplete(in) || !strings.Contains(*in.Error, "could not be redacted") {
+		t.Errorf("error = %v, want it marked as incomplete and explained", in.Error)
+	}
+	if chunks, _ := h.c.Chunks(context.Background(), in.ID); len(chunks) != 1 {
+		t.Errorf("got %d chunks, want only the one before the event", len(chunks))
+	}
+}
+
 func TestProxyRejectsUnknownRoutes(t *testing.T) {
 	h := newHarness(t, http.NotFoundHandler())
 	for _, path := range []string{"/", "/llm/anthropicx/v1", "/mcp/orders"} {

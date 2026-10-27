@@ -230,6 +230,9 @@ func (ex *exchange) observe(b []byte) {
 			return
 		}
 		ex.appendChunk(event)
+		if ex.stopped { // the event could not be redacted
+			return
+		}
 	}
 	if int64(len(ex.sse.rest())) > ex.p.maxBody {
 		// No event boundary in sight: a malformed or binary stream.
