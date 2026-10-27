@@ -32,9 +32,10 @@ type Queues struct {
 // hold the response the agent received: a request that would match it is a
 // miss, and it is not reported by Unconsumed (spec §5 step 2, AC-28). Such an
 // interaction is still fingerprinted, so that IncompleteFor can explain the
-// miss. An interaction
-// with only a transport error was recorded faithfully, so it is queued and
-// served as recorded, error included.
+// miss. Later interactions with the same fingerprint move up past it.
+//
+// An interaction with only a transport error was recorded faithfully, so it
+// is queued and served as recorded, error included.
 func NewQueues(ins []cassette.Interaction, fingerprint func(cassette.Interaction) (fp string, ok bool)) *Queues {
 	q := &Queues{heads: make(map[string][]int), incomplete: make(map[string]cassette.Interaction)}
 	for _, in := range ins {
