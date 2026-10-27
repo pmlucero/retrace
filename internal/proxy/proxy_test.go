@@ -548,6 +548,28 @@ func (o *oneRead) Read(p []byte) (int, error) {
 
 func (o *oneRead) Close() error { return nil }
 
+// A response with no body, such as a 204, is recorded as complete with an
+// empty response blob.
+func TestProxyRecordsAnEmptyResponse(t *testing.T) {
+	h := newHarness(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	resp, err := post(h.server.URL+"/llm/anthropic/v1/messages", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+
+	in := h.interactions()[0]
+	if in.Error != nil || in.StatusCode == nil || *in.StatusCode != http.StatusNoContent || in.ResponseBlob == nil {
+		t.Fatalf("interaction = status %v, blob %v, error %v; want a complete 204 with a blob", in.StatusCode, in.ResponseBlob, in.Error)
+	}
+	if body, err := h.c.Blob(context.Background(), *in.ResponseBlob); err != nil || len(body) != 0 {
+		t.Errorf("response blob = %q, %v; want empty", body, err)
+	}
+}
+
 func TestProxyRejectsUnknownRoutes(t *testing.T) {
 	h := newHarness(t, http.NotFoundHandler())
 	for _, path := range []string{"/", "/llm/anthropicx/v1", "/mcp/orders"} {
