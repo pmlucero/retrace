@@ -40,7 +40,7 @@ func TestEncodeRoundTrip(t *testing.T) {
 		{"member order and duplicates", `{"b":1,"a":2,"b":3}`, `{"b":1,"a":2,"b":3}`},
 		{"number text", `[1.0,1e2,-0,10E-1]`, `[1.0,1e2,-0,10E-1]`},
 		{"whitespace", " {\n\t\"a\" : [ 1 , true , null ] } ", `{"a":[1,true,null]}`},
-		{"escapes", `"A\/é<\n"`, `"A/é<\n"`},
+		{"escapes", `"\u0041\/\u00e9<\n"`, `"A/é<\n"`},
 	}
 	for _, tt := range tests {
 		v, err := Decode([]byte(tt.in))
