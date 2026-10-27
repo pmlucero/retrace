@@ -46,15 +46,8 @@ type Options struct {
 // (spec §4.1, AC-10). It returns when the response is written, when writing
 // to the agent fails, or when ctx is done.
 func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options) error {
-	// The cassette is untrusted input: WriteHeader panics on a code outside
-	// 100-999, and a 1xx code is not a final response.
-	if in.StatusCode == nil || *in.StatusCode < 200 || *in.StatusCode > 999 || in.ResponseHeaders == nil {
-		return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
-	}
-	// Matching keeps incomplete recordings out of its queues (spec §5); this
-	// check keeps a truncated stream from being served as a complete one.
-	if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
-		return fmt.Errorf("serving interaction %d: %s: %w", in.ID, cassette.RecordingIncomplete, ErrUnservable)
+	if err := servable(in); err != nil {
+		return err
 	}
 	var recorded http.Header
 	if err := json.Unmarshal(in.ResponseHeaders, &recorded); err != nil {
@@ -74,13 +67,8 @@ func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.I
 		if chunks, err = src.Chunks(ctx, in.ID); err != nil {
 			return fmt.Errorf("serving interaction %d: %w", in.ID, err)
 		}
-	} else {
-		if in.ResponseBlob == nil {
-			return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
-		}
-		if body, err = src.Blob(ctx, *in.ResponseBlob); err != nil {
-			return fmt.Errorf("serving interaction %d: %w", in.ID, err)
-		}
+	} else if body, err = src.Blob(ctx, *in.ResponseBlob); err != nil {
+		return fmt.Errorf("serving interaction %d: %w", in.ID, err)
 	}
 
 	h := w.Header()
@@ -99,6 +87,25 @@ func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.I
 		return nil
 	}
 	return serveChunks(ctx, w, in.ID, chunks, opts)
+}
+
+// servable returns an error wrapping ErrUnservable when Serve would refuse in
+// without reading the cassette.
+func servable(in cassette.Interaction) error {
+	// The cassette is untrusted input: WriteHeader panics on a code outside
+	// 100-999, and a 1xx code is not a final response.
+	if in.StatusCode == nil || *in.StatusCode < 200 || *in.StatusCode > 999 || in.ResponseHeaders == nil {
+		return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
+	}
+	// Matching keeps incomplete recordings out of its queues (spec §5); this
+	// check keeps a truncated stream from being served as a complete one.
+	if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+		return fmt.Errorf("serving interaction %d: %s: %w", in.ID, cassette.RecordingIncomplete, ErrUnservable)
+	}
+	if !in.Streamed && in.ResponseBlob == nil {
+		return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
+	}
+	return nil
 }
 
 // serveChunks writes chunks after the headers were written, flushing the
