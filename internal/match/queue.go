@@ -15,7 +15,7 @@ type Queues struct {
 	mu       sync.Mutex
 	queued   []cassette.Interaction // in recorded order
 	consumed []bool                 // parallel to queued
-	heads    map[string][]int       // fingerprint -> indices into queued, head first
+	pending  map[string][]int       // fingerprint -> indices into queued, head first
 }
 
 // NewQueues places each interaction of ins in the queue of its fingerprint,
@@ -34,13 +34,13 @@ type Queues struct {
 // An interaction with only a transport error was recorded faithfully, so it
 // is queued and served as recorded, error included.
 func NewQueues(ins []cassette.Interaction, fingerprint func(cassette.Interaction) (fp string, ok bool)) *Queues {
-	q := &Queues{heads: make(map[string][]int)}
+	q := &Queues{pending: make(map[string][]int)}
 	for _, in := range ins {
 		fp, ok := fingerprint(in)
 		if !ok {
 			continue
 		}
-		q.heads[fp] = append(q.heads[fp], len(q.queued))
+		q.pending[fp] = append(q.pending[fp], len(q.queued))
 		q.queued = append(q.queued, in)
 	}
 	q.consumed = make([]bool, len(q.queued))
@@ -53,15 +53,15 @@ func NewQueues(ins []cassette.Interaction, fingerprint func(cassette.Interaction
 func (q *Queues) Next(fp string) (cassette.Interaction, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	queue := q.heads[fp]
+	queue := q.pending[fp]
 	if len(queue) == 0 || q.queued[queue[0]].Incomplete() {
 		return cassette.Interaction{}, false
 	}
 	i := queue[0]
 	if len(queue) == 1 {
-		delete(q.heads, fp)
+		delete(q.pending, fp)
 	} else {
-		q.heads[fp] = queue[1:]
+		q.pending[fp] = queue[1:]
 	}
 	q.consumed[i] = true
 	return q.queued[i], true
@@ -74,7 +74,7 @@ func (q *Queues) Next(fp string) (cassette.Interaction, bool) {
 func (q *Queues) Blocked(fp string) (cassette.Interaction, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	queue := q.heads[fp]
+	queue := q.pending[fp]
 	if len(queue) == 0 || !q.queued[queue[0]].Incomplete() {
 		return cassette.Interaction{}, false
 	}
