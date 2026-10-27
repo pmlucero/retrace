@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.10
+- Version: 0.11
 - Last updated: 2026-10-26
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -494,7 +494,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
 - **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
 - **AC-25** `record --redact '$..email'` stores no `email` value from request bodies, response bodies or SSE events (verified by scanning the raw file bytes), while the agent and the upstream receive the original bodies.
-- **AC-26** When the cassette writer drops events during `record` (forced with a stalled writer), the ended session has `dropped_events` equal to the number of dropped events, including events dropped at the end of the log, the missing `seq` values are exactly those of the other dropped events, and `reindex` restores the events of complete interactions and sets `dropped_events` to `0`.
+- **AC-26** When the cassette writer drops events during `record` (forced with failing event writes or a stalled writer), the ended session has `dropped_events` equal to the number of dropped events, including events dropped at the end of the log, the missing `seq` values are exactly those of the other dropped events, and `reindex` restores the events of complete interactions and sets `dropped_events` to `0`.
 
 ### Exact replay
 
