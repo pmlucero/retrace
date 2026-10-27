@@ -485,7 +485,7 @@ func TestProxyDoesNotStoreBodiesItCannotRedact(t *testing.T) {
 func TestProxyStopsRecordingAStreamItCannotRedact(t *testing.T) {
 	deep := `{"email":"x@example.com","n":` + strings.Repeat("[", 2000) + strings.Repeat("]", 2000) + `}`
 	email, _ := redact.ParsePath("$..email")
-	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := newHarnessWith(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"ok\":true}\n\n")
 		_, _ = io.WriteString(w, "data: "+deep+"\n\n")
