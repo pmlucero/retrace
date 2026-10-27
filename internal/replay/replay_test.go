@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -225,8 +227,14 @@ func equal(a, b []string) bool {
 // AC-10: the agent receives exactly the recorded chunks, each one as soon as
 // it is written: replay does not buffer the stream.
 func TestServeStreamIncremental(t *testing.T) {
-	in, src := sseInteraction(t, sseEvents)
-	clock := newGatedClock()
+	// Strictly increasing offsets make Serve sleep before every chunk but the
+	// first, so the gated clock holds each one back.
+	chunks := slices.Clone(sseEvents)
+	for i := range chunks {
+		chunks[i].OffsetMillis = int64(i) * 10
+	}
+	in, src := sseInteraction(t, chunks)
+	clock := &gatedClock{now: time.Unix(0, 0), gates: make(chan struct{})}
 	served := make(chan error, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		served <- Serve(r.Context(), w, src, in, Options{Realtime: true, Clock: clock})
@@ -250,7 +258,7 @@ func TestServeStreamIncremental(t *testing.T) {
 	}
 
 	var got []byte
-	for i, ch := range sseEvents {
+	for i, ch := range chunks {
 		// The next chunk is held back until this one has been read, so a
 		// buffered stream would stall here until the timeout.
 		buf := make([]byte, len(ch.Data))
@@ -258,14 +266,16 @@ func TestServeStreamIncremental(t *testing.T) {
 			t.Fatalf("reading chunk %d: %v", i, err)
 		}
 		got = append(got, buf...)
-		clock.release()
+		if i < len(chunks)-1 {
+			clock.release(t)
+		}
 	}
 	rest, err := io.ReadAll(resp.Body)
 	if err != nil {
 		t.Fatal(err)
 	}
 	got = append(got, rest...)
-	if want := concat(sseEvents); !bytes.Equal(got, want) {
+	if want := concat(chunks); !bytes.Equal(got, want) {
 		t.Errorf("stream = %q, want %q", got, want)
 	}
 	if err := <-served; err != nil {
@@ -273,15 +283,12 @@ func TestServeStreamIncremental(t *testing.T) {
 	}
 }
 
-// gatedClock lets each sleep end only when the test releases it.
+// gatedClock lets each sleep end only when the test releases it. The gate
+// is unbuffered: a release ends exactly one sleep that has already begun.
 type gatedClock struct {
 	mu    sync.Mutex
 	now   time.Time
 	gates chan struct{}
-}
-
-func newGatedClock() *gatedClock {
-	return &gatedClock{now: time.Unix(0, 0), gates: make(chan struct{}, len(sseEvents))}
 }
 
 func (c *gatedClock) Now() time.Time {
@@ -302,7 +309,14 @@ func (c *gatedClock) Sleep(ctx context.Context, d time.Duration) error {
 	return nil
 }
 
-func (c *gatedClock) release() { c.gates <- struct{}{} }
+func (c *gatedClock) release(t *testing.T) {
+	t.Helper()
+	select {
+	case c.gates <- struct{}{}:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve is not waiting for the next chunk")
+	}
+}
 
 // AC-10: without --realtime the stream is byte-identical and nothing waits.
 func TestServeStreamImmediate(t *testing.T) {
@@ -458,16 +472,26 @@ func TestServeCanceledBeforeChunks(t *testing.T) {
 // caller can still answer the request.
 func TestServeErrorsWriteNothing(t *testing.T) {
 	status := http.StatusOK
+	code := func(n int) *int { return &n }
 	hdr := json.RawMessage(`{"Content-Type":["application/json"]}`)
 	key := cassette.BlobKey([]byte("x"))
+	src := &fakeSource{blobs: map[string][]byte{key: []byte("x")}}
+	incomplete := "an SSE event was dropped; " + cassette.RecordingIncomplete
 	boom := errors.New("disk on fire")
 	tests := []struct {
 		name string
 		in   cassette.Interaction
 		src  *fakeSource
-		want error
+		want error // nil accepts any error
 	}{
 		{"no status", cassette.Interaction{ResponseHeaders: hdr}, &fakeSource{}, ErrUnservable},
+		{"status below 100", cassette.Interaction{StatusCode: code(99), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"informational status", cassette.Interaction{StatusCode: code(103), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"status above 999", cassette.Interaction{StatusCode: code(1000), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"malformed headers", cassette.Interaction{StatusCode: &status, ResponseHeaders: json.RawMessage("not json"),
+			ResponseBlob: &key}, src, nil},
+		{"recording incomplete", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr, Streamed: true,
+			Error: &incomplete}, &fakeSource{}, ErrUnservable},
 		{"no headers", cassette.Interaction{StatusCode: &status}, &fakeSource{}, ErrUnservable},
 		{"body not recorded", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr}, &fakeSource{}, ErrUnservable},
 		{"blob missing", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr, ResponseBlob: &key},
@@ -479,11 +503,54 @@ func TestServeErrorsWriteNothing(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			err := Serve(context.Background(), rec, tt.src, tt.in, Options{})
-			if !errors.Is(err, tt.want) {
+			if err == nil || tt.want != nil && !errors.Is(err, tt.want) {
 				t.Errorf("Serve = %v, want %v", err, tt.want)
 			}
 			if len(rec.Header()) > 0 || rec.Body.Len() > 0 || rec.Flushed {
 				t.Errorf("wrote headers %v, body %q", rec.Header(), rec.Body.Bytes())
+			}
+		})
+	}
+}
+
+// failingWriter is an agent connection that is gone: every write fails.
+type failingWriter struct {
+	header http.Header
+	flush  bool // false: flushing is not supported
+}
+
+func (w *failingWriter) Header() http.Header       { return w.header }
+func (w *failingWriter) WriteHeader(int)           {}
+func (w *failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
+
+func (w *failingWriter) FlushError() error {
+	if !w.flush {
+		return http.ErrNotSupported
+	}
+	return nil
+}
+
+// Serve reports a failed write or flush, naming what it was writing.
+func TestServeWriteErrors(t *testing.T) {
+	stream, streamSrc := sseInteraction(t, sseEvents)
+	body, bodySrc := jsonInteraction(t, http.StatusOK, http.Header{}, []byte(`{}`))
+	tests := []struct {
+		name  string
+		in    cassette.Interaction
+		src   Source
+		flush bool
+		want  string
+	}{
+		{"body", body, bodySrc, true, "writing body"},
+		{"chunk", stream, streamSrc, true, "writing chunk 0"},
+		{"no flusher", stream, streamSrc, false, "flushing headers"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w := &failingWriter{header: http.Header{}, flush: tt.flush}
+			err := Serve(context.Background(), w, tt.src, tt.in, Options{})
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Errorf("Serve = %v, want an error about %q", err, tt.want)
 			}
 		})
 	}

@@ -18,8 +18,9 @@ import (
 )
 
 // ErrUnservable reports that an interaction holds no complete response to
-// replay: it has no status or headers, or its body was not recorded. Serve
-// returns it before writing anything, so the caller can still answer.
+// replay: it has no valid status or no headers, its body was not recorded, or
+// its recording is marked incomplete (spec §7.3). Serve returns it before
+// writing anything, so the caller can still answer.
 var ErrUnservable = errors.New("interaction has no recorded response to replay")
 
 // Source reads what Serve needs from the cassette being replayed.
@@ -45,8 +46,15 @@ type Options struct {
 // (spec §4.1, AC-10). It returns when the response is written, when writing
 // to the agent fails, or when ctx is done.
 func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options) error {
-	if in.StatusCode == nil || in.ResponseHeaders == nil {
+	// The cassette is untrusted input: WriteHeader panics on a code outside
+	// 100-999, and a 1xx code is not a final response.
+	if in.StatusCode == nil || *in.StatusCode < 200 || *in.StatusCode > 999 || in.ResponseHeaders == nil {
 		return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
+	}
+	// Matching keeps incomplete recordings out of its queues (spec §5); this
+	// check keeps a truncated stream from being served as a complete one.
+	if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+		return fmt.Errorf("serving interaction %d: %s: %w", in.ID, cassette.RecordingIncomplete, ErrUnservable)
 	}
 	var recorded http.Header
 	if err := json.Unmarshal(in.ResponseHeaders, &recorded); err != nil {
@@ -54,7 +62,9 @@ func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.I
 	}
 
 	// Read everything before writing the headers, so a cassette error can
-	// still be answered with an error status.
+	// still be answered with an error status. The cost is one whole response
+	// in memory; reading chunks as they are served would bound memory but
+	// could fail after the status is sent.
 	var (
 		body   []byte
 		chunks []cassette.Chunk
