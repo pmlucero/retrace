@@ -103,6 +103,9 @@ func TestReindexDerivesMissingEventsAndUpdatesTheSession(t *testing.T) {
 	if res.Events != 3 || strings.Join(kinds, ",") != "user_message,model_response,tool_use" {
 		t.Errorf("reindex wrote %d events: %v", res.Events, kinds)
 	}
+	if res.IncompleteInteractions != 1 {
+		t.Errorf("reindex found %d incomplete interactions, want the one in flight", res.IncompleteInteractions)
+	}
 	s, _ := c.Session(ctx)
 	if s.DeriverVersion != Version || s.PricingVersion != anthropic.PricingVersion() {
 		t.Errorf("session versions = %d, %q; want %d, %q", s.DeriverVersion, s.PricingVersion, Version, anthropic.PricingVersion())

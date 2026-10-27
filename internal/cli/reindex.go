@@ -68,7 +68,7 @@ func runReindex(ctx context.Context, env *Env, args []string) int {
 			"session", id, "dropped_events", res.DroppedEvents)
 	}
 	if res.IncompleteInteractions > 0 {
-		log.Warn("some interactions are marked as recording incomplete: events derived from their partial data may still be missing",
+		log.Warn("some interactions have an incomplete recording: events derived from their partial data may still be missing",
 			"session", id, "interactions", res.IncompleteInteractions)
 	}
 	return ExitOK
