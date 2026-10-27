@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -371,6 +372,17 @@ func TestProxyForwardsButDoesNotRecordOversizedBodies(t *testing.T) {
 	if chunks, _ := h.c.Chunks(context.Background(), stream.ID); len(chunks) != 1 {
 		t.Errorf("stream: got %d chunks, want the one before the oversized event", len(chunks))
 	}
+	for _, in := range all {
+		if !incomplete(in) {
+			t.Errorf("%s: error %v, want it marked as incomplete", in.Path, in.Error)
+		}
+	}
+}
+
+// incomplete reports whether in carries the marker of an incomplete recording
+// (spec §7.2).
+func incomplete(in cassette.Interaction) bool {
+	return in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete)
 }
 
 // AC-25
@@ -464,7 +476,77 @@ func TestProxyDoesNotStoreBodiesItCannotRedact(t *testing.T) {
 	if in.Error == nil || strings.Count(*in.Error, "forwarded but not recorded") != 2 {
 		t.Errorf("error = %v, want both bodies explained", in.Error)
 	}
+	if !incomplete(in) || strings.Count(*in.Error, cassette.RecordingIncomplete) != 1 {
+		t.Errorf("error = %v, want it marked as incomplete once", in.Error)
+	}
 }
+
+// An SSE event that cannot be redacted stops the recording of the stream, and
+// the interaction is marked as incomplete (spec §3.5, §7.2).
+func TestProxyStopsRecordingAStreamItCannotRedact(t *testing.T) {
+	deep := `{"email":"x@example.com","n":` + strings.Repeat("[", 2000) + strings.Repeat("]", 2000) + `}`
+	email, _ := redact.ParsePath("$..email")
+	stream := "data: {\"ok\":true}\n\n" + "data: " + deep + "\n\n" + "data: {\"ok\":true}\n\n"
+	// The whole stream arrives in one read, so the events after the
+	// unredactable one reach the proxy together with it.
+	h := newHarnessOpts(t, nil, harnessOptions{
+		rules:     redact.NewRules(nil, []redact.Path{email}),
+		transport: oneReadTransport{contentType: "text/event-stream", body: stream},
+	})
+
+	resp, err := post(h.server.URL+"/llm/anthropic/v1/messages", `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if !strings.Contains(string(got), deep) || strings.Count(string(got), `{"ok":true}`) != 2 {
+		t.Fatal("the agent did not get the whole stream")
+	}
+
+	in := h.interactions()[0]
+	if !incomplete(in) || !strings.Contains(*in.Error, "could not be redacted") {
+		t.Errorf("error = %v, want it marked as incomplete and explained", in.Error)
+	}
+	if chunks, _ := h.c.Chunks(context.Background(), in.ID); len(chunks) != 1 {
+		t.Errorf("got %d chunks, want only the one before the event", len(chunks))
+	}
+}
+
+// oneReadTransport answers every request with body, which the response hands
+// over in a single Read.
+type oneReadTransport struct {
+	contentType string
+	body        string
+}
+
+func (o oneReadTransport) RoundTrip(r *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: http.StatusOK, Proto: "HTTP/1.1", ProtoMajor: 1, ProtoMinor: 1,
+		Header: http.Header{"Content-Type": {o.contentType}},
+		Body:   &oneRead{data: []byte(o.body)}, ContentLength: -1, Request: r,
+	}, nil
+}
+
+// oneRead returns all of data in its first Read, whatever the buffer size, so
+// the test does not depend on how a reader would split it.
+type oneRead struct {
+	data []byte
+	done bool
+}
+
+func (o *oneRead) Read(p []byte) (int, error) {
+	if o.done {
+		return 0, io.EOF
+	}
+	if len(p) < len(o.data) {
+		return 0, fmt.Errorf("read buffer of %d bytes, want at least %d", len(p), len(o.data))
+	}
+	o.done = true
+	return copy(p, o.data), nil
+}
+
+func (o *oneRead) Close() error { return nil }
 
 func TestProxyRejectsUnknownRoutes(t *testing.T) {
 	h := newHarness(t, http.NotFoundHandler())
