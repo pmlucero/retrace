@@ -33,6 +33,10 @@ const (
 // Config.ProtocolVersion is empty.
 const DefaultProtocolVersion = "2025-06-18"
 
+// defaultHeaderVersion is the protocol version a server assumes when a request
+// has no MCP-Protocol-Version header.
+const defaultHeaderVersion = "2025-03-26"
+
 // JSON-RPC error codes the server answers with.
 const (
 	CodeParseError     = -32700
@@ -58,7 +62,8 @@ const (
 // isError true and the error's text as content, not a JSON-RPC error.
 type ToolFunc func(ctx context.Context, args json.RawMessage) (string, error)
 
-// Tool is a tool listed by tools/list and served by tools/call.
+// Tool is a tool listed by tools/list and served by tools/call. A tool with a
+// nil Handler is list-only: tools/call answers it as an unknown tool.
 type Tool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -87,6 +92,8 @@ type Config struct {
 	EventDelay time.Duration
 	// Strict rejects requests after initialize that lack the session header
 	// (400), carry an unknown session (404) or another protocol version (400).
+	// As the transport says, a missing MCP-Protocol-Version header stands for
+	// 2025-03-26, the revision that predates it.
 	Strict bool
 }
 
@@ -265,7 +272,11 @@ func (s *Server) checkSession(h http.Header) int {
 	if !known {
 		return http.StatusNotFound
 	}
-	if h.Get(ProtocolVersionHeader) != s.cfg.ProtocolVersion {
+	v := h.Get(ProtocolVersionHeader)
+	if v == "" {
+		v = defaultHeaderVersion
+	}
+	if v != s.cfg.ProtocolVersion {
 		return http.StatusBadRequest
 	}
 	return 0
