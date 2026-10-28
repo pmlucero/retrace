@@ -313,6 +313,9 @@ func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam /
 			n = k
 		}
 	}
+	if n >= math.MaxInt64-1 {
+		return "", fmt.Errorf("the default replay number of %s would reach 2^63 - 1; name the replay with --as", source)
+	}
 	id := fmt.Sprintf("%s%d", prefix, n+1)
 	if err := cassette.ValidateSessionID(id); err != nil {
 		return "", fmt.Errorf("the default replay id is not valid (%w); name the replay with --as", err)
@@ -336,9 +339,11 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 			if n >= math.MaxInt64-1 {
 				break
 			}
-			if id = prefix + strconv.Itoa(n+1); cassette.ValidateSessionID(id) != nil {
+			next := prefix + strconv.Itoa(n+1)
+			if cassette.ValidateSessionID(next) != nil {
 				break
 			}
+			id = next
 			continue
 		}
 		if errors.Is(err, cassette.ErrExists) {

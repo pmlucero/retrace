@@ -329,6 +329,13 @@ func TestNextReplayID(t *testing.T) {
 	if _, err := nextReplayID(dir, long, "exact"); err == nil || !strings.Contains(err.Error(), "--as") {
 		t.Errorf("replay id of a 125-character id: %v, want an error asking for --as", err)
 	}
+	// spec §9.3: a default n may not reach 2^63 - 1.
+	if err := os.WriteFile(cassette.Path(dir, "b.exact.9223372036854775806"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nextReplayID(dir, "b", "exact"); err == nil || !strings.Contains(err.Error(), "--as") {
+		t.Errorf("replay id after n = 2^63 - 2: %v, want an error asking for --as", err)
+	}
 }
 
 // spec §9.3: a retry that would leave the id format or reach 2^63 - 1 asks
@@ -341,7 +348,7 @@ func TestCreateReplayCassetteGivesUp(t *testing.T) {
 			t.Fatal(err)
 		}
 		_, _, err := createReplayCassette(ctx, dir, id, false, cassette.Session{Mode: "exact", Status: "recording", OnMiss: "strict"})
-		if err == nil || !strings.Contains(err.Error(), "--as") {
+		if err == nil || !strings.Contains(err.Error(), "--as") || !strings.Contains(err.Error(), "after "+id+";") {
 			t.Errorf("%s: %v, want an error asking for --as", id, err)
 		}
 		if files, _ := os.ReadDir(dir); len(files) != 1 {
