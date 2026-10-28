@@ -100,7 +100,7 @@ func TestRunSessionFailsWithoutACommand(t *testing.T) {
 	}
 }
 
-// A cassette miss ends the session diverged, however the agent then exits,
+// AC-28: a cassette miss ends the session diverged, however the agent then exits,
 // and agent_exit_code keeps its code (spec §6.2, §9.3), but a session whose
 // agent never ran stays failed.
 func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {

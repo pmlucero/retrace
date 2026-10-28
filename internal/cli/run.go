@@ -6,6 +6,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -149,6 +150,15 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	log := env.Logger
 	const mode = "exact"
 
+	// Usage errors come before the source is opened (spec §9.3).
+	id := opts.as
+	if id == "" {
+		var err error
+		if id, err = nextReplayID(env.Globals.Dir, opts.source, mode); err != nil {
+			return usageError(env.Stderr, err.Error())
+		}
+	}
+
 	srcPath := cassette.Path(env.Globals.Dir, opts.source)
 	if _, err := os.Stat(srcPath); errors.Is(err, os.ErrNotExist) {
 		log.Error("no such session", "session", opts.source, "dir", env.Globals.Dir)
@@ -177,12 +187,6 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	if len(command) == 0 {
 		// Before any cassette is created (spec §9.3).
 		return usageError(env.Stderr, fmt.Sprintf("session %q has no recorded command; give one after '--'", opts.source))
-	}
-	id := opts.as
-	if id == "" {
-		if id, err = nextReplayID(env.Globals.Dir, opts.source, mode); err != nil {
-			return usageError(env.Stderr, err.Error())
-		}
 	}
 
 	rules, err := redact.RulesFromMetadata(srcSession.Redaction)
@@ -286,7 +290,9 @@ func llmQueues(ctx context.Context, src *cassette.Cassette) (*match.Queues, erro
 }
 
 // nextReplayID returns the default id of a replay of source: source.mode.n,
-// with n one more than the highest in use, or 1 (spec §9.3).
+// with n one more than the highest in use, or 1 (spec §9.3). Only an n in
+// decimal digits, without leading zeros and below math.MaxInt64, counts: a
+// crafted file name must not make n+1 overflow.
 func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam // M5 passes swap-model and live-tools
 	prefix := source + "." + mode + "."
 	matches, err := filepath.Glob(filepath.Join(dir, prefix+"*.cassette")) // ids hold no glob characters
@@ -296,10 +302,10 @@ func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam /
 	n := 0
 	for _, m := range matches {
 		s := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), prefix), ".cassette")
-		if strings.Trim(s, "0123456789") != "" {
-			continue // only decimal digits count (spec §9.3), not "+7" or "x"
+		if s == "" || s[0] == '0' || strings.Trim(s, "0123456789") != "" {
+			continue // not "07", "+7" or "x"
 		}
-		if k, err := strconv.Atoi(s); err == nil && k > n {
+		if k, err := strconv.Atoi(s); err == nil && k > n && k < math.MaxInt64 {
 			n = k
 		}
 	}
@@ -322,6 +328,9 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 		if errors.Is(err, cassette.ErrExists) && !explicit {
 			prefix := strings.TrimRightFunc(id, func(r rune) bool { return r >= '0' && r <= '9' })
 			n, _ := strconv.Atoi(strings.TrimPrefix(id, prefix))
+			if n == math.MaxInt64 {
+				break
+			}
 			if id = prefix + strconv.Itoa(n+1); cassette.ValidateSessionID(id) != nil {
 				break
 			}

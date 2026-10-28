@@ -312,7 +312,7 @@ func TestNextReplayID(t *testing.T) {
 	if id, err := nextReplayID(dir, "s", "exact"); err != nil || id != "s.exact.1" {
 		t.Errorf("first replay id %q, %v; want s.exact.1", id, err)
 	}
-	for _, f := range []string{"s.exact.1", "s.exact.7", "s.exact.x", "s.exact.+9", "s.swap-model.9"} {
+	for _, f := range []string{"s.exact.1", "s.exact.7", "s.exact.x", "s.exact.+9", "s.exact.09", "s.exact.9223372036854775807", "s.exact.99999999999999999999", "s.swap-model.9"} {
 		if err := os.WriteFile(cassette.Path(dir, f), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
