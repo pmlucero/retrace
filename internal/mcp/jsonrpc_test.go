@@ -78,6 +78,10 @@ func TestParseBody(t *testing.T) {
 		{name: "duplicate member", in: `{"id":1,"result":1,"result":2}`, want: "response 1"},
 		{name: "trailing data", in: `{"id":1,"result":1} {}`, wantErr: true},
 		{name: "unterminated", in: `{"id":1,"result":1`, wantErr: true},
+		{name: "unterminated after a member", in: `{"id":1,"result":1,`, wantErr: true},
+		{name: "malformed member name", in: `{"id":1,2:3}`, wantErr: true},
+		{name: "malformed member value", in: `{"id":1,"result":tru}`, wantErr: true},
+		{name: "malformed nested value", in: `{"id":1,"params":{"a"}}`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,11 +119,12 @@ func TestWithID(t *testing.T) {
 	}{
 		{"number to string", `{"jsonrpc":"2.0","id":1,"result":{"id":1}}`, `"x"`, `{"jsonrpc":"2.0","id":"x","result":{"id":1}}`},
 		{"spacing kept", "{ \"result\" : [ 1 ] , \"id\" : \"long-id\" }", `7`, "{ \"result\" : [ 1 ] , \"id\" : 7 }"},
-		{"escaped key", "{\"" + escapedI + "d\":2,\"method\":\"ping\"}", `3`, "{\"" + escapedI + "d\":3,\"method\":\"ping\"}"},
+		{"escaped key", "{\"" + escapedI + "d\":2,\"result\":{}}", `3`, "{\"" + escapedI + "d\":3,\"result\":{}}"},
 		{"other case is another member", `{"ID":"keep","id":1,"result":{}}`, `2`, `{"ID":"keep","id":2,"result":{}}`},
 		{"duplicate id uses the last", `{"id":1,"id":2,"result":null}`, `9`, `{"id":1,"id":9,"result":null}`},
 		{"null id", `{"id":null,"error":{}}`, `4`, `{"id":4,"error":{}}`},
 		{"notification unchanged", `{"method":"n","params":{"id":1}}`, `5`, `{"method":"n","params":{"id":1}}`},
+		{"server request unchanged", `{"id":"s1","method":"sampling/createMessage"}`, `5`, `{"id":"s1","method":"sampling/createMessage"}`},
 	}
 	for _, tt := range tests {
 		body, err := ParseBody([]byte(tt.in))
@@ -129,6 +134,19 @@ func TestWithID(t *testing.T) {
 		if got := string(body.Messages[0].WithID([]byte(tt.id))); got != tt.want {
 			t.Errorf("%s: WithID = %s, want %s", tt.name, got, tt.want)
 		}
+	}
+}
+
+// A caller may reuse its buffer once ParseBody returns.
+func TestParseBodyDoesNotAlias(t *testing.T) {
+	buf := []byte(`{"id":1,"result":{}}`)
+	body, err := ParseBody(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	copy(buf, `XXXXXXXXXXXXXXXXXXXX`)
+	if got := string(body.Messages[0].Raw); got != `{"id":1,"result":{}}` {
+		t.Errorf("Raw = %s after the buffer was reused", got)
 	}
 }
 

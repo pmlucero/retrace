@@ -52,9 +52,11 @@ type Message struct {
 
 // WithID returns Raw with the id replaced by id, keeping every other byte as
 // recorded, so replay can answer with the incoming request's id
-// (spec §5 step 3). A message without an id is returned unchanged.
+// (spec §5 step 3). Only responses are rewritten: a request the server sends
+// in an SSE response carries an id from the server's own id space, which the
+// agent echoes back, so it is returned unchanged like any other message.
 func (m Message) WithID(id json.RawMessage) json.RawMessage {
-	if m.ID == nil {
+	if m.Kind != Response {
 		return m.Raw
 	}
 	out := make([]byte, 0, len(m.Raw)-len(m.ID)+len(id))
@@ -77,6 +79,8 @@ type Body struct {
 // batch are errors: callers then treat the body as opaque. Inside a batch,
 // an element that is not a valid message is kept with Kind Invalid, so the
 // other elements are still usable and positions are preserved.
+//
+// The messages never alias body, so a caller may reuse its buffer.
 func ParseBody(body []byte) (Body, error) {
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	if len(trimmed) > 0 && trimmed[0] == '[' {
@@ -97,7 +101,8 @@ func ParseBody(body []byte) (Body, error) {
 		}
 		return Body{Messages: msgs, Batch: true}, nil
 	}
-	m, err := parseMessage(body)
+	// Batch elements are already copies; a single message is copied here.
+	m, err := parseMessage(bytes.Clone(body))
 	if err != nil {
 		return Body{}, err
 	}
