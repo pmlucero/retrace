@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -48,6 +49,9 @@ func TestRunOpensNoOutboundConnections(t *testing.T) {
 	up.Start()
 	t.Cleanup(up.Close)
 	want := recordAgainst(t, dir, "s", 2, up.URL)
+	if !strings.Contains(want, "event: message_stop") {
+		t.Fatalf("recorded agent output %q, want a streamed session", want)
+	}
 
 	replaying.Store(true)
 	failOutboundDials(t)
@@ -55,7 +59,7 @@ func TestRunOpensNoOutboundConnections(t *testing.T) {
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
-	if got := r.stdout.String(); got != want || !strings.Contains(got, "event: message_stop") {
+	if got := r.stdout.String(); got != want {
 		t.Errorf("replayed agent output:\n%s\nwant the recorded stream:\n%s", got, want)
 	}
 }
@@ -108,9 +112,14 @@ func TestRunReplaysARecordedTransportError(t *testing.T) {
 		t.Fatalf("replay has %d interactions, source %d; want 2 each", len(ins), len(srcIns))
 	}
 	in, src := ins[0], srcIns[0]
-	if in.Provenance != "replayed" || in.SourceInteractionID == nil || *in.SourceInteractionID != src.ID ||
-		in.StatusCode != nil || in.Error == nil || src.Error == nil || *in.Error != *src.Error {
-		t.Errorf("replayed interaction %+v, want replayed from %d with no status and its error %v", in, src.ID, src.Error)
+	if in.Provenance != "replayed" || in.SourceInteractionID == nil || *in.SourceInteractionID != src.ID {
+		t.Errorf("provenance %s from %v, want replayed from %d", in.Provenance, in.SourceInteractionID, src.ID)
+	}
+	if in.StatusCode != nil {
+		t.Errorf("status %d, want none", *in.StatusCode)
+	}
+	if src.Error == nil || textOf(in.Error) != textOf(src.Error) {
+		t.Errorf("error %s, want the source's %s", textOf(in.Error), textOf(src.Error))
 	}
 
 	events := eventsOf(t, dir, "s.exact.1")
@@ -121,9 +130,14 @@ func TestRunReplaysARecordedTransportError(t *testing.T) {
 		}
 	}
 	got, wantEvent := modelResponseOf(events, in.ID), modelResponseOf(srcEvents, src.ID)
-	if got == nil || wantEvent == nil || got.Status != "error" || got.Status != wantEvent.Status ||
-		got.Error == nil || wantEvent.Error == nil || *got.Error != *wantEvent.Error {
-		t.Errorf("model_response %+v, want the source's %+v", got, wantEvent)
+	if got == nil || wantEvent == nil {
+		t.Fatalf("model_response %+v, source's %+v; want both", got, wantEvent)
+	}
+	if got.Status != "error" || got.Status != wantEvent.Status {
+		t.Errorf("model_response status %q, want the source's %q (error)", got.Status, wantEvent.Status)
+	}
+	if wantEvent.Error == nil || textOf(got.Error) != textOf(wantEvent.Error) {
+		t.Errorf("model_response error %s, want the source's %s", textOf(got.Error), textOf(wantEvent.Error))
 	}
 }
 
@@ -171,6 +185,14 @@ func eventsOf(t *testing.T, dir, id string) []cassette.Event {
 		t.Fatal(err)
 	}
 	return events
+}
+
+// textOf quotes *s for a failure message, or says that s is nil.
+func textOf(s *string) string {
+	if s == nil {
+		return "<nil>"
+	}
+	return strconv.Quote(*s)
 }
 
 func modelResponseOf(events []cassette.Event, interactionID int64) *cassette.Event {
