@@ -18,13 +18,15 @@ import (
 // Version is the version of the derivation logic, stored in each event and in
 // the session (spec §7.2, §7.4). Bump it whenever the events derived from the
 // same interactions change, so cassettes can be told apart and reindexed.
-const Version = 1
+// Version 2 adds the MCP events.
+const Version = 2
 
-// Deriver derives LLM events (spec §7.4). It implements cassette.Deriver. It
-// is not safe for concurrent use: the cassette writer and reindex each call
-// it from one goroutine.
+// Deriver derives LLM and MCP events (spec §7.4). It implements
+// cassette.Deriver. It is not safe for concurrent use: the cassette writer
+// and reindex each call it from one goroutine.
 type Deriver struct {
-	calls map[int64]*llmCall // Messages API interactions not yet complete, by id
+	calls    map[int64]*llmCall // Messages API interactions not yet complete, by id
+	mcpCalls map[int64]*mcpCall // MCP POSTs with tools/call requests not yet complete, by id
 	// userMessages maps a user message's key to the seq of its user_message
 	// event, so it is emitted once (spec §7.4). It grows by one entry per
 	// distinct user message of the session.
@@ -41,7 +43,7 @@ type llmCall struct {
 
 // New returns a Deriver for one session.
 func New() *Deriver {
-	return &Deriver{calls: map[int64]*llmCall{}, userMessages: map[string]int64{}}
+	return &Deriver{calls: map[int64]*llmCall{}, mcpCalls: map[int64]*mcpCall{}, userMessages: map[string]int64{}}
 }
 
 var _ cassette.Deriver = (*Deriver)(nil)
@@ -59,8 +61,13 @@ func isMessages(in cassette.Interaction) bool {
 	return path == "/v1/messages"
 }
 
-// Begin derives the user_message of a request, once per distinct message.
+// Begin derives the events of a request: the user_message of a Messages API
+// call, once per distinct message, or the events of an MCP POST's messages.
 func (d *Deriver) Begin(in cassette.Interaction, request []byte, emit cassette.EmitFunc) {
+	if isMCPPost(in) {
+		d.beginMCP(in, request, emit)
+		return
+	}
 	if !isMessages(in) {
 		return
 	}
@@ -94,12 +101,20 @@ func (d *Deriver) Begin(in cassette.Interaction, request []byte, emit cassette.E
 func (d *Deriver) Chunk(ch cassette.Chunk) {
 	if call := d.calls[ch.InteractionID]; call != nil {
 		call.stream.Feed(ch.Data)
+	} else if call := d.mcpCalls[ch.InteractionID]; call != nil {
+		call.chunk(ch.Data)
 	}
 }
 
-// Complete derives the model_response of an interaction and its tool_use
-// events.
+// Complete derives the events of a response: the model_response of a
+// Messages API call and its tool_use events, or the tool_result of each
+// tools/call of an MCP POST.
 func (d *Deriver) Complete(id int64, done cassette.Completion, response []byte, emit cassette.EmitFunc) {
+	if call := d.mcpCalls[id]; call != nil {
+		delete(d.mcpCalls, id)
+		call.complete(done, response, emit)
+		return
+	}
 	call := d.calls[id]
 	if call == nil {
 		return

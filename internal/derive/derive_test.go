@@ -190,10 +190,14 @@ func streamedToolUse() []string {
 	}
 }
 
-var scenarios = []struct {
+// scenario is a recording whose events are checked against a golden file,
+// and rebuilt by reindex.
+type scenario struct {
 	name      string
 	exchanges []exchange
-}{
+}
+
+var scenarios = append([]scenario{
 	{
 		// A tool loop with JSON responses: one user_message, two
 		// model_responses, one tool_use.
@@ -227,8 +231,8 @@ var scenarios = []struct {
 		},
 	},
 	{
-		// Only POST /v1/messages on the LLM channel derives events. A model
-		// the price table does not know gets no cost.
+		// Only POST /v1/messages on the LLM channel derives LLM events. A
+		// model the price table does not know gets no cost.
 		name: "other_paths_and_unknown_model",
 		exchanges: []exchange{
 			{path: "/v1/messages/count_tokens", request: weatherQuestion, status: 200, response: `{"input_tokens":12}`, durationMillis: 5},
@@ -247,10 +251,11 @@ var scenarios = []struct {
 			{startMillis: 100, status: 200, response: weatherAnswer, durationMillis: 20},
 		},
 	},
-}
+}, mcpScenarios...)
 
-// AC-05 (LLM): events are derived with their §7.4 fields, including tokens
-// and estimated cost for each model_response, and correct source and target.
+// AC-05: events are derived with their §7.4 fields, including tokens and
+// estimated cost for each model_response, the tool, arguments, result and
+// status of MCP events, and correct source and target.
 func TestDeriveGolden(t *testing.T) {
 	for _, sc := range scenarios {
 		t.Run(sc.name, func(t *testing.T) {
