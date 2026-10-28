@@ -26,9 +26,8 @@ type sessionConfig struct {
 	id       string             // RETRACE_SESSION_ID
 	mode     string             // RETRACE_MODE
 	mcp      []string           // registered MCP server names
-	command  []string           // the agent command
+	command  []string           // the agent command; an empty one fails the session
 	cwd      string             // the agent's working directory; "" inherits retrace's
-	startMsg string             // logged when the agent is launched
 }
 
 // sessionResult is how a session ended.
@@ -40,7 +39,8 @@ type sessionResult struct {
 
 // runSession serves cfg.handler on cfg.listener, runs the agent with the
 // injected environment (spec §3.2) until it exits, then finalizes the
-// cassette. It returns an error only when the cassette may be incomplete.
+// cassette. It returns an error, already logged, only when the cassette may be
+// incomplete.
 func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult, error) {
 	log := env.Logger
 	srv := &http.Server{Handler: cfg.handler, ReadHeaderTimeout: 30 * time.Second}
@@ -51,10 +51,6 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	}()
 
 	base := "http://" + cfg.listener.Addr().String()
-	cmd := exec.CommandContext(ctx, cfg.command[0], cfg.command[1:]...) //nolint:gosec // G204: running the user's agent is the point
-	cmd.Dir = cfg.cwd
-	cmd.Env = withEnv(os.Environ(), agentEnv(base, cfg.id, cfg.mode, cfg.mcp))
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = env.Stdin, env.Stdout, env.Stderr
 
 	// Signals are handled until the cassette is closed: one that arrives while
 	// the session is being finished must not kill retrace halfway.
@@ -63,10 +59,13 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	defer stopSignals()
 
 	path := cfg.cassette.Path()
-	log.Info(cfg.startMsg, "session", cfg.id, "cassette", path, "proxy", base)
+	msg := "replaying"
+	if cfg.mode == "record" {
+		msg = "recording"
+	}
+	log.Info(msg, "session", cfg.id, "cassette", path, "proxy", base)
 	res := sessionResult{status: "completed"}
-	if err := cmd.Start(); err != nil {
-		log.Error("cannot start the agent", "command", cfg.command[0], "error", err)
+	if cmd := startAgent(ctx, env, cfg, base); cmd == nil {
 		res.status = "failed"
 	} else {
 		res.agent = waitAgent(cmd, sigs, log)
@@ -95,6 +94,25 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	}
 	res.stats = cfg.writer.Stats()
 	return res, nil
+}
+
+// startAgent starts cfg.command with the injected environment (spec §3.2), or
+// logs why it cannot and returns nil. The command may come from a cassette,
+// which is untrusted input, so an empty one is not assumed away.
+func startAgent(ctx context.Context, env *Env, cfg sessionConfig, base string) *exec.Cmd {
+	if len(cfg.command) == 0 {
+		env.Logger.Error("cannot start the agent: no agent command")
+		return nil
+	}
+	cmd := exec.CommandContext(ctx, cfg.command[0], cfg.command[1:]...) //nolint:gosec // G204: running the user's agent is the point
+	cmd.Dir = cfg.cwd
+	cmd.Env = withEnv(os.Environ(), agentEnv(base, cfg.id, cfg.mode, cfg.mcp))
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = env.Stdin, env.Stdout, env.Stderr
+	if err := cmd.Start(); err != nil {
+		env.Logger.Error("cannot start the agent", "command", cfg.command[0], "error", err)
+		return nil
+	}
+	return cmd
 }
 
 // exitCode maps how the session ended to retrace's exit code (spec §9.7).

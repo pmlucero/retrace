@@ -27,11 +27,13 @@ func TestHelperCwdAgent(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestRunSessionRunsTheAgentInCwd(t *testing.T) {
-	t.Setenv(cwdAgentEnv, "1")
+// newTestSession returns a session config with a fresh cassette, its writer
+// and a loopback listener, and the path of the cassette.
+func newTestSession(t *testing.T) (sessionConfig, string) {
+	t.Helper()
 	ctx := context.Background()
-	dir := t.TempDir()
-	c, err := cassette.Create(ctx, filepath.Join(dir, "s.cassette"))
+	path := filepath.Join(t.TempDir(), "s.cassette")
+	c, err := cassette.Create(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,8 +43,7 @@ func TestRunSessionRunsTheAgentInCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	log := slog.New(slog.DiscardHandler)
-	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Logger: log})
+	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Logger: slog.New(slog.DiscardHandler)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,15 +51,19 @@ func TestRunSessionRunsTheAgentInCwd(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	t.Cleanup(func() { _ = ln.Close() })
+	return sessionConfig{listener: ln, handler: http.NotFoundHandler(), cassette: c, writer: w, id: "s", mode: "record"}, path
+}
 
+func TestRunSessionRunsTheAgentInCwd(t *testing.T) {
+	t.Setenv(cwdAgentEnv, "1")
+	cfg, _ := newTestSession(t)
 	cwd := t.TempDir()
+	cfg.command = []string{os.Args[0], "-test.run=^TestHelperCwdAgent$"}
+	cfg.cwd = cwd
 	out := &syncBuffer{}
-	env := &Env{Stdout: out, Stderr: &syncBuffer{}, Logger: log}
-	res, err := runSession(ctx, env, sessionConfig{
-		listener: ln, handler: http.NotFoundHandler(), cassette: c, writer: w,
-		id: "s", mode: "record", command: []string{os.Args[0], "-test.run=^TestHelperCwdAgent$"}, cwd: cwd,
-	})
+	env := &Env{Stdout: out, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
+	res, err := runSession(context.Background(), env, cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,6 +73,27 @@ func TestRunSessionRunsTheAgentInCwd(t *testing.T) {
 	want, _ := filepath.EvalSymlinks(cwd)
 	if got, _ := filepath.EvalSymlinks(strings.TrimSpace(out.String())); got != want {
 		t.Errorf("agent ran in %q, want %q", got, want)
+	}
+}
+
+// A replayed session's command comes from the cassette, which is untrusted:
+// an empty one fails the session instead of crashing retrace.
+func TestRunSessionFailsWithoutACommand(t *testing.T) {
+	cfg, path := newTestSession(t)
+	env := &Env{Stdout: &syncBuffer{}, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
+	res, err := runSession(context.Background(), env, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.status != "failed" || res.exitCode() != ExitError {
+		t.Errorf("status %q, exit code %d; want failed, %d", res.status, res.exitCode(), ExitError)
+	}
+	s, err := openCassette(t, path).Session(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Status != "failed" || s.AgentExitCode != nil {
+		t.Errorf("session status %q, agent exit code %v; want failed and none", s.Status, s.AgentExitCode)
 	}
 }
 

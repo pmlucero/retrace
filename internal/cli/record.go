@@ -203,7 +203,6 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		mode:     "record",
 		mcp:      names,
 		command:  opts.command,
-		startMsg: "recording",
 	})
 	if err != nil {
 		return ExitError
