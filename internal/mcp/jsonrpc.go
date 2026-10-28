@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 )
 
 // Kind tells what a JSON-RPC message is.
@@ -103,52 +104,69 @@ func ParseBody(body []byte) (Body, error) {
 	return Body{Messages: []Message{m}}, nil
 }
 
-// parseMessage parses one JSON-RPC message. Unknown members are ignored.
+// parseMessage parses one JSON-RPC message. Member names match exactly, as
+// in JSON-RPC and in jsonvalue, unlike encoding/json's struct decoding. With
+// duplicate members the last one counts. Unknown members are ignored.
 func parseMessage(data []byte) (Message, error) {
-	var raw struct {
-		ID     json.RawMessage `json:"id"`
-		Method json.RawMessage `json:"method"`
-		Params json.RawMessage `json:"params"`
-		Result json.RawMessage `json:"result"`
-		Error  json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return Message{}, fmt.Errorf("parsing JSON-RPC message: %w", err)
-	}
 	data = bytes.TrimSpace(data)
-	if data[0] != '{' { // null decodes into a struct without error
+	m := Message{Raw: json.RawMessage(data)}
+	var method json.RawMessage
+	// One pass reads the members and where the id is, so WithID always
+	// rewrites the member that m.ID came from.
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return Message{}, errors.New("parsing JSON-RPC message: not an object")
 	}
-	m := Message{
-		Raw:    json.RawMessage(data),
-		ID:     raw.ID,
-		Params: raw.Params,
-		Result: raw.Result,
-		Error:  raw.Error,
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return Message{}, fmt.Errorf("parsing JSON-RPC message: %w", err)
+		}
+		var v json.RawMessage
+		if err := dec.Decode(&v); err != nil {
+			return Message{}, fmt.Errorf("parsing JSON-RPC message: %w", err)
+		}
+		switch key {
+		case "id":
+			m.ID = v
+			m.idEnd = int(dec.InputOffset())
+			m.idStart = m.idEnd - len(v)
+		case "method":
+			method = v
+		case "params":
+			m.Params = v
+		case "result":
+			m.Result = v
+		case "error":
+			m.Error = v
+		}
 	}
-	if raw.ID != nil {
-		m.idStart, m.idEnd = idSpan(data)
+	if _, err := dec.Token(); err != nil { // '}'
+		return Message{}, fmt.Errorf("parsing JSON-RPC message: %w", err)
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return Message{}, errors.New("parsing JSON-RPC message: trailing data after the object")
 	}
 	switch {
-	case raw.Method != nil:
-		if err := json.Unmarshal(raw.Method, &m.Method); err != nil {
+	case method != nil:
+		if err := json.Unmarshal(method, &m.Method); err != nil {
 			return Message{}, errors.New("parsing JSON-RPC message: method is not a string")
 		}
-		if raw.Result != nil || raw.Error != nil {
+		if m.Result != nil || m.Error != nil {
 			return Message{}, errors.New("parsing JSON-RPC message: method together with result or error")
 		}
 		m.Kind = Notification
-		if raw.ID != nil {
+		if m.ID != nil {
 			// MCP request ids are strings or integers, never null.
-			if !isStringOrNumber(raw.ID) {
+			if !isStringOrNumber(m.ID) {
 				return Message{}, errors.New("parsing JSON-RPC message: request id is not a string or number")
 			}
 			m.Kind = Request
 		}
-	case raw.ID != nil && (raw.Result != nil) != (raw.Error != nil):
+	case m.ID != nil && (m.Result != nil) != (m.Error != nil):
 		// An error response to a request whose id could not be read has a
 		// null id (JSON-RPC 2.0 §5).
-		if !isStringOrNumber(raw.ID) && string(raw.ID) != "null" {
+		if !isStringOrNumber(m.ID) && string(m.ID) != "null" {
 			return Message{}, errors.New("parsing JSON-RPC message: response id is not a string, number or null")
 		}
 		m.Kind = Response
@@ -156,26 +174,6 @@ func parseMessage(data []byte) (Message, error) {
 		return Message{}, errors.New("parsing JSON-RPC message: neither a request, a notification nor a response")
 	}
 	return m, nil
-}
-
-// idSpan returns where the value of the top-level "id" member is in obj, a
-// valid JSON object. With duplicate members it is the last one, the one
-// encoding/json decodes.
-func idSpan(obj []byte) (start, end int) {
-	dec := json.NewDecoder(bytes.NewReader(obj))
-	_, _ = dec.Token() // '{'
-	for dec.More() {
-		key, _ := dec.Token()
-		var v json.RawMessage
-		if dec.Decode(&v) != nil {
-			break
-		}
-		if key == "id" {
-			end = int(dec.InputOffset())
-			start = end - len(v)
-		}
-	}
-	return start, end
 }
 
 func isStringOrNumber(v json.RawMessage) bool {

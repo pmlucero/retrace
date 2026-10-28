@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -38,7 +39,7 @@ func TestParseBody(t *testing.T) {
 		wantErr  bool
 	}{
 		{name: "request", in: `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, want: "request 1 tools/list"},
-		{name: "string id kept as is", in: `{"jsonrpc":"2.0","id":"ab","method":"ping"}`, want: `request "ab" ping`},
+		{name: "string id kept as is", in: `{"jsonrpc":"2.0","id":"a` + escaped('b') + `","method":"ping"}`, want: `request "a` + escaped('b') + `" ping`},
 		{name: "number id text kept", in: `{"id":1.0,"method":"ping"}`, want: "request 1.0 ping"},
 		{name: "notification", in: `{"jsonrpc":"2.0","method":"notifications/initialized"}`, want: "notification notifications/initialized"},
 		{name: "result", in: `{"jsonrpc":"2.0","id":7,"result":{}}`, want: "response 7"},
@@ -72,6 +73,11 @@ func TestParseBody(t *testing.T) {
 		{name: "result and error", in: `{"id":1,"result":1,"error":{}}`, wantErr: true},
 		{name: "response without id", in: `{"result":1}`, wantErr: true},
 		{name: "response with boolean id", in: `{"id":true,"result":1}`, wantErr: true},
+		{name: "member names are case-sensitive", in: `{"ID":1,"Result":{}}`, wantErr: true},
+		{name: "upper-case method is not a method", in: `{"Method":"ping"}`, wantErr: true},
+		{name: "duplicate member", in: `{"id":1,"result":1,"result":2}`, want: "response 1"},
+		{name: "trailing data", in: `{"id":1,"result":1} {}`, wantErr: true},
+		{name: "unterminated", in: `{"id":1,"result":1`, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -95,6 +101,12 @@ func TestParseBody(t *testing.T) {
 	}
 }
 
+var escapedI = escaped('i')
+
+// escaped returns the JSON \uXXXX escape of c, for ids and keys that are
+// equal by value but not byte for byte.
+func escaped(c byte) string { return fmt.Sprintf("%cu%04x", '\\', c) }
+
 // Spec §5 step 3: a replayed response gets the incoming request's id, and
 // the rest of the message is kept as recorded.
 func TestWithID(t *testing.T) {
@@ -103,7 +115,8 @@ func TestWithID(t *testing.T) {
 	}{
 		{"number to string", `{"jsonrpc":"2.0","id":1,"result":{"id":1}}`, `"x"`, `{"jsonrpc":"2.0","id":"x","result":{"id":1}}`},
 		{"spacing kept", "{ \"result\" : [ 1 ] , \"id\" : \"long-id\" }", `7`, "{ \"result\" : [ 1 ] , \"id\" : 7 }"},
-		{"escaped key", `{"id":2,"method":"ping"}`, `3`, `{"id":3,"method":"ping"}`},
+		{"escaped key", "{\"" + escapedI + "d\":2,\"method\":\"ping\"}", `3`, "{\"" + escapedI + "d\":3,\"method\":\"ping\"}"},
+		{"other case is another member", `{"ID":"keep","id":1,"result":{}}`, `2`, `{"ID":"keep","id":2,"result":{}}`},
 		{"duplicate id uses the last", `{"id":1,"id":2,"result":null}`, `9`, `{"id":1,"id":9,"result":null}`},
 		{"null id", `{"id":null,"error":{}}`, `4`, `{"id":4,"error":{}}`},
 		{"notification unchanged", `{"method":"n","params":{"id":1}}`, `5`, `{"method":"n","params":{"id":1}}`},
