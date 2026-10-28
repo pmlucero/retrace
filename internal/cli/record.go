@@ -201,6 +201,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		writer:   w,
 		id:       id,
 		mode:     "record",
+		startMsg: "recording",
 		mcp:      names,
 		command:  opts.command,
 	})

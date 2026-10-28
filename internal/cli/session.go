@@ -25,6 +25,7 @@ type sessionConfig struct {
 	writer   *cassette.Writer   // closed by runSession with the session's end
 	id       string             // RETRACE_SESSION_ID
 	mode     string             // RETRACE_MODE
+	startMsg string             // logged when the session starts, e.g. "recording"
 	mcp      []string           // registered MCP server names
 	command  []string           // the agent command; an empty one fails the session
 	cwd      string             // the agent's working directory; "" inherits retrace's
@@ -59,11 +60,7 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	defer stopSignals()
 
 	path := cfg.cassette.Path()
-	msg := "replaying"
-	if cfg.mode == "record" {
-		msg = "recording"
-	}
-	log.Info(msg, "session", cfg.id, "cassette", path, "proxy", base)
+	log.Info(cfg.startMsg, "session", cfg.id, "cassette", path, "proxy", base)
 	res := sessionResult{status: "completed"}
 	if cmd := startAgent(ctx, env, cfg, base); cmd == nil {
 		res.status = "failed"

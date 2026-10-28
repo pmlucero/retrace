@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -52,7 +53,7 @@ func newTestSession(t *testing.T) (sessionConfig, string) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
-	return sessionConfig{listener: ln, handler: http.NotFoundHandler(), cassette: c, writer: w, id: "s", mode: "record"}, path
+	return sessionConfig{listener: ln, handler: http.NotFoundHandler(), cassette: c, writer: w, id: "s", mode: "record", startMsg: "recording"}, path
 }
 
 func TestRunSessionRunsTheAgentInCwd(t *testing.T) {
@@ -122,7 +123,7 @@ func TestAgentEnv(t *testing.T) {
 		"RETRACE_MODE":              "exact",
 		"RETRACE_MCP_ORDERS_DB_URL": "http://127.0.0.1:1/mcp/orders-db",
 	}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
+	if !maps.Equal(got, want) {
 		t.Errorf("agentEnv = %v, want %v", got, want)
 	}
 }
