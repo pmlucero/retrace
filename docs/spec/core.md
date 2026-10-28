@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.13
-- Last updated: 2026-10-27
+- Version: 0.14
+- Last updated: 2026-10-28
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -155,8 +155,9 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
    - **LLM**: the body without `metadata`.
    - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`.
 
-   Body redaction rules (§3.5) are applied first. A body that is not valid JSON is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007.
+   Body redaction rules (§3.5) are applied first. A body that is not valid JSON, or that is nested more than 1000 levels deep, is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007. A request whose body cannot be redacted (§3.5) cannot be matched: it is a cassette miss, and its divergence event has a null `received_fingerprint`, so no hash of unredacted data reaches the cassette.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
+   An interaction recorded with a transport error (no status, §7.3) whose recording is complete is served as the answer the agent got while recording: HTTP `502` with a body that starts with `retrace: upstream request failed:` and includes the interaction's `error`. It reproduces what the agent saw, so it is not a fabricated response, and it is stored with `provenance = replayed` like any other.
    When an interaction's recording is incomplete (§7.3), replay never fabricates its response silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). Such an interaction keeps its place in its queue but cannot be served: a request that reaches it is a cassette miss, and it stays at the head, so the divergence shows up at the step where it happened. It is not reported as unconsumed (§4.4). This refines point 2 of ADR 0007, which predates incomplete recordings.
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
@@ -293,7 +294,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 
 **Deriving LLM events.** LLM events are derived from `POST /v1/messages` interactions on the LLM channel, whatever their query string. Other LLM paths produce no events.
 
-- Events are derived from what the cassette stores, after redaction (§3.5), so that `reindex` (§7.6) derives the same events and a redacted value never reaches an event. Each event has the `provenance` of its interaction.
+- Events are derived from what the cassette stores, after redaction (§3.5), so that `reindex` (§7.6) derives the same events and a redacted value never reaches an event. Each event has the `provenance` of its interaction. A `divergence` event, which has no interaction, has `provenance = replayed`.
 - `user_message`: its text is the message's string content, or its `text` blocks joined with `\n`. A message is identified by the request's `messages` up to and including it, so a repeated request emits no second `user_message`, while the same text sent again later in the conversation does. It starts at the interaction's `started_at` and has no duration.
 - `model_response`: there is one for every interaction, also when the response is an error or never arrived. Then `status` is `error`, and `error` holds the API error (`<type>: <message>`, from the body or from an SSE `error` event) or the interaction's `error`. An interaction whose recording is incomplete (§7.3) also gives `error`. It starts at the interaction's `started_at` and lasts its `duration_ms`. `requested_model` comes from the request, and `model` and tokens from the response: `input_tokens`, `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`. For SSE, usage fields in `message_delta` replace those of `message_start`. `parent_seq` is the `user_message` of the request's trailing user message, if there is one.
 - `tool_use`: `arguments` is the block's `input`. A streamed input that is not valid JSON is kept as a JSON string. It happens when the response ends, and has no duration.
