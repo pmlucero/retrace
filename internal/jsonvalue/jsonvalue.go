@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
+	"strings"
 )
 
 // Value is a decoded JSON value. It is one of *Object, Array, string,
@@ -103,21 +105,38 @@ func decodeValue(dec *json.Decoder, depth int) (Value, error) {
 // Encode writes v compactly, in member order, without HTML escaping.
 func Encode(v Value) []byte {
 	var b bytes.Buffer
-	writeValue(&b, v)
+	writeValue(&b, v, false)
 	return b.Bytes()
 }
 
-func writeValue(b *bytes.Buffer, v Value) {
+// EncodeCanonical writes v like Encode, but with the members of every object
+// sorted by key, comparing the keys' UTF-8 bytes. Duplicate keys keep their
+// relative order. Values that differ only in member order, whitespace or
+// string escapes give the same bytes, while numbers keep their text
+// (ADR 0007 §1). Decoding replaces invalid UTF-8 and lone surrogate escapes
+// with U+FFFD, so strings that differ only there are equal too.
+func EncodeCanonical(v Value) []byte {
+	var b bytes.Buffer
+	writeValue(&b, v, true)
+	return b.Bytes()
+}
+
+func writeValue(b *bytes.Buffer, v Value, sorted bool) {
 	switch t := v.(type) {
 	case *Object:
+		members := t.Members
+		if sorted {
+			members = slices.Clone(members)
+			slices.SortStableFunc(members, func(x, y Member) int { return strings.Compare(x.Key, y.Key) })
+		}
 		b.WriteByte('{')
-		for i, m := range t.Members {
+		for i, m := range members {
 			if i > 0 {
 				b.WriteByte(',')
 			}
 			writeString(b, m.Key)
 			b.WriteByte(':')
-			writeValue(b, m.Value)
+			writeValue(b, m.Value, sorted)
 		}
 		b.WriteByte('}')
 	case Array:
@@ -126,7 +145,7 @@ func writeValue(b *bytes.Buffer, v Value) {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			writeValue(b, e)
+			writeValue(b, e, sorted)
 		}
 		b.WriteByte(']')
 	case string:
