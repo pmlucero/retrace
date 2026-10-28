@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.15
+- Version: 0.16
 - Last updated: 2026-10-28
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -144,7 +144,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. Forwarded ones get `provenance = live`.
-- At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error.
+- At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error. MCP interactions that replay answers without matching (§5 step 3) are never reported as unconsumed.
 - A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction. An interaction recorded with a transport error has neither status nor headers, and is served as in §5 step 2.
 
 ## 5. Request matching
@@ -153,13 +153,16 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
 
 1. Incoming requests on a matched channel are canonicalized and fingerprinted.
    - **LLM**: the body without `metadata`.
-   - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`.
+   - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`. A batch is fingerprinted as one unit: the server name and the list of its messages, each canonicalized the same way, in their order.
 
    Body redaction rules (§3.5) are applied first. A body that is not valid JSON, or that is nested more than 1000 levels deep, is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007. A request whose body cannot be redacted (§3.5) cannot be matched: it is a cassette miss, and its divergence event has a null `received_fingerprint`, so no hash of unredacted data reaches the cassette.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
    On the LLM channel, an interaction recorded with a transport error (no status, §7.3) whose recording is complete is served as the answer the agent got while recording: HTTP `502`, with the headers the proxy sends for a transport error and a body that starts with `retrace: upstream request failed:` and includes the interaction's `error`. Only the prefix is fixed, because the stored `error` may be reworded, e.g. when the agent had already closed the connection. This reproduces what the agent saw, so it is not a fabricated response. The new interaction is stored with `provenance = replayed`, no status and the source interaction's `error`, so it derives the same events as the source (§7.4).
    When an interaction's recording is incomplete (§7.3), replay never fabricates its response silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). Such an interaction keeps its place in its queue but cannot be served: a request that reaches it is a cassette miss, and it stays at the head, so the divergence shows up at the step where it happened. It is not reported as unconsumed (§4.4). This refines point 2 of ADR 0007, which predates incomplete recordings.
-3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
+3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. In a batch, or in an SSE response, each response gets the id of the request it answers, and the rest of each message is kept as recorded.
+   - `initialize` responses get a fresh `Mcp-Session-Id`, one per server and per `initialize`. Every other replayed response of that server that carried an `Mcp-Session-Id` gets the current fresh one instead of the recorded one. Incoming `Mcp-Session-Id` headers are not checked.
+   - Some requests are answered without matching, and consume no recorded interaction: a `POST` that holds only notifications or responses from the client gets `202`, `GET` gets `405`, and `DELETE` gets `200`. They are stored in the new cassette with `provenance = replayed` and no source interaction, so the replay's log shows what the agent sent.
+   - A miss on the MCP channel is answered with a JSON-RPC error `-32099` (§6.2 step 2), with the incoming request's id, or one error per request in a batch.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
    When the request reaches an interaction whose recording is incomplete, no diff is computed. The divergence event sets `incomplete_interaction` to that interaction's id, and the error message the agent receives says the matching recording is incomplete, so the user knows to record the session again rather than debug the agent.
 
@@ -435,6 +438,7 @@ The mode is derived from the flags:
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
+- MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace.
 - Errors in the flags and arguments (exit `2`), including a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The empty-command check needs the source, so it comes after, and before the check that an `--as` id already exists (exit `1`).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
@@ -513,10 +517,12 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 
 - **AC-08** `run <id>` (exact) replays a recorded session with all upstreams unreachable. The agent's stdout matches the original run's stdout.
 - **AC-09** In exact mode the proxy opens zero outbound connections (enforced by a dialer that fails the test if called).
-- **AC-10** Streaming responses are replayed byte-identically. With `--realtime`, chunk offsets are within ±20 ms of the recorded ones.
+- **AC-10** Streaming responses are replayed byte-identically, except for the JSON-RPC ids that MCP replay rewrites (§5 step 3). With `--realtime`, chunk offsets are within ±20 ms of the recorded ones.
 - **AC-11** JSON-RPC ids in replayed MCP responses match the incoming request ids, and `Mcp-Session-Id` is freshly issued.
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
+- **AC-31** In exact mode, an MCP request that cannot be served from its queue gets a JSON-RPC error `-32099` with the request's id, appends a `divergence` event with `channel = mcp` and the server's `upstream`, and the replay ends with status `diverged` and exit `3`.
+- **AC-32** In exact mode, a `POST` with only client notifications gets `202`, `GET` gets `405` and `DELETE` gets `200`. None of them consumes a recorded interaction, and recorded ones of these kinds are not reported as unconsumed.
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. This holds even when the agent then exits with a non-zero code or retrace receives a signal, and in both cases `agent_exit_code` keeps the agent's code. The incomplete interaction is not reported as unconsumed.
 - **AC-29** In exact mode, an LLM request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same `model_response` as the source.
 - **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run` of a source with no recorded command and no `-- <cmd>` exits `2`. None of them creates a new cassette.
