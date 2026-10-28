@@ -1,0 +1,2 @@
+{"message":{"kind":"request","method":"tools/call","params":{"arguments":{"token":"[REDACTED:1ec1c26b]"},"name":"login"}},"server":"auth"}
+866d8ae604b0069c76f6e31765a111a4fb3bb85a89c57e90f9d3e1c08e98b493

@@ -1,0 +1,2 @@
+{"message":{"kind":"request","method":"tools/call","params":{"arguments":{"path":"/tmp/a"},"name":"read_file"}},"server":"git"}
+db1e7d59ab1b37e2100bd6ff242209d6679975bd1e2e2ce3f61c74692ce0e850
