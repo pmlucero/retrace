@@ -223,7 +223,7 @@ All timestamps are RFC 3339 UTC strings with microsecond precision. Durations ar
 | `agent_exit_code` | INTEGER NULL | Exit code of the agent process |
 | `model_override` | TEXT NULL | `--model` value in `swap-model` |
 | `on_miss` | TEXT | Divergence strategy name |
-| `mcp_servers` | JSON | `[{name, url, protocol_version, server_info}]`. `protocol_version` and `server_info` are absent, not `null`, when no `initialize` exchange qualifies (§3.4). `server_info` is the `serverInfo` object as received, and is also absent when the chosen result has no `serverInfo` object |
+| `mcp_servers` | JSON | `[{name, url, protocol_version, server_info}]`. `protocol_version` and `server_info` are absent, not `null`, when no `initialize` exchange qualifies (§3.4). `server_info` is the `serverInfo` object of the recorded result (after redaction, §3.5), and is also absent when the chosen result has no `serverInfo` object |
 | `redaction` | JSON | Active header and body redaction rules |
 | `retrace_version` | TEXT | Version of the binary that wrote the cassette |
 | `deriver_version` | INTEGER | Version of the event derivation logic |
