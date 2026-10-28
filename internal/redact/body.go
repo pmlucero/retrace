@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+
+	"github.com/pmlucero/retrace/internal/jsonvalue"
 )
 
 // BodyRules returns the body redaction rules as written, for the cassette's
@@ -29,8 +31,8 @@ func (r *Rules) Body(data []byte) ([]byte, error) {
 	if len(r.body) == 0 {
 		return data, nil
 	}
-	v, err := decodeJSON(data)
-	if errors.Is(err, errTooDeep) {
+	v, err := jsonvalue.Decode(data)
+	if errors.Is(err, jsonvalue.ErrTooDeep) {
 		return nil, fmt.Errorf("%w: %w", ErrNotRedactable, err)
 	}
 	if err != nil {
@@ -43,7 +45,7 @@ func (r *Rules) Body(data []byte) ([]byte, error) {
 	if maskSelections(sel) == 0 {
 		return data, nil
 	}
-	return encodeJSON(v), nil
+	return jsonvalue.Encode(v), nil
 }
 
 // SSEEvent returns one raw SSE event with the body rules applied to its data.
