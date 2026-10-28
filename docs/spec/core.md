@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.13
-- Last updated: 2026-10-27
+- Version: 0.14
+- Last updated: 2026-10-28
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -108,7 +108,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - Rules apply to every JSON body retrace stores, on both channels: request bodies, non-streamed response bodies, and the `data` of each SSE event. A body that is not JSON is stored as it is.
 - Each matched value, whatever its type, is replaced by the string `[REDACTED:<sha256-prefix-8>]`. A string is hashed as it is, so it gets the same marker as the same value in a header. Any other value is hashed over its JSON text. A value selected by several rules, or nested inside another selected value, is masked once, over its original content.
 - A body with no match is stored byte for byte. A body with a match is re-encoded compactly, keeping member order and number formats. In an SSE event, a `data` field split over several lines is written back as one `data:` line when something in it is masked. The other lines and their endings are kept.
-- A body nested more than 1000 levels deep cannot be redacted safely, so it is not stored, and the interaction's `error` says why. The same applies to an SSE event that cannot be redacted (the rest of the stream is not stored either), and to a body or SSE event larger than the proxy's in-memory limit for one body or event. In each case the interaction's recording is incomplete (§7.3), so replaying it is a cassette miss (§5).
+- When body rules are set, a body nested more than 1000 levels deep cannot be redacted safely, so it is not stored, and the interaction's `error` says why. The same applies to an SSE event that cannot be redacted (the rest of the stream is not stored either), and to a body or SSE event larger than the proxy's in-memory limit for one body or event. In each case the interaction's recording is incomplete (§7.3), so replaying it is a cassette miss (§5).
 - Redaction runs on the forwarding path. It parses each stored JSON body once, which takes milliseconds for a megabyte, against model latencies of hundreds of milliseconds.
 - The agent and the upstream always receive the original bodies. Only what is written to the cassette is redacted.
 - The rules are stored in the session's `redaction` metadata (§7.2). M3 applies them to incoming requests before fingerprinting them (§5).
@@ -145,7 +145,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. Forwarded ones get `provenance = live`.
 - At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error.
-- A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction.
+- A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction. An interaction recorded with a transport error has neither status nor headers, and is served as in §5 step 2.
 
 ## 5. Request matching
 
@@ -155,8 +155,9 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
    - **LLM**: the body without `metadata`.
    - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`.
 
-   Body redaction rules (§3.5) are applied first. A body that is not valid JSON is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007.
+   Body redaction rules (§3.5) are applied first. A body that is not valid JSON, or that is nested more than 1000 levels deep, is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007. A request whose body cannot be redacted (§3.5) cannot be matched: it is a cassette miss, and its divergence event has a null `received_fingerprint`, so no hash of unredacted data reaches the cassette.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
+   On the LLM channel, an interaction recorded with a transport error (no status, §7.3) whose recording is complete is served as the answer the agent got while recording: HTTP `502`, with the headers the proxy sends for a transport error and a body that starts with `retrace: upstream request failed:` and includes the interaction's `error`. Only the prefix is fixed, because the stored `error` may be reworded, e.g. when the agent had already closed the connection. This reproduces what the agent saw, so it is not a fabricated response. The new interaction is stored with `provenance = replayed`, no status and the source interaction's `error`, so it derives the same events as the source (§7.4).
    When an interaction's recording is incomplete (§7.3), replay never fabricates its response silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). Such an interaction keeps its place in its queue but cannot be served: a request that reaches it is a cassette miss, and it stays at the head, so the divergence shows up at the step where it happened. It is not reported as unconsumed (§4.4). This refines point 2 of ADR 0007, which predates incomplete recordings.
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
@@ -293,7 +294,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 
 **Deriving LLM events.** LLM events are derived from `POST /v1/messages` interactions on the LLM channel, whatever their query string. Other LLM paths produce no events.
 
-- Events are derived from what the cassette stores, after redaction (§3.5), so that `reindex` (§7.6) derives the same events and a redacted value never reaches an event. Each event has the `provenance` of its interaction.
+- Events are derived from what the cassette stores, after redaction (§3.5), so that `reindex` (§7.6) derives the same events and a redacted value never reaches an event. Each event has the `provenance` of its interaction. A `divergence` event, which has no interaction, has `provenance = replayed`.
 - `user_message`: its text is the message's string content, or its `text` blocks joined with `\n`. A message is identified by the request's `messages` up to and including it, so a repeated request emits no second `user_message`, while the same text sent again later in the conversation does. It starts at the interaction's `started_at` and has no duration.
 - `model_response`: there is one for every interaction, also when the response is an error or never arrived. Then `status` is `error`, and `error` holds the API error (`<type>: <message>`, from the body or from an SSE `error` event) or the interaction's `error`. An interaction whose recording is incomplete (§7.3) also gives `error`. It starts at the interaction's `started_at` and lasts its `duration_ms`. `requested_model` comes from the request, and `model` and tokens from the response: `input_tokens`, `output_tokens`, `cache_read_input_tokens` and `cache_creation_input_tokens`. For SSE, usage fields in `message_delta` replace those of `message_start`. `parent_seq` is the `user_message` of the request's trailing user message, if there is one.
 - `tool_use`: `arguments` is the block's `input`. A streamed input that is not valid JSON is kept as a JSON string. It happens when the response ends, and has no duration.
@@ -510,6 +511,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
+- **AC-29** In exact mode, an LLM request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same `model_response` as the source.
 
 ### Swap-model and strict
 

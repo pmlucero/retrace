@@ -1,8 +1,8 @@
 # MVP implementation plan
 
 - Status: Approved
-- Last updated: 2026-10-27
-- Spec: [core.md](../spec/core.md) v0.13 (updated whenever the spec version changes)
+- Last updated: 2026-10-28
+- Spec: [core.md](../spec/core.md) v0.14 (updated whenever the spec version changes)
 
 This plan orders the implementation of the MVP defined in the [core spec](../spec/core.md). It says *in what order* things are built and *how* progress is tracked. *What* is built is defined by the spec and the [ADRs](../adr/README.md). If they disagree, the spec wins, and this plan is updated.
 
@@ -25,7 +25,7 @@ Each milestone is scoped by **spec sections** (what must be implemented) and **a
 | M0 | Go skeleton and CI | `go.mod`, `cmd/retrace` with `--version`, `internal/` layout, subcommand dispatch, global flags, golangci-lint, Go CI jobs as required checks, Dependabot for `gomod` | §9.1 (flags), §9.7 (codes `1`, `2`) | — |
 | M1 | Cassette store | SQLite schema, embedded forward-only migrations, refusal to write newer schemas, content-addressed blobs, append-only writer behind a bounded queue (see *Design points*), reader | §7.1–7.4, §7.6 | Foundation for AC-05, AC-07 |
 | M2 | Record: LLM channel | Proxy and router, session id validation, child process with injected environment, Anthropic Messages API (JSON and SSE), header **and body** redaction, signal handling, LLM event derivation, embedded price table, `retrace reindex`, `dropped_events` and schema migration `0002` (ADR 0010), cassette warning in `record --help` | §3.1–3.3, §3.5, §7.4 (LLM), §7.5, §7.6 (`reindex`), §7.7, §9.2, §9.7 (code `4`), §10 | AC-01, AC-02, AC-03, AC-05 (LLM), AC-06, AC-07, AC-24, AC-25, AC-26 |
-| M3 | Exact replay: LLM channel | Canonicalization and fingerprints, per-fingerprint FIFO queues, SSE re-emission, `--realtime`, `retrace run` (exact), unconsumed-interaction warning, `provenance`, minimal miss handling | §4.1, §4.4, §5 (LLM), §6.2 (steps 1, 2 and 4), §9.3 (exact), §9.7 (code `3`) | AC-08 (LLM), AC-09 (LLM), AC-10 (LLM), AC-12, AC-28 |
+| M3 | Exact replay: LLM channel | Canonicalization and fingerprints, per-fingerprint FIFO queues, SSE re-emission, `--realtime`, `retrace run` (exact), unconsumed-interaction warning, `provenance`, minimal miss handling | §4.1, §4.4, §5 (LLM), §6.2 (steps 1, 2 and 4), §9.3 (exact), §9.7 (code `3`) | AC-08 (LLM), AC-09 (LLM), AC-10 (LLM), AC-12, AC-28, AC-29 |
 | | **First usable slice:** record and replay offline an agent that only uses the LLM | | | |
 | M4 | MCP: record and replay | Streamable HTTP proxy, JSON and SSE responses, batches, JSON-RPC id and `Mcp-Session-Id` rewriting, MCP event derivation, `tool_call` ↔ `tool_use` linking | §3.4, §5 (MCP), §7.4 (MCP) | AC-04, AC-05 (MCP), AC-08, AC-09 (MCP), AC-10 (MCP), AC-11, AC-13 |
 | M5 | Swap-model, strict and live-tools | `model` rewrite, `DivergenceStrategy` interface, `strict` behind the interface (MCP error response, agent termination with `--grace`, divergence report), reserved strategies, flag validation, live-tools | §4.2, §4.3, §6, §9.3 (modes), §9.7 (code `3`) | AC-14, AC-15, AC-16, AC-17, AC-18 |
