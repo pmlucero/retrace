@@ -32,22 +32,28 @@ import (
 // whitespace, numbers in their original text and strings re-encoded the
 // same way whatever escapes they were written with.
 //
-// A body that is not valid JSON, that is nested deeper than
-// jsonvalue.MaxDepth, or that is neither a JSON-RPC message nor a non-empty
-// batch is fingerprinted over its raw bytes together with the server name
-// (spec §5): its form is the server name as a JSON string, a newline and the
-// body as it is. That form starts with a quote, so it cannot collide with
-// the form of a JSON-RPC body, which starts with a brace, and the JSON string
-// ends unambiguously, so two servers never share a form.
+// A body that is valid JSON but neither a JSON-RPC message nor a non-empty
+// batch has no method or params to keep, so its form holds the whole body,
+// canonicalized: {"body":...,"server":"fs"}.
+//
+// A body that is not valid JSON, or that is nested deeper than
+// jsonvalue.MaxDepth, is fingerprinted over its raw bytes together with the
+// server name (spec §5): its form is the server name as a JSON string, a
+// newline and the body as it is. That form starts with a quote, so it cannot
+// collide with the form of a JSON body, which starts with a brace, and the
+// JSON string ends unambiguously, so two servers never share a form.
 func Canonicalize(server string, body []byte) []byte {
 	// Decoding the whole body first applies the depth limit to it as a
 	// whole, and lets canonicalMessage decode its parts without failing.
-	if _, err := jsonvalue.Decode(body); err != nil {
-		return rawForm(server, body)
-	}
-	parsed, err := ParseBody(body)
+	whole, err := jsonvalue.Decode(body)
 	if err != nil {
 		return rawForm(server, body)
+	}
+	form := &jsonvalue.Object{Members: []jsonvalue.Member{{Key: "server", Value: server}}}
+	parsed, err := ParseBody(body)
+	if err != nil {
+		form.Members = append(form.Members, jsonvalue.Member{Key: "body", Value: whole})
+		return jsonvalue.EncodeCanonical(form)
 	}
 	msgs := make(jsonvalue.Array, len(parsed.Messages))
 	for i, m := range parsed.Messages {
@@ -57,7 +63,6 @@ func Canonicalize(server string, body []byte) []byte {
 		}
 		msgs[i] = v
 	}
-	form := &jsonvalue.Object{Members: []jsonvalue.Member{{Key: "server", Value: server}}}
 	if parsed.Batch {
 		form.Members = append(form.Members, jsonvalue.Member{Key: "batch", Value: msgs})
 	} else {
@@ -66,7 +71,7 @@ func Canonicalize(server string, body []byte) []byte {
 	return jsonvalue.EncodeCanonical(form)
 }
 
-// rawForm is the canonical form of a body that is not JSON-RPC.
+// rawForm is the canonical form of a body that is not valid JSON.
 func rawForm(server string, body []byte) []byte {
 	form := append(jsonvalue.EncodeCanonical(server), '\n')
 	return append(form, body...)
@@ -74,46 +79,38 @@ func rawForm(server string, body []byte) []byte {
 
 // canonicalMessage returns the part of m that identifies it for matching.
 func canonicalMessage(m Message) (jsonvalue.Value, error) {
-	obj := &jsonvalue.Object{}
-	add := func(key string, raw []byte) error {
-		v, err := jsonvalue.Decode(raw)
-		if err != nil {
-			return err
-		}
-		if key == "params" {
-			if p, ok := v.(*jsonvalue.Object); ok {
-				p.Members = slices.DeleteFunc(p.Members, func(mb jsonvalue.Member) bool { return mb.Key == "_meta" })
-			}
-		}
-		obj.Members = append(obj.Members, jsonvalue.Member{Key: key, Value: v})
-		return nil
-	}
-	var err error
+	var kind, key string
+	var raw []byte
 	switch m.Kind {
-	case Request, Notification:
-		kind := "request"
-		if m.Kind == Notification {
-			kind = "notification"
-		}
-		obj.Members = append(obj.Members,
-			jsonvalue.Member{Key: "kind", Value: kind},
-			jsonvalue.Member{Key: "method", Value: m.Method})
-		if m.Params != nil {
-			err = add("params", m.Params)
-		}
+	case Request:
+		kind, key, raw = "request", "params", m.Params
+	case Notification:
+		kind, key, raw = "notification", "params", m.Params
 	case Response:
-		obj.Members = append(obj.Members, jsonvalue.Member{Key: "kind", Value: "response"})
+		kind, key, raw = "response", "result", m.Result
 		if m.Error != nil {
-			err = add("error", m.Error)
-		} else {
-			err = add("result", m.Result)
+			key, raw = "error", m.Error
 		}
 	default:
-		obj.Members = append(obj.Members, jsonvalue.Member{Key: "kind", Value: "invalid"})
-		err = add("element", m.Raw)
+		kind, key, raw = "invalid", "element", m.Raw
 	}
+	isCall := m.Kind == Request || m.Kind == Notification
+	obj := &jsonvalue.Object{Members: []jsonvalue.Member{{Key: "kind", Value: kind}}}
+	if isCall {
+		obj.Members = append(obj.Members, jsonvalue.Member{Key: "method", Value: m.Method})
+	}
+	if raw == nil {
+		return obj, nil // a request or notification without params
+	}
+	v, err := jsonvalue.Decode(raw)
 	if err != nil {
 		return nil, err
 	}
+	if p, ok := v.(*jsonvalue.Object); ok && isCall {
+		// Spec §5 step 1: params._meta carries per-call data, such as a
+		// progress token, that is not part of what is asked.
+		p.Members = slices.DeleteFunc(p.Members, func(mb jsonvalue.Member) bool { return mb.Key == "_meta" })
+	}
+	obj.Members = append(obj.Members, jsonvalue.Member{Key: key, Value: v})
 	return obj, nil
 }

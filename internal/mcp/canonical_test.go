@@ -94,6 +94,11 @@ func TestCanonicalizeEquivalentBodies(t *testing.T) {
 			`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"café","arguments":{"a":1,"b":2}}}`,
 			" {\"params\": {\"arguments\": {\"b\": 2, \"a\": 1},\n \"name\": \"caf\\u00e9\"}, \"method\": \"tools\\/call\", \"id\": 5}\n",
 		},
+		"not JSON-RPC": {
+			`{"id":null,"method":"m"}`,
+			` { "method":"m", "id":null } `,
+		},
+		"empty batch": {`[]`, " [\n] "},
 		"ids in a batch": {
 			`[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","id":"s-1","result":{}}]`,
 			`[{"jsonrpc":"2.0","id":"x","method":"tools/list"},{"jsonrpc":"2.0","id":"s-9","result":{}}]`,
@@ -132,7 +137,9 @@ func TestCanonicalizeDistinctBodies(t *testing.T) {
 		{"result vs error", "fs", `[{"id":1,"result":{}}]`, "fs", `[{"id":1,"error":{}}]`},
 		{"not JSON vs JSON", "fs", `{"id":1,"method":"m"`, "fs", `{"id":1,"method":"m"}`},
 		{"raw bodies of different servers", "a", `x`, "a\"\n", `x`},
-		{"raw body vs form-like server", "fs", `{"message":{"kind":"request","method":"m"},"server":"fs"}`, "fs", `{"id":1,"method":"m"}`},
+		{"not JSON-RPC vs JSON-RPC", "fs", `{"id":1}`, "fs", `{"id":1,"method":"m"}`},
+		{"empty batch", "fs", `[]`, "fs", `{}`},
+		{"raw body vs form-like body", "fs", `{"message":{"kind":"request","method":"m"},"server":"fs"}`, "fs", `{"id":1,"method":"m"}`},
 	}
 	for _, p := range pairs {
 		if bytes.Equal(Canonicalize(p.serverA, []byte(p.a)), Canonicalize(p.serverB, []byte(p.b))) {
