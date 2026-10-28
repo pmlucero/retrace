@@ -11,16 +11,18 @@ import (
 )
 
 // mcpCall is what a POST on the MCP channel contributes until it completes:
-// its JSON-RPC requests, the tool_call event of each tools/call among them,
-// and the messages of its streamed response.
+// its JSON-RPC requests and the responses of its streamed response.
 type mcpCall struct {
 	in       cassette.Interaction
-	requests []mcp.Message
-	// toolCalls holds the seq of the tool_call of requests[i], or 0 when
-	// requests[i] is not a tools/call.
-	toolCalls []int64
-	tools     []string // the tool name of requests[i], for its tool_result
-	stream    []mcp.Message
+	requests []mcpRequest
+	stream   []mcp.Message
+}
+
+// mcpRequest is a JSON-RPC request of a POST, waiting for its response.
+type mcpRequest struct {
+	msg      mcp.Message // always of Kind mcp.Request
+	toolCall int64       // the seq of its tool_call, or 0 when it is not a tools/call
+	tool     string      // the tool name of a tools/call, for its tool_result
 }
 
 // isMCPPost reports whether in is a POST on the MCP channel, the only
@@ -35,12 +37,9 @@ func isMCPPost(in cassette.Interaction) bool {
 // request or notification (spec §7.4). Client responses, invalid batch
 // elements and bodies that are not JSON-RPC derive nothing.
 func (d *Deriver) beginMCP(in cassette.Interaction, request []byte, emit cassette.EmitFunc) {
-	if request == nil {
-		return
-	}
 	body, err := mcp.ParseBody(request)
 	if err != nil {
-		return
+		return // not JSON-RPC, or not stored: nil is not a message either
 	}
 	call := &mcpCall{in: in}
 	toolCalls := false
@@ -55,9 +54,7 @@ func (d *Deriver) beginMCP(in cassette.Interaction, request []byte, emit cassett
 				StartedAt: in.StartedAt, Tool: nonEmpty(tc.Name), Arguments: compact(tc.Arguments),
 				Status: "ok", Provenance: in.Provenance, DeriverVersion: Version,
 			})
-			call.requests = append(call.requests, m)
-			call.toolCalls = append(call.toolCalls, seq)
-			call.tools = append(call.tools, tc.Name)
+			call.requests = append(call.requests, mcpRequest{msg: m, toolCall: seq, tool: tc.Name})
 			toolCalls = true
 		case m.Kind == mcp.Request || m.Kind == mcp.Notification:
 			emit(cassette.Event{
@@ -68,9 +65,7 @@ func (d *Deriver) beginMCP(in cassette.Interaction, request []byte, emit cassett
 			if m.Kind == mcp.Request {
 				// Paired too, so a response to it never answers a tools/call
 				// that reuses its id.
-				call.requests = append(call.requests, m)
-				call.toolCalls = append(call.toolCalls, 0)
-				call.tools = append(call.tools, "")
+				call.requests = append(call.requests, mcpRequest{msg: m})
 			}
 		}
 	}
@@ -100,17 +95,21 @@ func (c *mcpCall) chunk(data []byte) {
 // server sends in an SSE response, derive no events.
 func (c *mcpCall) complete(done cassette.Completion, response []byte, emit cassette.EmitFunc) {
 	responses, parseErr := c.responses(done, response)
-	pairing := mcp.PairMessages(c.requests, responses)
-	for i, p := range pairing.Pairs {
-		seq := c.toolCalls[i]
-		if seq == 0 {
+	msgs := make([]mcp.Message, len(c.requests))
+	for i, r := range c.requests {
+		msgs[i] = r.msg
+	}
+	// Every message is a request, so Pairs[i] answers c.requests[i].
+	pairing := mcp.PairMessages(msgs, responses)
+	for i, r := range c.requests {
+		if r.toolCall == 0 {
 			continue
 		}
-		result, errMsg := toolResult(done, p.Response, parseErr)
+		result, errMsg := toolResult(done, pairing.Pairs[i].Response, parseErr)
 		e := cassette.Event{
-			ParentSeq: ptr(seq), InteractionID: ptr(c.in.ID), Kind: "tool_result",
+			ParentSeq: ptr(r.toolCall), InteractionID: ptr(c.in.ID), Kind: "tool_result",
 			Source: c.in.Upstream, Target: "agent", StartedAt: c.in.StartedAt,
-			DurationMillis: ptr(done.DurationMillis), Tool: nonEmpty(c.tools[i]), Result: result,
+			DurationMillis: ptr(done.DurationMillis), Tool: nonEmpty(r.tool), Result: result,
 			Status: "ok", Provenance: c.in.Provenance, DeriverVersion: Version,
 		}
 		if errMsg != "" {
