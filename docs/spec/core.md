@@ -431,7 +431,7 @@ The mode is derived from the flags:
 - `--as`: id of the new session.
   - The default is `<id>.<mode>.<n>`, with `n` incrementing: `1` for the first replay of `<id>` in that mode, then one more than the highest `n` among the cassette files in `--dir` named `<id>.<mode>.<n>`. Only an `n` written in decimal digits, without leading zeros and below 2^63 − 1, counts. Other names are ignored.
   - As in `record` (§9.2), existence is decided by the cassette file. If another session takes the default id before the cassette is created, the next `n` is tried. If that `n` does not fit the id format or reaches 2^63 − 1, `run` fails with exit `1` and asks for `--as`.
-  - If the default does not fit the id format (§9.2), it is a usage error that asks for `--as`.
+  - If the default does not fit the id format (§9.2), or its `n` reaches 2^63 − 1, it is a usage error that asks for `--as`.
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
