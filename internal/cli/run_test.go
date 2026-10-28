@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -238,6 +239,25 @@ func TestRunRefusesASourceWithoutACommand(t *testing.T) {
 	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
 	if r.code != ExitUsage || !strings.Contains(r.stderr.String(), "no recorded command") {
 		t.Errorf("exit %d, stderr %q; want a usage error", r.code, r.stderr)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.cassette")); len(files) != 1 {
+		t.Errorf("cassettes = %v, want only the source", files)
+	}
+}
+
+// A busy port fails the run before the replay's cassette is created.
+func TestRunBusyPortLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	recordForReplay(t, dir, "s", 1)
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	r := runRunCmd(t, dir, "s", "--listen", ln.Addr().String())
+	if r.code != ExitError || !strings.Contains(r.stderr.String(), "cannot start the proxy") {
+		t.Errorf("exit %d, stderr %q; want %d", r.code, r.stderr, ExitError)
 	}
 	if files, _ := filepath.Glob(filepath.Join(dir, "*.cassette")); len(files) != 1 {
 		t.Errorf("cassettes = %v, want only the source", files)
