@@ -99,8 +99,11 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	defer cancelW()
 	werr := cfg.writer.Close(wctx, end)
 	if werr == nil && cfg.finish != nil {
-		// The cassette is valid without it, so the session still succeeds.
-		if err := cfg.finish(wctx, cfg.cassette); err != nil {
+		// A step of its own, with its own deadline. The cassette is valid
+		// without it, so the session still succeeds.
+		fctx, cancelF := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+		defer cancelF()
+		if err := cfg.finish(fctx, cfg.cassette); err != nil {
 			log.Warn("cannot complete the session metadata", "path", path, "error", err)
 		}
 	}

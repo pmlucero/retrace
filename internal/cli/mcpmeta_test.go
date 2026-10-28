@@ -36,6 +36,8 @@ func TestStoreMCPServerInfoReadsInitializeResults(t *testing.T) {
 		{"mcp:a", initReq, initResp(1, "1999-01-02"), true},                                           // incomplete recording
 		{"mcp:a", "not json", initResp(1, "1999-01-03"), false},                                       // opaque request
 		{"mcp:a", initReq, initResp(2, "1999-01-04"), false},                                          // answers another id
+		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"result":{}}`, false},                             // no protocol version
+		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":7}}`, false},          // not a string
 		{"mcp:other", initReq, initResp(1, "1999-01-05"), false},                                      // not registered
 	}
 	servers := json.RawMessage(`[{"name":"a","url":"http://a"},{"name":"b","url":"http://b"}]`)

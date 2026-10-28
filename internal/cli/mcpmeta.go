@@ -16,7 +16,8 @@ import (
 // (spec §3.4, §7.2). It reads them from the recorded interactions, so it
 // runs once the writer has written everything. A server that was never
 // initialized keeps neither. When an agent initializes a server more than
-// once, the last answer counts: it is the one the session went on with.
+// once, the last answer with a protocol version counts: it is the one the
+// session went on with.
 func storeMCPServerInfo(ctx context.Context, c *cassette.Cassette) error {
 	s, err := c.Session(ctx)
 	if err != nil {
@@ -33,13 +34,18 @@ func storeMCPServerInfo(ctx context.Context, c *cassette.Cassette) error {
 	if err != nil {
 		return err
 	}
-	changed := false
-	for _, in := range all {
+	// Newest first, so the scan stops once every server has its answer.
+	done := make([]bool, len(servers))
+	resolved := 0
+	for _, in := range slices.Backward(all) {
+		if resolved == len(servers) {
+			break
+		}
 		if in.Channel != "mcp" || in.HTTPMethod != http.MethodPost || in.Incomplete() {
 			continue
 		}
 		i := slices.IndexFunc(servers, func(sv mcpServer) bool { return "mcp:"+sv.Name == in.Upstream })
-		if i < 0 {
+		if i < 0 || done[i] {
 			continue
 		}
 		res, ok, err := initializeResult(ctx, c, in)
@@ -48,10 +54,11 @@ func storeMCPServerInfo(ctx context.Context, c *cassette.Cassette) error {
 		}
 		if ok {
 			servers[i].ProtocolVersion, servers[i].ServerInfo = res.ProtocolVersion, res.ServerInfo
-			changed = true
+			done[i] = true
+			resolved++
 		}
 	}
-	if !changed {
+	if resolved == 0 {
 		return nil
 	}
 	data, err := json.Marshal(servers)
@@ -62,8 +69,8 @@ func storeMCPServerInfo(ctx context.Context, c *cassette.Cassette) error {
 }
 
 // initializeResult returns the result of the last initialize request that
-// interaction in carries and that its response answers, JSON or SSE. ok is
-// false when there is none. Bodies that are not JSON-RPC are opaque, not
+// interaction in carries and that its response answers, JSON or SSE, with a
+// protocol version. ok is false when there is none. Bodies that are not JSON-RPC are opaque, not
 // errors.
 func initializeResult(ctx context.Context, c *cassette.Cassette, in cassette.Interaction) (_ mcp.InitializeResult, ok bool, _ error) {
 	if in.RequestBlob == nil {
@@ -107,7 +114,8 @@ func initializeResult(ctx context.Context, c *cassette.Cassette, in cassette.Int
 		if p.Request.Method != mcp.MethodInitialize || p.Response == nil || p.Response.Result == nil {
 			continue
 		}
-		if r, err := mcp.ParseInitializeResult(p.Response.Result); err == nil {
+		// A result without a protocol version does not replace a good one.
+		if r, err := mcp.ParseInitializeResult(p.Response.Result); err == nil && r.ProtocolVersion != "" {
 			res, ok = r, true
 		}
 	}
