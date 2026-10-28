@@ -8,10 +8,8 @@ import (
 	"flag"
 	"fmt"
 	"net"
-	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"regexp"
 	"strings"
 	"time"
@@ -28,10 +26,6 @@ var recordCommand = command{
 	summary: "record an agent session into a new cassette",
 	run:     runRecord,
 }
-
-// finishTimeout bounds each step of ending a session: waiting for in-flight
-// interactions, then writing what is queued (spec §3.1).
-const finishTimeout = 10 * time.Second
 
 const recordUsage = `Usage: retrace record [flags] -- <agent command...>
 
@@ -194,80 +188,28 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 	}
 
 	routes := []proxy.Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: opts.anthropic}}
-	for _, s := range opts.mcp {
+	names := make([]string, len(opts.mcp))
+	for i, s := range opts.mcp {
 		target, _ := absoluteHTTPURL(s.URL) // validated by the flag
 		routes = append(routes, proxy.Route{Prefix: "/mcp/" + s.Name, Channel: "mcp", Upstream: "mcp:" + s.Name, Target: target})
+		names[i] = s.Name
 	}
-	srv := &http.Server{
-		Handler:           proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log}),
-		ReadHeaderTimeout: 30 * time.Second,
-	}
-	go func() {
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("proxy stopped", "error", err)
-		}
-	}()
-
-	base := "http://" + ln.Addr().String()
-	vars := map[string]string{
-		"ANTHROPIC_BASE_URL": base + "/llm/anthropic",
-		"RETRACE_SESSION_ID": id,
-		"RETRACE_MODE":       "record",
-	}
-	for _, s := range opts.mcp {
-		vars[mcpEnvName(s.Name)] = base + "/mcp/" + s.Name
-	}
-	cmd := exec.CommandContext(ctx, opts.command[0], opts.command[1:]...) //nolint:gosec // G204: running the user's agent is the point
-	cmd.Env = withEnv(os.Environ(), vars)
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = env.Stdin, env.Stdout, env.Stderr
-
-	// Signals are handled until the cassette is closed: one that arrives while
-	// the session is being finished must not kill retrace halfway.
-	sigs := make(chan os.Signal, 2)
-	stopSignals := notifySignals(sigs)
-	defer stopSignals()
-
-	log.Info("recording", "session", id, "cassette", path, "proxy", base)
-	var res agentResult
-	status := "completed"
-	if err := cmd.Start(); err != nil {
-		log.Error("cannot start the agent", "command", opts.command[0], "error", err)
-		status = "failed"
-	} else {
-		res = waitAgent(cmd, sigs, log)
-		if res.interrupted {
-			status = "interrupted"
-		}
-	}
-
-	// The agent is gone; let in-flight exchanges finish, then write what is queued.
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
-	defer cancel()
-	if err := srv.Shutdown(sctx); err != nil {
-		log.Warn("in-flight requests did not finish in time; they are recorded as incomplete", "error", err)
-		_ = srv.Close()
-	}
-	end := cassette.SessionEnd{Status: status, EndedAt: time.Now()}
-	if status != "failed" {
-		end.AgentExitCode = &res.exitCode
-	}
-	wctx, cancelW := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
-	defer cancelW()
-	werr := w.Close(wctx, end)
-	if err := errors.Join(werr, c.Close()); err != nil {
-		log.Error("the cassette may be incomplete", "path", path, "error", err)
+	res, err := runSession(ctx, env, sessionConfig{
+		listener: ln,
+		handler:  proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log}),
+		cassette: c,
+		writer:   w,
+		id:       id,
+		mode:     "record",
+		startMsg: "recording",
+		mcp:      names,
+		command:  opts.command,
+	})
+	if err != nil {
 		return ExitError
 	}
-
-	st := w.Stats()
-	log.Info("session recorded", "session", id, "status", status, "cassette", path, "records", st.Written)
-	switch {
-	case status == "failed":
-		return ExitError
-	case res.exitCode != 0:
-		return ExitAgentFailed
-	}
-	return ExitOK
+	log.Info("session recorded", "session", id, "status", res.status, "cassette", path, "records", res.stats.Written)
+	return res.exitCode()
 }
 
 // createCassette creates the session's cassette and its session row.
