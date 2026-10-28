@@ -95,6 +95,30 @@ func TestParseBody(t *testing.T) {
 	}
 }
 
+// Spec §5 step 3: a replayed response gets the incoming request's id, and
+// the rest of the message is kept as recorded.
+func TestWithID(t *testing.T) {
+	tests := []struct {
+		name, in, id, want string
+	}{
+		{"number to string", `{"jsonrpc":"2.0","id":1,"result":{"id":1}}`, `"x"`, `{"jsonrpc":"2.0","id":"x","result":{"id":1}}`},
+		{"spacing kept", "{ \"result\" : [ 1 ] , \"id\" : \"long-id\" }", `7`, "{ \"result\" : [ 1 ] , \"id\" : 7 }"},
+		{"escaped key", `{"id":2,"method":"ping"}`, `3`, `{"id":3,"method":"ping"}`},
+		{"duplicate id uses the last", `{"id":1,"id":2,"result":null}`, `9`, `{"id":1,"id":9,"result":null}`},
+		{"null id", `{"id":null,"error":{}}`, `4`, `{"id":4,"error":{}}`},
+		{"notification unchanged", `{"method":"n","params":{"id":1}}`, `5`, `{"method":"n","params":{"id":1}}`},
+	}
+	for _, tt := range tests {
+		body, err := ParseBody([]byte(tt.in))
+		if err != nil {
+			t.Fatalf("%s: %v", tt.name, err)
+		}
+		if got := string(body.Messages[0].WithID([]byte(tt.id))); got != tt.want {
+			t.Errorf("%s: WithID = %s, want %s", tt.name, got, tt.want)
+		}
+	}
+}
+
 // Replay rewrites ids and derivation reads params and results, so the
 // members are kept as they appear in the body.
 func TestParseBodyKeepsMembers(t *testing.T) {

@@ -45,6 +45,21 @@ type Message struct {
 	Params json.RawMessage // nil when absent
 	Result json.RawMessage // responses; nil when absent
 	Error  json.RawMessage // responses; nil when absent
+
+	idStart, idEnd int // the id's span in Raw, when there is an id
+}
+
+// WithID returns Raw with the id replaced by id, keeping every other byte as
+// recorded, so replay can answer with the incoming request's id
+// (spec §5 step 3). A message without an id is returned unchanged.
+func (m Message) WithID(id json.RawMessage) json.RawMessage {
+	if m.ID == nil {
+		return m.Raw
+	}
+	out := make([]byte, 0, len(m.Raw)-len(m.ID)+len(id))
+	out = append(out, m.Raw[:m.idStart]...)
+	out = append(out, id...)
+	return append(out, m.Raw[m.idEnd:]...)
 }
 
 // Body is the content of a POST body or a JSON response.
@@ -111,6 +126,9 @@ func parseMessage(data []byte) (Message, error) {
 		Result: raw.Result,
 		Error:  raw.Error,
 	}
+	if raw.ID != nil {
+		m.idStart, m.idEnd = idSpan(data)
+	}
 	switch {
 	case raw.Method != nil:
 		if err := json.Unmarshal(raw.Method, &m.Method); err != nil {
@@ -138,6 +156,26 @@ func parseMessage(data []byte) (Message, error) {
 		return Message{}, errors.New("parsing JSON-RPC message: neither a request, a notification nor a response")
 	}
 	return m, nil
+}
+
+// idSpan returns where the value of the top-level "id" member is in obj, a
+// valid JSON object. With duplicate members it is the last one, the one
+// encoding/json decodes.
+func idSpan(obj []byte) (start, end int) {
+	dec := json.NewDecoder(bytes.NewReader(obj))
+	_, _ = dec.Token() // '{'
+	for dec.More() {
+		key, _ := dec.Token()
+		var v json.RawMessage
+		if dec.Decode(&v) != nil {
+			break
+		}
+		if key == "id" {
+			end = int(dec.InputOffset())
+			start = end - len(v)
+		}
+	}
+	return start, end
 }
 
 func isStringOrNumber(v json.RawMessage) bool {
