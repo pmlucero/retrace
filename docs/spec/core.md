@@ -435,7 +435,7 @@ The mode is derived from the flags:
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
-- Errors in the flags and arguments (exit `2`), including a default id that does not fit, are reported before the source session is opened. The empty-command check needs the source, so it comes after, and before the check that an `--as` id already exists (exit `1`).
+- Errors in the flags and arguments (exit `2`), including a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The empty-command check needs the source, so it comes after, and before the check that an `--as` id already exists (exit `1`).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
 ### 9.4 `retrace diff`
