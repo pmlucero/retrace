@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.14
+- Version: 0.15
 - Last updated: 2026-10-28
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -427,9 +427,11 @@ The mode is derived from the flags:
 | absent | `live` | `live-tools` |
 | present | `live` | **error** (exit `2`): nothing would be held constant; use `record` instead |
 
-- `--as`: id of the new session. The default is `<id>.<mode>.<n>`, with `n` incrementing. If that default does not fit the id format (§9.2), it is a usage error that asks for `--as`.
-- `-- <cmd>`: overrides the recorded command. Without it, the recorded command and cwd are used.
+- `<id>`: the source session. If it does not exist, `run` exits `1`, as `reindex` does (§9.8), and creates no cassette.
+- `--as`: id of the new session. The default is `<id>.<mode>.<n>`, with `n` incrementing: `1` for the first replay of `<id>` in that mode, then one more than the highest `n` in use. If that default does not fit the id format (§9.2), it is a usage error that asks for `--as`. An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
+- `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
+- A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted.
 
 ### 9.4 `retrace diff`
 
