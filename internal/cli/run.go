@@ -153,8 +153,13 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	id := opts.as
 	if id == "" {
 		var err error
-		if id, err = nextReplayID(env.Globals.Dir, opts.source, mode); err != nil {
+		id, err = nextReplayID(env.Globals.Dir, opts.source, mode)
+		switch {
+		case errors.Is(err, errNoDefaultID):
 			return usageError(env.Stderr, err.Error())
+		case err != nil:
+			log.Error("cannot choose the replay's id", "error", err)
+			return ExitError
 		}
 	}
 
@@ -288,6 +293,10 @@ func llmQueues(ctx context.Context, src *cassette.Cassette) (*match.Queues, erro
 	}), nil
 }
 
+// errNoDefaultID reports that the default replay id cannot be used, which is
+// a usage error (spec §9.3). Other nextReplayID errors are runtime errors.
+var errNoDefaultID = errors.New("no default replay id")
+
 // nextReplayID returns the default id of a replay of source: source.mode.n,
 // with n one more than the highest in use, or 1 (spec §9.3). Only an n in
 // decimal digits, without leading zeros and below math.MaxInt64, counts: a
@@ -314,11 +323,11 @@ func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam /
 		}
 	}
 	if n >= math.MaxInt64-1 {
-		return "", fmt.Errorf("the default replay number of %s would reach 2^63 - 1; name the replay with --as", source)
+		return "", fmt.Errorf("%w: the default replay number of %s would reach 2^63 - 1; name the replay with --as", errNoDefaultID, source)
 	}
 	id := fmt.Sprintf("%s%d", prefix, n+1)
 	if err := cassette.ValidateSessionID(id); err != nil {
-		return "", fmt.Errorf("the default replay id is not valid (%w); name the replay with --as", err)
+		return "", fmt.Errorf("%w: %w; name the replay with --as", errNoDefaultID, err)
 	}
 	return id, nil
 }

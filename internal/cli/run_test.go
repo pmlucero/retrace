@@ -264,6 +264,18 @@ func TestRunBusyPortLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+// spec §9.7: a --dir that cannot be listed is a runtime error, not a usage one.
+func TestRunUnreadableDirIsARuntimeError(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(dir, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	if r.code != ExitError || !strings.Contains(r.stderr.String(), "cannot choose the replay's id") {
+		t.Errorf("exit %d, stderr %q; want %d", r.code, r.stderr, ExitError)
+	}
+}
+
 // AC-30
 func TestRunMissingSource(t *testing.T) {
 	dir := t.TempDir()
