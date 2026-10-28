@@ -70,8 +70,8 @@ func storeMCPServerInfo(ctx context.Context, c *cassette.Cassette) error {
 
 // initializeResult returns the result of the last initialize request that
 // interaction in carries and that its response answers, JSON or SSE, with a
-// protocol version. ok is false when there is none. Bodies that are not JSON-RPC are opaque, not
-// errors.
+// protocol version. ok is false when there is none. Bodies that are not
+// JSON-RPC are opaque, not errors.
 func initializeResult(ctx context.Context, c *cassette.Cassette, in cassette.Interaction) (_ mcp.InitializeResult, ok bool, _ error) {
 	if in.RequestBlob == nil {
 		return mcp.InitializeResult{}, false, nil
