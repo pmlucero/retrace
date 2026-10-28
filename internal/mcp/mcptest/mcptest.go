@@ -5,7 +5,8 @@
 // The server answers initialize, ping, tools/list and tools/call. A POST body
 // may hold one JSON-RPC message or a batch. Requests get their responses as
 // application/json or as a text/event-stream, notifications and client
-// responses get 202 Accepted, GET gets 405 and DELETE ends the session. Every
+// responses get 202 Accepted, GET gets 405 and DELETE ends the session with
+// 200. One server can hold several sessions at once. Every
 // HTTP request it receives is kept, so tests can assert on what reached it.
 package mcptest
 
@@ -176,7 +177,7 @@ func (s *Server) serveHTTP(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusNotFound)
 			return
 		}
-		w.WriteHeader(http.StatusNoContent)
+		w.WriteHeader(http.StatusOK)
 	default:
 		w.Header().Set("Allow", "POST, DELETE")
 		w.WriteHeader(http.StatusMethodNotAllowed)

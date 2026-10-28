@@ -186,7 +186,7 @@ func TestStrictSession(t *testing.T) {
 			t.Errorf("%s: status = %d, want %d", tt.name, resp.StatusCode, tt.status)
 		}
 	}
-	if got := send(t, http.MethodDelete, s.URL); got != http.StatusNoContent {
+	if got := send(t, http.MethodDelete, s.URL); got != http.StatusOK {
 		t.Errorf("DELETE = %d", got)
 	}
 	resp, _ = post(t, s.URL, ping, map[string]string{SessionHeader: id, ProtocolVersionHeader: DefaultProtocolVersion})
@@ -200,8 +200,17 @@ func TestStrictSession(t *testing.T) {
 
 func TestGet(t *testing.T) {
 	s := New(t, Config{})
-	if got := send(t, http.MethodGet, s.URL); got != http.StatusMethodNotAllowed {
-		t.Errorf("GET = %d, want 405", got)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, s.URL, http.NoBody)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed || resp.Header.Get("Allow") != "POST, DELETE" {
+		t.Errorf("GET = %d, Allow %q, want 405, POST, DELETE", resp.StatusCode, resp.Header.Get("Allow"))
 	}
 }
 
@@ -242,6 +251,28 @@ func TestConcurrentCalls(t *testing.T) {
 	for _, r := range got {
 		if r.Method != http.MethodPost || r.Header.Get("Accept") == "" || !strings.Contains(string(r.Body), `"block"`) {
 			t.Errorf("unexpected record %+v", r)
+		}
+	}
+}
+
+// One server holds several sessions at once, each with its own id, and ending
+// one leaves the other usable.
+func TestTwoSessions(t *testing.T) {
+	s := New(t, Config{Strict: true})
+	r1, _ := post(t, s.URL, initReq, nil)
+	r2, _ := post(t, s.URL, initReq, nil)
+	id1, id2 := r1.Header.Get(SessionHeader), r2.Header.Get(SessionHeader)
+	if id1 != "mcptest-session-1" || id2 != "mcptest-session-2" {
+		t.Fatalf("session ids = %q, %q", id1, id2)
+	}
+	if got := send(t, http.MethodDelete, s.URL); got != http.StatusOK {
+		t.Fatalf("DELETE = %d", got)
+	}
+	ping := `{"jsonrpc":"2.0","id":2,"method":"ping"}`
+	for id, want := range map[string]int{id1: 404, id2: 200} {
+		resp, _ := post(t, s.URL, ping, map[string]string{SessionHeader: id, ProtocolVersionHeader: DefaultProtocolVersion})
+		if resp.StatusCode != want {
+			t.Errorf("session %s: status = %d, want %d", id, resp.StatusCode, want)
 		}
 	}
 }
