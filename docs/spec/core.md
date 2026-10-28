@@ -430,12 +430,12 @@ The mode is derived from the flags:
 - `<id>`: the source session. If it does not exist, `run` exits `1`, as `reindex` does (§9.8), and creates no cassette.
 - `--as`: id of the new session.
   - The default is `<id>.<mode>.<n>`, with `n` incrementing: `1` for the first replay of `<id>` in that mode, then one more than the highest `n` among the cassette files in `--dir` named `<id>.<mode>.<n>`. Only an `n` written in decimal digits, without leading zeros and below 2^63 − 1, counts. Other names are ignored.
-  - As in `record` (§9.2), existence is decided by the cassette file. If another session takes the default id before the cassette is created, the next `n` is tried.
+  - As in `record` (§9.2), existence is decided by the cassette file. If another session takes the default id before the cassette is created, the next `n` is tried. If that `n` does not fit the id format or reaches 2^63 − 1, `run` fails with exit `1` and asks for `--as`.
   - If the default does not fit the id format (§9.2), it is a usage error that asks for `--as`.
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
-- Errors in the flags and arguments (exit `2`), including a default id that does not fit, are reported before the source session is opened. The empty-command check needs the source, so it comes after.
+- Errors in the flags and arguments (exit `2`), including a default id that does not fit, are reported before the source session is opened. The empty-command check needs the source, so it comes after, and before the check that an `--as` id already exists (exit `1`).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
 ### 9.4 `retrace diff`
@@ -517,7 +517,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-11** JSON-RPC ids in replayed MCP responses match the incoming request ids, and `Mcp-Session-Id` is freshly issued.
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
-- **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`, also when the agent then exits with a non-zero code or retrace receives a signal, and `agent_exit_code` keeps the agent's code. The incomplete interaction is not reported as unconsumed.
+- **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. This holds even when the agent then exits with a non-zero code or retrace receives a signal, and in both cases `agent_exit_code` keeps the agent's code. The incomplete interaction is not reported as unconsumed.
 - **AC-29** In exact mode, an LLM request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same `model_response` as the source.
 - **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run` of a source with no recorded command and no `-- <cmd>` exits `2`. None of them creates a new cassette.
 
