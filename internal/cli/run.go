@@ -268,7 +268,7 @@ func llmFingerprint(body []byte) string {
 func llmQueues(ctx context.Context, src *cassette.Cassette) (*match.Queues, error) {
 	ins, err := src.Interactions(ctx)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading interactions: %w", err)
 	}
 	fps := make(map[int64]string, len(ins))
 	for _, in := range ins {
@@ -297,7 +297,7 @@ func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam /
 	prefix := source + "." + mode + "."
 	matches, err := filepath.Glob(filepath.Join(dir, prefix+"*.cassette")) // ids hold no glob characters
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("listing replays of %s: %w", source, err)
 	}
 	n := 0
 	for _, m := range matches {
@@ -340,12 +340,12 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 			return nil, "", fmt.Errorf("session %q already exists in %s", id, dir)
 		}
 		if err != nil {
-			return nil, "", err
+			return nil, "", fmt.Errorf("creating session %s: %w", id, err)
 		}
 		s.ID = id
 		if err := c.Write(ctx, func(tx *cassette.Tx) error { return tx.InsertSession(ctx, s) }); err != nil {
 			_ = c.Close()
-			return nil, "", err
+			return nil, "", fmt.Errorf("writing session %s: %w", id, err)
 		}
 		return c, id, nil
 	}

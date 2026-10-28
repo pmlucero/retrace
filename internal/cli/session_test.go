@@ -104,9 +104,6 @@ func TestRunSessionFailsWithoutACommand(t *testing.T) {
 // and agent_exit_code keeps its code (spec §6.2, §9.3), but a session whose
 // agent never ran stays failed.
 func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("SIGINT cannot be sent to a process on Windows")
-	}
 	diverged := make(chan struct{})
 	close(diverged)
 	for _, tc := range []struct {
@@ -124,6 +121,9 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 		{"agent never ran", "", "", false, "failed", nil, ExitError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.interrupt && runtime.GOOS == "windows" {
+				t.Skip("SIGINT cannot be sent to a process on Windows")
+			}
 			t.Setenv(agentModeEnv, tc.mode)
 			t.Setenv(agentExitEnv, tc.exit)
 			sigs := make(chan chan<- os.Signal, 1)
