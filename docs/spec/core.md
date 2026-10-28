@@ -145,7 +145,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. Forwarded ones get `provenance = live`.
 - At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error.
-- A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction.
+- A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers (an interaction recorded with a transport error has neither and is served as in §5 step 2), except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the stored body, which may differ from the original because of redaction.
 
 ## 5. Request matching
 
@@ -157,7 +157,7 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
 
    Body redaction rules (§3.5) are applied first. A body that is not valid JSON, or that is nested more than 1000 levels deep, is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007. A request whose body cannot be redacted (§3.5) cannot be matched: it is a cassette miss, and its divergence event has a null `received_fingerprint`, so no hash of unredacted data reaches the cassette.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
-   An interaction recorded with a transport error (no status, §7.3) whose recording is complete is served as the answer the agent got while recording: HTTP `502` with a body that starts with `retrace: upstream request failed:` and includes the interaction's `error`. It reproduces what the agent saw, so it is not a fabricated response, and it is stored with `provenance = replayed` like any other.
+   On the LLM channel, an interaction recorded with a transport error (no status, §7.3) whose recording is complete is served as the answer the agent got while recording: HTTP `502` with a body that starts with `retrace: upstream request failed:` and includes the interaction's `error`. Only the prefix is fixed, because the stored `error` may be reworded, e.g. when the agent had already closed the connection. This reproduces what the agent saw, so it is not a fabricated response. The new interaction is stored with `provenance = replayed`, no status and the source interaction's `error`, so it derives the same events as the source (§7.4).
    When an interaction's recording is incomplete (§7.3), replay never fabricates its response silently ([ADR 0010](../adr/0010-record-event-log-gaps.md)). Such an interaction keeps its place in its queue but cannot be served: a request that reaches it is a cassette miss, and it stays at the head, so the divergence shows up at the step where it happened. It is not reported as unconsumed (§4.4). This refines point 2 of ADR 0007, which predates incomplete recordings.
 3. Replayed MCP responses get their JSON-RPC `id` rewritten to the incoming request's id. `initialize` responses get a fresh `Mcp-Session-Id`. Client notifications get `202`, and `GET` gets `405`.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
@@ -511,6 +511,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-12** Identical requests repeated N times are served the N recorded responses in order (FIFO per fingerprint).
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
+- **AC-29** In exact mode, an LLM request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`.
 
 ### Swap-model and strict
 
