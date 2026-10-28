@@ -139,7 +139,7 @@ func TestCanonicalizeDistinctBodies(t *testing.T) {
 		{"raw bodies of different servers", "a", `x`, "a\"\n", `x`},
 		{"not JSON-RPC vs JSON-RPC", "fs", `{"id":1}`, "fs", `{"id":1,"method":"m"}`},
 		{"empty batch", "fs", `[]`, "fs", `{}`},
-		{"raw body vs form-like body", "fs", `{"message":{"kind":"request","method":"m"},"server":"fs"}`, "fs", `{"id":1,"method":"m"}`},
+		{"form-like body vs message", "fs", `{"message":{"kind":"request","method":"m"},"server":"fs"}`, "fs", `{"id":1,"method":"m"}`},
 	}
 	for _, p := range pairs {
 		if bytes.Equal(Canonicalize(p.serverA, []byte(p.a)), Canonicalize(p.serverB, []byte(p.b))) {

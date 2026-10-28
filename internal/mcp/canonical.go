@@ -71,7 +71,8 @@ func Canonicalize(server string, body []byte) []byte {
 	return jsonvalue.EncodeCanonical(form)
 }
 
-// rawForm is the canonical form of a body that is not valid JSON.
+// rawForm is the canonical form of a body that is not valid JSON or is too
+// deep to decode.
 func rawForm(server string, body []byte) []byte {
 	form := append(jsonvalue.EncodeCanonical(server), '\n')
 	return append(form, body...)
