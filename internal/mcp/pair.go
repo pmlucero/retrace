@@ -28,8 +28,9 @@ type Pairing struct {
 }
 
 // PairMessages matches each request in requests to its response in
-// responses by id. Ids are compared by value: "a" and "a" are the same
-// id, while 1 and 1.0 are not, since servers echo ids unchanged. When a POST
+// responses by id. Ids are compared by value: a string id spelled with
+// escapes is the same id as the string without them, while 1 and 1.0 are
+// not, since servers echo ids unchanged. When a POST
 // repeats an id, responses with that id answer its requests in order.
 //
 // Notifications and client responses in requests expect no answer and are

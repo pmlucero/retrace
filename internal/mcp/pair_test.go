@@ -39,9 +39,9 @@ func TestPairMessages(t *testing.T) {
 		},
 		{
 			name:     "ids compared by value",
-			requests: `{"id":"ab","method":"a"}`,
+			requests: `{"id":"a` + escaped('b') + `","method":"a"}`,
 			response: `{"id":"ab","result":{}}`,
-			pairs:    `request "ab" a -> response "ab"`,
+			pairs:    `request "a` + escaped('b') + `" a -> response "ab"`,
 		},
 		{
 			name:      "number text differs",
