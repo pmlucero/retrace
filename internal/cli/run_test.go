@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
 )
@@ -62,32 +63,47 @@ func TestHelperReplayAgent(t *testing.T) {
 // replay that serves them out of order shows in the agent's output.
 func fakeStreamingAnthropic(t *testing.T) *httptest.Server {
 	t.Helper()
+	up := httptest.NewServer(streamingAnthropic(0))
+	t.Cleanup(up.Close)
+	return up
+}
+
+// streamingAnthropic is the handler of fakeStreamingAnthropic. It flushes the
+// first event, then waits pause before it sends the others.
+func streamingAnthropic(pause time.Duration) http.HandlerFunc {
 	var calls atomic.Int64
-	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return func(w http.ResponseWriter, _ *http.Request) {
 		n := calls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-sonnet-5-5\",\"usage\":{\"input_tokens\":10}}}\n\n")
 		w.(http.Flusher).Flush()
+		time.Sleep(pause)
 		fmt.Fprintf(w, "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"answer %d\"}}\n\n", n)
 		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
-	}))
-	t.Cleanup(up.Close)
-	return up
+	}
 }
 
 // recordForReplay records session id with the replay agent sending n
 // requests, then shuts the upstream down. It returns the agent's stdout.
 func recordForReplay(t *testing.T, dir, id string, n int) string {
 	t.Helper()
+	up := fakeStreamingAnthropic(t)
+	out := recordAgainst(t, dir, id, n, up.URL)
+	up.Close() // AC-08: nothing upstream is reachable during the replay
+	return out
+}
+
+// recordAgainst records session id with the replay agent sending n requests
+// to the upstream at url. It returns the agent's stdout.
+func recordAgainst(t *testing.T, dir, id string, n int, url string) string {
+	t.Helper()
 	t.Setenv(replayPromptEnv, "Weather in Paris?")
 	t.Setenv(replayCountEnv, strconv.Itoa(n))
-	up := fakeStreamingAnthropic(t)
 	r := runRecordCmd(t, dir, append([]string{"--session", id, "--listen", "127.0.0.1:0",
-		"--anthropic-upstream", up.URL, "--redact", "$.max_tokens", "--"}, replayAgentCommand()...)...)
+		"--anthropic-upstream", url, "--redact", "$.max_tokens", "--"}, replayAgentCommand()...)...)
 	if r.code != ExitOK {
 		t.Fatalf("record: exit %d\n%s", r.code, r.stderr)
 	}
-	up.Close() // AC-08: nothing upstream is reachable during the replay
 	return r.stdout.String()
 }
 
