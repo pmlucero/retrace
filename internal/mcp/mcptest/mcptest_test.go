@@ -155,9 +155,12 @@ func sseRequest(ctx context.Context, t *testing.T, url, body string) *http.Respo
 }
 
 // Each event is flushed on its own, EventDelay apart, so recorded offsets
-// differ.
+// differ. The bounds are measured from the request, so a slow reader cannot
+// make a correct server fail: the first event must arrive well before the
+// last one can be sent, and the last no earlier than all delays.
 func TestSSE(t *testing.T) {
-	const delay = 20 * time.Millisecond
+	const delay = 100 * time.Millisecond
+	start := time.Now()
 	s := New(t, Config{Mode: SSE, LogEvents: 1, EventDelay: delay})
 	resp := sseRequest(context.Background(), t, s.URL, `[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]`)
 	defer func() { _ = resp.Body.Close() }()
@@ -178,10 +181,11 @@ func TestSSE(t *testing.T) {
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("events = %q, want %q", got, want)
 	}
-	for i := 1; i < len(arrived); i++ {
-		if gap := arrived[i].Sub(arrived[i-1]); gap < delay/2 {
-			t.Errorf("event %d arrived %v after the previous one, want about %v", i, gap, delay)
-		}
+	if first := arrived[0].Sub(start); first >= 2*delay {
+		t.Errorf("first event arrived after %v, want it flushed before the later delays", first)
+	}
+	if last := arrived[len(arrived)-1].Sub(start); last < 3*delay {
+		t.Errorf("last event arrived after %v, want at least %v", last, 3*delay)
 	}
 }
 
@@ -326,8 +330,6 @@ func TestConcurrentCalls(t *testing.T) {
 	}
 }
 
-// One server holds several sessions at once, each with its own id, and ending
-// one leaves the other usable.
 // A missing MCP-Protocol-Version header stands for 2025-03-26.
 func TestStrictOldProtocol(t *testing.T) {
 	s := New(t, Config{Strict: true, ProtocolVersion: "2025-03-26"})
@@ -338,6 +340,8 @@ func TestStrictOldProtocol(t *testing.T) {
 	}
 }
 
+// One server holds several sessions at once, each with its own id, and ending
+// one leaves the other usable.
 func TestTwoSessions(t *testing.T) {
 	s := New(t, Config{Strict: true})
 	r1, _ := post(t, s.URL, initReq, nil)
