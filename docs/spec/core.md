@@ -428,10 +428,10 @@ The mode is derived from the flags:
 | present | `live` | **error** (exit `2`): nothing would be held constant; use `record` instead |
 
 - `<id>`: the source session. If it does not exist, `run` exits `1`, as `reindex` does (§9.8), and creates no cassette.
-- `--as`: id of the new session. The default is `<id>.<mode>.<n>`, with `n` incrementing: `1` for the first replay of `<id>` in that mode, then one more than the highest `n` in use. If that default does not fit the id format (§9.2), it is a usage error that asks for `--as`. An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
+- `--as`: id of the new session. The default is `<id>.<mode>.<n>`, with `n` incrementing: `1` for the first replay of `<id>` in that mode, then one more than the highest `n` among the cassette files in `--dir` named `<id>.<mode>.<n>`, with `n` written in decimal digits. As in `record` (§9.2), existence is decided by the cassette file, and if another session takes the default id before the cassette is created, the next `n` is tried. If that default does not fit the id format (§9.2), it is a usage error that asks for `--as`. An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
-- A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted.
+- A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
 ### 9.4 `retrace diff`
 
@@ -514,6 +514,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-13** Requests arriving in a different order than recorded (parallel tool calls) replay without a divergence.
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. The incomplete interaction is not reported as unconsumed.
 - **AC-29** In exact mode, an LLM request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same `model_response` as the source.
+- **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run` of a source with no recorded command and no `-- <cmd>` exits `2`. None of them creates a new cassette.
 
 ### Swap-model and strict
 
