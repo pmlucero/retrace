@@ -92,8 +92,8 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 - All methods on `/mcp/<name>` (`POST`, `GET`, `DELETE`) are forwarded and recorded ([ADR 0004](../adr/0004-mcp-streamable-http-first.md)).
 - A `POST` body MAY be a single JSON-RPC message or a batch. Each JSON-RPC request in it is matched to its response, whether the response comes as JSON or inside an SSE stream.
 - The protocol version and server info from `initialize` are stored in the session metadata (§7.2).
-  - They are read from the recorded exchanges when the session ends. A cassette left by a retrace that was killed has the servers without them, and `reindex` does not add them (§7.6).
-  - When a server is initialized more than once, the last complete exchange whose `initialize` result has a string `protocolVersion` counts. Results without one are ignored.
+  - They are read from the recorded exchanges when the session ends. A cassette left by a retrace that was killed has the servers without them. `reindex` never changes `mcp_servers`.
+  - A server's values come from its exchange with the highest interaction `id` among those whose recording is complete (§7.3) and whose `initialize` result has a non-empty string `protocolVersion`. Other results are ignored.
 
 ### 3.5 Redaction
 
@@ -223,7 +223,7 @@ All timestamps are RFC 3339 UTC strings with microsecond precision. Durations ar
 | `agent_exit_code` | INTEGER NULL | Exit code of the agent process |
 | `model_override` | TEXT NULL | `--model` value in `swap-model` |
 | `on_miss` | TEXT | Divergence strategy name |
-| `mcp_servers` | JSON | `[{name, url, protocol_version, server_info}]`. `protocol_version` and `server_info` are absent, not `null`, for a server that was never initialized (§3.4) |
+| `mcp_servers` | JSON | `[{name, url, protocol_version, server_info}]`. `protocol_version` and `server_info` are absent, not `null`, when no `initialize` exchange qualifies (§3.4). `server_info` is the `serverInfo` object as received, and is also absent when the chosen result has no `serverInfo` object |
 | `redaction` | JSON | Active header and body redaction rules |
 | `retrace_version` | TEXT | Version of the binary that wrote the cassette |
 | `deriver_version` | INTEGER | Version of the event derivation logic |
