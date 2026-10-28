@@ -206,6 +206,30 @@ func TestPutBlobDeduplicatesContent(t *testing.T) {
 	}
 }
 
+// An empty body, which callers often hold as a nil slice, is stored as an
+// empty blob, not rejected by the NOT NULL data column.
+func TestPutBlobStoresAnEmptyBody(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	var kNil, kEmpty string
+	write(t, c, func(tx *Tx) error {
+		var err error
+		if kNil, err = tx.PutBlob(ctx, nil); err != nil {
+			return err
+		}
+		kEmpty, err = tx.PutBlob(ctx, []byte{})
+		return err
+	})
+
+	if kNil != BlobKey(nil) || kEmpty != kNil {
+		t.Errorf("keys %s and %s, want both %s", kNil, kEmpty, BlobKey(nil))
+	}
+	got, err := c.Blob(ctx, kNil)
+	if err != nil || len(got) != 0 {
+		t.Errorf("Blob = %q, %v; want an empty body", got, err)
+	}
+}
+
 func TestCompleteInteractionExactlyOnce(t *testing.T) {
 	ctx := context.Background()
 	c, _ := newCassette(t)

@@ -111,6 +111,9 @@ type SessionEnd struct {
 // PutBlob stores data once, keyed by its SHA-256, and returns the key. Storing
 // the same content again is a no-op (ADR 0005).
 func (t *Tx) PutBlob(ctx context.Context, data []byte) (string, error) {
+	if data == nil {
+		data = []byte{} // the driver would store nil as NULL, which data does not allow
+	}
 	key := BlobKey(data)
 	_, err := t.tx.ExecContext(ctx,
 		`INSERT INTO blobs (sha256, size, data) VALUES (?, ?, ?) ON CONFLICT (sha256) DO NOTHING`,
