@@ -20,7 +20,9 @@ import (
 // ErrUnservable reports that an interaction holds no complete response to
 // replay: it has no valid status or no headers, its body was not recorded, or
 // its recording is marked incomplete (spec §7.3). Serve returns it before
-// writing anything, so the caller can still answer.
+// writing anything, so the caller can still answer. A recorded transport error
+// is one such interaction: on the LLM channel, LLMHandler answers it with the
+// proxy's 502 rather than through Serve (spec §5 step 2).
 var ErrUnservable = errors.New("interaction has no recorded response to replay")
 
 // Source reads what Serve needs from the cassette being replayed.
