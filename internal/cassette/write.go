@@ -60,9 +60,9 @@ func (t *Tx) EndSession(ctx context.Context, end SessionEnd) error {
 	return expectSessionRow(res)
 }
 
-// SetMCPServers replaces the session's MCP server metadata. It is called when
-// an MCP server's initialize response provides its protocol version and server
-// info (spec §3.4).
+// SetMCPServers replaces the session's MCP server metadata. `retrace record`
+// calls it when the session ends, with the protocol version and server info
+// from each server's recorded initialize response (spec §3.4).
 func (t *Tx) SetMCPServers(ctx context.Context, servers json.RawMessage) error {
 	res, err := t.tx.ExecContext(ctx, `UPDATE session SET mcp_servers = ?`, jsonOr(servers, "[]"))
 	if err != nil {

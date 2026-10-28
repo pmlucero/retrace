@@ -139,6 +139,7 @@ func TestRecordMCPOverStreamableHTTP(t *testing.T) {
 	for _, name := range mcpAgentServers {
 		args = append(args, "--mcp", name+"="+servers[name].URL)
 	}
+	args = append(args, "--mcp", "idle=http://127.0.0.1:9/mcp") // registered, never called
 	r := runRecordCmd(t, dir, append(append(args, "--"), agentCommand()...)...)
 	if r.code != ExitOK {
 		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
@@ -156,6 +157,19 @@ func TestRecordMCPOverStreamableHTTP(t *testing.T) {
 	}
 	if len(all) != 1+len(seen) || len(seen) != 14 {
 		t.Fatalf("got %d interactions and %d agent exchanges, want 1 LLM call and 7 exchanges per server", len(all), len(seen))
+	}
+
+	// spec §3.4, §7.2: each server's initialize result, from a JSON and from
+	// an SSE response, is in the session metadata.
+	s, err := c.Session(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := fmt.Sprintf(`[{"name":"orders","url":%q,"protocol_version":"2025-06-18","server_info":{"name":"orders","version":"1.0.0"}},`+
+		`{"name":"weather","url":%q,"protocol_version":"2025-03-26","server_info":{"name":"weather","version":"2.1.0"}},`+
+		`{"name":"idle","url":"http://127.0.0.1:9/mcp"}]`, servers["orders"].URL, servers["weather"].URL)
+	if string(s.MCPServers) != want {
+		t.Errorf("mcp_servers = %s\nwant %s", s.MCPServers, want)
 	}
 	for _, name := range mcpAgentServers {
 		if got := len(servers[name].Received()); got != 7 {

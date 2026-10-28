@@ -54,9 +54,13 @@ type recordOptions struct {
 	command      []string
 }
 
+// mcpServer is an entry of the session's mcp_servers (spec §7.2).
 type mcpServer struct {
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	// From the server's initialize result (spec §3.4); absent until then.
+	ProtocolVersion string          `json:"protocol_version,omitempty"`
+	ServerInfo      json.RawMessage `json:"server_info,omitempty"`
 }
 
 func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
@@ -204,6 +208,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		startMsg: "recording",
 		mcp:      names,
 		command:  opts.command,
+		finish:   storeMCPServerInfo,
 	})
 	if err != nil {
 		return ExitError
