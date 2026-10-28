@@ -5,6 +5,8 @@ package redact
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"slices"
@@ -53,6 +55,46 @@ func (r *Rules) HeaderNames() []string {
 	}
 	slices.Sort(out)
 	return out
+}
+
+// metadata is the session's redaction metadata (spec §7.2). Body comes
+// first, as it did when record wrote a map.
+type metadata struct {
+	Body    []string `json:"body"`
+	Headers []string `json:"headers"`
+}
+
+// Metadata returns the rules as stored in the session's redaction metadata
+// (spec §7.2). RulesFromMetadata reads them back.
+func (r *Rules) Metadata() json.RawMessage {
+	m, _ := json.Marshal(metadata{Body: r.BodyRules(), Headers: r.HeaderNames()}) // slices of strings always marshal
+	return m
+}
+
+// RulesFromMetadata rebuilds the rules that Metadata stored, so a replay
+// redacts requests as the recording did before fingerprinting them
+// (spec §3.5, §5). stored comes from a cassette, which is untrusted input.
+func RulesFromMetadata(stored json.RawMessage) (*Rules, error) {
+	var m metadata
+	if err := json.Unmarshal(stored, &m); err != nil {
+		return nil, fmt.Errorf("reading redaction rules: %w", err)
+	}
+	var headers []string
+	for _, h := range m.Headers {
+		// The suffix patterns are always applied.
+		if suffix, ok := strings.CutPrefix(h, "*"); !ok || !slices.Contains(DefaultSuffixes, suffix) {
+			headers = append(headers, h)
+		}
+	}
+	body := make([]Path, len(m.Body))
+	for i, raw := range m.Body {
+		p, err := ParsePath(raw)
+		if err != nil {
+			return nil, fmt.Errorf("reading redaction rules: %w", err)
+		}
+		body[i] = p
+	}
+	return NewRules(headers, body), nil
 }
 
 // RedactsHeader reports whether the header called name is redacted.

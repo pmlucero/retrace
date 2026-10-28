@@ -53,6 +53,44 @@ func TestRulesHeaderNames(t *testing.T) {
 	}
 }
 
+// spec §7.2: replay rebuilds the recording's rules from the cassette, and
+// any loss would change every fingerprint (spec §5).
+func TestRulesMetadataRoundTrip(t *testing.T) {
+	email, err := ParsePath("$..email")
+	if err != nil {
+		t.Fatal(err)
+	}
+	quoted, err := ParsePath("$['a b'][*]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range []*Rules{
+		NewRules(nil, nil),
+		NewRules([]string{"X-Tenant"}, []Path{email, quoted}),
+	} {
+		stored := r.Metadata()
+		back, err := RulesFromMetadata(stored)
+		if err != nil {
+			t.Fatalf("%s: %v", stored, err)
+		}
+		if got := back.Metadata(); string(got) != string(stored) {
+			t.Errorf("round trip of %s gave %s", stored, got)
+		}
+	}
+	if got := string(NewRules(nil, []Path{email}).Metadata()); !strings.HasPrefix(got, `{"body":["$..email"],"headers":["*-key",`) {
+		t.Errorf("Metadata() = %s", got)
+	}
+}
+
+// The metadata comes from a cassette, which is untrusted input.
+func TestRulesFromMetadataRejectsInvalidMetadata(t *testing.T) {
+	for _, stored := range []string{``, `[]`, `{"body":[1]}`, `{"body":["user.email"]}`} {
+		if _, err := RulesFromMetadata([]byte(stored)); err == nil {
+			t.Errorf("RulesFromMetadata(%s) succeeded", stored)
+		}
+	}
+}
+
 // spec §3.5: credentials in URLs
 func TestRulesQueryAndURL(t *testing.T) {
 	r := NewRules(nil, nil)

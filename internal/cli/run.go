@@ -185,7 +185,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		}
 	}
 
-	rules, err := sessionRules(srcSession.Redaction)
+	rules, err := redact.RulesFromMetadata(srcSession.Redaction)
 	if err != nil {
 		log.Error("cannot read the session's redaction rules", "session", opts.source, "error", err)
 		return ExitError
@@ -283,35 +283,6 @@ func llmQueues(ctx context.Context, src *cassette.Cassette) (*match.Queues, erro
 		fp, ok := fps[in.ID]
 		return fp, ok
 	}), nil
-}
-
-// sessionRules rebuilds the redaction rules stored in a session (spec §7.2),
-// so a replay redacts requests as the recording did before fingerprinting
-// them (spec §3.5, §5).
-func sessionRules(stored json.RawMessage) (*redact.Rules, error) {
-	var meta struct {
-		Headers []string `json:"headers"`
-		Body    []string `json:"body"`
-	}
-	if err := json.Unmarshal(stored, &meta); err != nil {
-		return nil, err
-	}
-	var headers []string
-	for _, h := range meta.Headers {
-		// Suffix patterns such as "*-token" are always applied.
-		if !strings.HasPrefix(h, "*") {
-			headers = append(headers, h)
-		}
-	}
-	body := make([]redact.Path, len(meta.Body))
-	for i, raw := range meta.Body {
-		p, err := redact.ParsePath(raw)
-		if err != nil {
-			return nil, err
-		}
-		body[i] = p
-	}
-	return redact.NewRules(headers, body), nil
 }
 
 // nextReplayID returns the default id of a replay of source: source.mode.n,

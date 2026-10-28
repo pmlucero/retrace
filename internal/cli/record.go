@@ -252,12 +252,11 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 		servers[i] = mcpServer{Name: sv.Name, URL: rules.URL(u)} // spec §3.5: no credentials from the URL
 	}
 	serversJSON, _ := json.Marshal(servers)
-	redaction, _ := json.Marshal(map[string]any{"headers": rules.HeaderNames(), "body": rules.BodyRules()})
 	err = c.Write(ctx, func(tx *cassette.Tx) error {
 		return tx.InsertSession(ctx, cassette.Session{
 			ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
 			Command: opts.command, Cwd: cwd, OnMiss: "strict",
-			MCPServers: serversJSON, Redaction: redaction, RetraceVersion: Version(),
+			MCPServers: serversJSON, Redaction: rules.Metadata(), RetraceVersion: Version(),
 			Labels: opts.labels, DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 		})
 	})
