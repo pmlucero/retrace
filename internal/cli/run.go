@@ -10,7 +10,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -295,13 +294,18 @@ func llmQueues(ctx context.Context, src *cassette.Cassette) (*match.Queues, erro
 // crafted file name must not make n+1 overflow.
 func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam // M5 passes swap-model and live-tools
 	prefix := source + "." + mode + "."
-	matches, err := filepath.Glob(filepath.Join(dir, prefix+"*.cassette")) // ids hold no glob characters
-	if err != nil {
+	// Not filepath.Glob: --dir may hold pattern characters such as '['.
+	entries, err := os.ReadDir(dir)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("listing replays of %s: %w", source, err)
 	}
 	n := 0
-	for _, m := range matches {
-		s := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), prefix), ".cassette")
+	for _, e := range entries {
+		s, hasPrefix := strings.CutPrefix(e.Name(), prefix)
+		s, hasSuffix := strings.CutSuffix(s, ".cassette")
+		if !hasPrefix || !hasSuffix {
+			continue
+		}
 		if s == "" || s[0] == '0' || strings.Trim(s, "0123456789") != "" {
 			continue // not "07", "+7" or "x"
 		}
@@ -318,7 +322,8 @@ func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam /
 
 // createReplayCassette creates the cassette of a replay with session row s.
 // An explicit id must be new (spec §9.3); a default one moves on to the next
-// n if another replay took it first. It returns the id it used.
+// n if another replay took it first, unless that n would not fit the id
+// format or would reach math.MaxInt64. It returns the id it used.
 func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s cassette.Session) (*cassette.Cassette, string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, "", fmt.Errorf("creating %s: %w", dir, err)
@@ -328,7 +333,7 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 		if errors.Is(err, cassette.ErrExists) && !explicit {
 			prefix := strings.TrimRightFunc(id, func(r rune) bool { return r >= '0' && r <= '9' })
 			n, _ := strconv.Atoi(strings.TrimPrefix(id, prefix))
-			if n == math.MaxInt64 {
+			if n >= math.MaxInt64-1 {
 				break
 			}
 			if id = prefix + strconv.Itoa(n+1); cassette.ValidateSessionID(id) != nil {
@@ -349,7 +354,7 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 		}
 		return c, id, nil
 	}
-	return nil, "", fmt.Errorf("no free id for the replay of %s; name it with --as", id)
+	return nil, "", fmt.Errorf("no free default id after %s; name the replay with --as", id)
 }
 
 // warnUnconsumed reports recorded interactions that the replay never served

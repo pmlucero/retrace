@@ -296,6 +296,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"unknown strategy", []string{"s", "--on-miss", "lenient"}, "want strict"},
 		{"non-loopback listen", []string{"s", "--listen", "0.0.0.0:0"}, "add --listen-unsafe"},
 		{"grace is M5", []string{"s", "--grace", "1s"}, "not defined"},
+		// Before the source is opened: it does not exist here (spec §9.3).
+		{"default id too long", []string{strings.Repeat("a", 125)}, "--as"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -308,11 +310,14 @@ func TestRunUsageErrors(t *testing.T) {
 }
 
 func TestNextReplayID(t *testing.T) {
-	dir := t.TempDir()
+	dir := filepath.Join(t.TempDir(), "a[1]") // not a pattern
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if id, err := nextReplayID(dir, "s", "exact"); err != nil || id != "s.exact.1" {
 		t.Errorf("first replay id %q, %v; want s.exact.1", id, err)
 	}
-	for _, f := range []string{"s.exact.1", "s.exact.7", "s.exact.x", "s.exact.+9", "s.exact.09", "s.exact.9223372036854775807", "s.exact.99999999999999999999", "s.swap-model.9"} {
+	for _, f := range []string{"s.exact.1", "s.exact.7", "s.exact.x", "s.exact.+9", "s.exact.09", "s.exact.9223372036854775807", "s.exact.99999999999999999999", "s.swap-model.9", "12"} {
 		if err := os.WriteFile(cassette.Path(dir, f), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -323,6 +328,25 @@ func TestNextReplayID(t *testing.T) {
 	long := strings.Repeat("a", 125)
 	if _, err := nextReplayID(dir, long, "exact"); err == nil || !strings.Contains(err.Error(), "--as") {
 		t.Errorf("replay id of a 125-character id: %v, want an error asking for --as", err)
+	}
+}
+
+// spec §9.3: a retry that would leave the id format or reach 2^63 - 1 asks
+// for --as.
+func TestCreateReplayCassetteGivesUp(t *testing.T) {
+	ctx := context.Background()
+	for _, id := range []string{"s.exact.9223372036854775806", strings.Repeat("a", 120) + ".exact.9"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(cassette.Path(dir, id), nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		_, _, err := createReplayCassette(ctx, dir, id, false, cassette.Session{Mode: "exact", Status: "recording", OnMiss: "strict"})
+		if err == nil || !strings.Contains(err.Error(), "--as") {
+			t.Errorf("%s: %v, want an error asking for --as", id, err)
+		}
+		if files, _ := os.ReadDir(dir); len(files) != 1 {
+			t.Errorf("%s: dir holds %d files, want only the existing one", id, len(files))
+		}
 	}
 }
 
