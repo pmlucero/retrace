@@ -27,7 +27,7 @@ var echo = Tool{
 	},
 }
 
-// reply is a response with its body read.
+// reply is the status and headers of a response; post returns its body.
 type reply struct {
 	StatusCode int
 	Header     http.Header
@@ -57,13 +57,14 @@ func post(t *testing.T, url, body string, h map[string]string) (reply, string) {
 	return reply{resp.StatusCode, resp.Header}, string(b)
 }
 
-func send(t *testing.T, method, url string) int {
+// request sends a bodyless request for session id and returns its status.
+func request(t *testing.T, method, url, id string) int {
 	t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), method, url, http.NoBody)
 	if err != nil {
 		t.Fatal(err)
 	}
-	req.Header.Set(SessionHeader, "mcptest-session-1")
+	req.Header.Set(SessionHeader, id)
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatal(err)
@@ -102,6 +103,8 @@ func TestMessages(t *testing.T) {
 			`{"jsonrpc":"2.0","id":4,"error":{"code":-32602,"message":"unknown tool: nope"}}`},
 		{"unknown method", `{"jsonrpc":"2.0","id":5,"method":"resources/list"}`, 200,
 			`{"jsonrpc":"2.0","id":5,"error":{"code":-32601,"message":"method not found: resources/list"}}`},
+		{"call without params", `{"jsonrpc":"2.0","id":8,"method":"tools/call"}`, 200,
+			`{"jsonrpc":"2.0","id":8,"error":{"code":-32602,"message":"invalid params"}}`},
 		{"ping", `{"jsonrpc":"2.0","id":6,"method":"ping"}`, 200, `{"jsonrpc":"2.0","id":6,"result":{}}`},
 		{"notification", `{"jsonrpc":"2.0","method":"notifications/initialized"}`, 202, ``},
 		{"client response", `{"jsonrpc":"2.0","id":7,"result":{}}`, 202, ``},
@@ -135,21 +138,74 @@ func events(t *testing.T, body string) []string {
 	return out
 }
 
+// sseRequest posts body and returns the open response, for tests that read
+// the stream as it arrives.
+func sseRequest(ctx context.Context, t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return resp
+}
+
+// Each event is flushed on its own, EventDelay apart, so recorded offsets
+// differ.
 func TestSSE(t *testing.T) {
-	s := New(t, Config{Mode: SSE, LogEvents: 1, EventDelay: 10 * time.Millisecond})
-	start := time.Now()
-	resp, body := post(t, s.URL, `[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]`, nil)
+	const delay = 20 * time.Millisecond
+	s := New(t, Config{Mode: SSE, LogEvents: 1, EventDelay: delay})
+	resp := sseRequest(context.Background(), t, s.URL, `[{"jsonrpc":"2.0","id":1,"method":"ping"},{"jsonrpc":"2.0","id":2,"method":"ping"}]`)
+	defer func() { _ = resp.Body.Close() }()
 	if ct := resp.Header.Get("Content-Type"); ct != "text/event-stream" {
 		t.Errorf("content type = %q", ct)
 	}
-	got := events(t, body)
+	var got []string
+	var arrived []time.Time
+	sc := bufio.NewScanner(resp.Body)
+	for sc.Scan() {
+		if data, ok := strings.CutPrefix(sc.Text(), "data: "); ok {
+			got = append(got, data)
+			arrived = append(arrived, time.Now())
+		}
+	}
 	log := `{"jsonrpc":"2.0","method":"notifications/message","params":{"data":"event 1","level":"info"}}`
 	want := []string{log, `{"jsonrpc":"2.0","id":1,"result":{}}`, log, `{"jsonrpc":"2.0","id":2,"result":{}}`}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
-		t.Errorf("events = %q, want %q", got, want)
+		t.Fatalf("events = %q, want %q", got, want)
 	}
-	if d := time.Since(start); d < 30*time.Millisecond {
-		t.Errorf("stream took %v, want at least three delays", d)
+	for i := 1; i < len(arrived); i++ {
+		if gap := arrived[i].Sub(arrived[i-1]); gap < delay/2 {
+			t.Errorf("event %d arrived %v after the previous one, want about %v", i, gap, delay)
+		}
+	}
+}
+
+// A client that goes away mid-stream ends the handler, so Close does not
+// wait out the remaining delays.
+func TestSSEClientGone(t *testing.T) {
+	s := New(t, Config{Mode: SSE, LogEvents: 1, EventDelay: time.Hour})
+	ctx, cancel := context.WithCancel(context.Background())
+	resp := sseRequest(ctx, t, s.URL, `{"jsonrpc":"2.0","id":1,"method":"ping"}`)
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "data: ") {
+		t.Fatalf("first line = %q, %v", line, err)
+	}
+	cancel()
+	_ = resp.Body.Close()
+	closed := make(chan struct{})
+	go func() {
+		s.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close still waits for the handler 5s after the client left")
 	}
 }
 
@@ -186,14 +242,14 @@ func TestStrictSession(t *testing.T) {
 			t.Errorf("%s: status = %d, want %d", tt.name, resp.StatusCode, tt.status)
 		}
 	}
-	if got := send(t, http.MethodDelete, s.URL); got != http.StatusOK {
+	if got := request(t, http.MethodDelete, s.URL, id); got != http.StatusOK {
 		t.Errorf("DELETE = %d", got)
 	}
 	resp, _ = post(t, s.URL, ping, map[string]string{SessionHeader: id, ProtocolVersionHeader: DefaultProtocolVersion})
 	if resp.StatusCode != http.StatusNotFound {
 		t.Errorf("after DELETE: status = %d, want 404", resp.StatusCode)
 	}
-	if got := send(t, http.MethodDelete, s.URL); got != http.StatusNotFound {
+	if got := request(t, http.MethodDelete, s.URL, id); got != http.StatusNotFound {
 		t.Errorf("second DELETE = %d, want 404", got)
 	}
 }
@@ -214,15 +270,25 @@ func TestGet(t *testing.T) {
 	}
 }
 
-// Parallel tool calls run concurrently and are all recorded (AC-13).
+// Parallel tool calls run concurrently and are all recorded, as the tests of
+// out-of-order replay need.
 func TestConcurrentCalls(t *testing.T) {
 	const n = 8
-	var started sync.WaitGroup
-	started.Add(n)
+	var mu sync.Mutex
+	started := 0
+	all := make(chan struct{})
 	block := Tool{Name: "block", Handler: func(context.Context, json.RawMessage) (string, error) {
-		started.Done()
-		started.Wait() // returns only once every call is in flight
-		return "ok", nil
+		mu.Lock()
+		if started++; started == n {
+			close(all)
+		}
+		mu.Unlock()
+		select { // returns only once every call is in flight
+		case <-all:
+			return "ok", nil
+		case <-time.After(5 * time.Second):
+			return "", errors.New("calls did not run concurrently")
+		}
 	}}
 	s := New(t, Config{Tools: []Tool{block}})
 	var wg sync.WaitGroup
@@ -240,7 +306,12 @@ func TestConcurrentCalls(t *testing.T) {
 				t.Error(err)
 				return
 			}
+			b, err := io.ReadAll(resp.Body)
 			_ = resp.Body.Close()
+			want := `{"jsonrpc":"2.0","id":1,"result":{"content":[{"text":"ok","type":"text"}],"isError":false}}`
+			if err != nil || resp.StatusCode != http.StatusOK || string(b) != want {
+				t.Errorf("got %d %s, %v; want 200 %s", resp.StatusCode, b, err, want)
+			}
 		})
 	}
 	wg.Wait()
@@ -257,6 +328,16 @@ func TestConcurrentCalls(t *testing.T) {
 
 // One server holds several sessions at once, each with its own id, and ending
 // one leaves the other usable.
+// A missing MCP-Protocol-Version header stands for 2025-03-26.
+func TestStrictOldProtocol(t *testing.T) {
+	s := New(t, Config{Strict: true, ProtocolVersion: "2025-03-26"})
+	r, _ := post(t, s.URL, initReq, nil)
+	resp, _ := post(t, s.URL, `{"jsonrpc":"2.0","id":2,"method":"ping"}`, map[string]string{SessionHeader: r.Header.Get(SessionHeader)})
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+}
+
 func TestTwoSessions(t *testing.T) {
 	s := New(t, Config{Strict: true})
 	r1, _ := post(t, s.URL, initReq, nil)
@@ -265,7 +346,7 @@ func TestTwoSessions(t *testing.T) {
 	if id1 != "mcptest-session-1" || id2 != "mcptest-session-2" {
 		t.Fatalf("session ids = %q, %q", id1, id2)
 	}
-	if got := send(t, http.MethodDelete, s.URL); got != http.StatusOK {
+	if got := request(t, http.MethodDelete, s.URL, id1); got != http.StatusOK {
 		t.Fatalf("DELETE = %d", got)
 	}
 	ping := `{"jsonrpc":"2.0","id":2,"method":"ping"}`
