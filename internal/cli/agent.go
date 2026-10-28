@@ -105,6 +105,20 @@ func mcpEnvName(name string) string {
 	return "RETRACE_MCP_" + nonAlnum.ReplaceAllString(strings.ToUpper(name), "_") + "_URL"
 }
 
+// agentEnv returns the variables injected into the agent (spec §3.2), for a
+// proxy listening at base.
+func agentEnv(base, id, mode string, mcp []string) map[string]string {
+	vars := map[string]string{
+		"ANTHROPIC_BASE_URL": base + "/llm/anthropic",
+		"RETRACE_SESSION_ID": id,
+		"RETRACE_MODE":       mode,
+	}
+	for _, name := range mcp {
+		vars[mcpEnvName(name)] = base + "/mcp/" + name
+	}
+	return vars
+}
+
 // withEnv returns environ with each of set replacing any earlier value.
 func withEnv(environ []string, set map[string]string) []string {
 	out := make([]string, 0, len(environ)+len(set))
