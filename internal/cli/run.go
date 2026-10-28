@@ -325,6 +325,9 @@ func nextReplayID(dir, source, mode string) (string, error) { //nolint:unparam /
 	n := 0
 	for _, m := range matches {
 		s := strings.TrimSuffix(strings.TrimPrefix(filepath.Base(m), prefix), ".cassette")
+		if strings.Trim(s, "0123456789") != "" {
+			continue // only decimal digits count (spec §9.3), not "+7" or "x"
+		}
 		if k, err := strconv.Atoi(s); err == nil && k > n {
 			n = k
 		}

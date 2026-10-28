@@ -209,14 +209,14 @@ func TestRunOverridesTheCommand(t *testing.T) {
 	if s, _ := sessionOf(t, dir, "mine"); !slices.Equal(s.Command, cmd) || s.Cwd != wd {
 		t.Errorf("session command %q in %q, want %q in %q", s.Command, s.Cwd, cmd, wd)
 	}
-	// spec §9.3: an existing --as id is not replaced.
+	// AC-30: an existing --as id is not replaced.
 	r = runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0", "--as", "mine")
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), "already exists") {
 		t.Errorf("run --as an existing id: exit %d\n%s", r.code, r.stderr)
 	}
 }
 
-// spec §9.3: a source without a command is refused before any cassette exists.
+// AC-30: a source without a command is refused before any cassette exists.
 func TestRunRefusesASourceWithoutACommand(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -244,6 +244,7 @@ func TestRunRefusesASourceWithoutACommand(t *testing.T) {
 	}
 }
 
+// AC-30
 func TestRunMissingSource(t *testing.T) {
 	dir := t.TempDir()
 	r := runRunCmd(t, dir, "nope", "--listen", "127.0.0.1:0", "--", "true")
@@ -291,7 +292,7 @@ func TestNextReplayID(t *testing.T) {
 	if id, err := nextReplayID(dir, "s", "exact"); err != nil || id != "s.exact.1" {
 		t.Errorf("first replay id %q, %v; want s.exact.1", id, err)
 	}
-	for _, f := range []string{"s.exact.1", "s.exact.7", "s.exact.x", "s.swap-model.9"} {
+	for _, f := range []string{"s.exact.1", "s.exact.7", "s.exact.x", "s.exact.+9", "s.swap-model.9"} {
 		if err := os.WriteFile(cassette.Path(dir, f), nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
