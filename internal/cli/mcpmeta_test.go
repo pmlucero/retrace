@@ -30,15 +30,16 @@ func TestStoreMCPServerInfoReadsInitializeResults(t *testing.T) {
 		incomplete                  bool
 	}{
 		{"mcp:a", initReq, initResp(1, "2025-03-26"), false},
-		{"mcp:a", initReq, initResp(1, "2025-06-18"), false},                                          // a second initialize: the last counts
-		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"no"}}`, false},  // no result
-		{"mcp:a", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, initResp(1, "1999-01-01"), false}, // not an initialize
-		{"mcp:a", initReq, initResp(1, "1999-01-02"), true},                                           // incomplete recording
-		{"mcp:a", "not json", initResp(1, "1999-01-03"), false},                                       // opaque request
-		{"mcp:a", initReq, initResp(2, "1999-01-04"), false},                                          // answers another id
-		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"result":{}}`, false},                             // no protocol version
-		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":7}}`, false},          // not a string
-		{"mcp:other", initReq, initResp(1, "1999-01-05"), false},                                      // not registered
+		{"mcp:a", initReq, initResp(1, "2025-06-18"), false},                                                              // a second initialize: the last counts
+		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"no"}}`, false},                      // no result
+		{"mcp:a", `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, initResp(1, "1999-01-01"), false},                     // not an initialize
+		{"mcp:a", initReq, initResp(1, "1999-01-02"), true},                                                               // incomplete recording
+		{"mcp:a", "not json", initResp(1, "1999-01-03"), false},                                                           // opaque request
+		{"mcp:a", initReq, initResp(2, "1999-01-04"), false},                                                              // answers another id
+		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"result":{}}`, false},                                                 // no protocol version
+		{"mcp:a", initReq, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":7}}`, false},                              // not a string
+		{"mcp:b", initReq, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","serverInfo":null}}`, false}, // no serverInfo object
+		{"mcp:other", initReq, initResp(1, "1999-01-05"), false},                                                          // not registered
 	}
 	servers := json.RawMessage(`[{"name":"a","url":"http://a"},{"name":"b","url":"http://b"}]`)
 	err = c.Write(ctx, func(tx *cassette.Tx) error {
@@ -83,7 +84,7 @@ func TestStoreMCPServerInfoReadsInitializeResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `[{"name":"a","url":"http://a","protocol_version":"2025-06-18","server_info":{"name":"a"}},{"name":"b","url":"http://b"}]`
+	want := `[{"name":"a","url":"http://a","protocol_version":"2025-06-18","server_info":{"name":"a"}},{"name":"b","url":"http://b","protocol_version":"2025-03-26"}]`
 	if string(s.MCPServers) != want {
 		t.Errorf("mcp_servers = %s\nwant %s", s.MCPServers, want)
 	}

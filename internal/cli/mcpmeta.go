@@ -119,5 +119,9 @@ func initializeResult(ctx context.Context, c *cassette.Cassette, in cassette.Int
 			res, ok = r, true
 		}
 	}
+	// server_info is the serverInfo object, or absent, never null (spec §7.2).
+	if len(res.ServerInfo) == 0 || res.ServerInfo[0] != '{' {
+		res.ServerInfo = nil
+	}
 	return res, ok, nil
 }
