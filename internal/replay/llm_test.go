@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/match"
 	"github.com/pmlucero/retrace/internal/redact"
 )
@@ -26,6 +27,7 @@ type recorded struct {
 	body       string           // non-streamed response body
 	chunks     []cassette.Chunk // streamed response, if set
 	noResponse bool             // a transport error: no status, no headers
+	noBody     bool             // a status and headers, but no body recorded
 	incomplete bool             // the recording is marked incomplete
 }
 
@@ -76,6 +78,7 @@ func sourceCassette(t *testing.T, recs ...recorded) *cassette.Cassette {
 			case r.noResponse:
 				msg := "dial tcp: connection refused"
 				done = cassette.Completion{DurationMillis: 10, Error: &msg}
+			case r.noBody: // the status and headers above, with no response blob
 			case r.chunks != nil:
 				done.Streamed = true
 				done.ResponseHeaders = json.RawMessage(`{"Content-Type":["text/event-stream"]}`)
@@ -157,6 +160,14 @@ func (r *replayHarness) post(body string) (int, string) {
 // postTo sends body to path under the LLM route.
 func (r *replayHarness) postTo(path, body string) (int, string) {
 	r.t.Helper()
+	status, _, b := r.do(path, body)
+	return status, b
+}
+
+// do sends body to path under the LLM route and returns the status, the
+// headers and the body of the response.
+func (r *replayHarness) do(path, body string) (int, http.Header, string) {
+	r.t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		r.server.URL+"/llm/anthropic"+path, strings.NewReader(body))
 	if err != nil {
@@ -172,7 +183,7 @@ func (r *replayHarness) postTo(path, body string) (int, string) {
 	if err != nil {
 		r.t.Fatal(err)
 	}
-	return resp.StatusCode, string(b)
+	return resp.StatusCode, resp.Header, string(b)
 }
 
 // stop ends the new session and returns what it recorded.
@@ -464,11 +475,102 @@ func TestLLMHandlerMissOnIncompleteRecording(t *testing.T) {
 	}
 }
 
-// A head with only a transport error has no response to replay. The spec
-// does not say yet how it replays (core.md §5); until it does, it is a miss,
-// so nothing is fabricated (ADR 0006).
+// AC-29
+func TestLLMHandlerServesATransportError(t *testing.T) {
+	const req = `{"model":"claude-sonnet-4-5","messages":[{"role":"user","content":"hi"}]}`
+	src := sourceCassette(t,
+		recorded{request: req, noResponse: true},
+		recorded{request: req, body: `{"n":2}`},
+	)
+	r := newReplayHarness(t, src, nil, Options{})
+
+	// The agent gets the answer the proxy gave it while recording.
+	status, header, body := r.do("/v1/messages", req)
+	if status != http.StatusBadGateway {
+		t.Errorf("status %d, want 502", status)
+	}
+	if got := header.Get("Content-Type"); got != "text/plain; charset=utf-8" {
+		t.Errorf("Content-Type %q, want the proxy's text/plain", got)
+	}
+	if got := header.Get("X-Content-Type-Options"); got != "nosniff" {
+		t.Errorf("X-Content-Type-Options %q, want nosniff", got)
+	}
+	if !strings.HasPrefix(body, "retrace: upstream request failed: ") || !strings.Contains(body, "dial tcp: connection refused") {
+		t.Errorf("body %q, want the upstream failure with the recorded error", body)
+	}
+	if r.diverged() {
+		t.Error("Diverged closed by a recorded transport error")
+	}
+	// The transport error was consumed: the same request gets the next one.
+	if status, body := r.post(req); status != http.StatusOK || body != `{"n":2}` {
+		t.Errorf("second request got %d %s, want the second recorded response", status, body)
+	}
+	if un := r.queues.Unconsumed(); len(un) != 0 {
+		t.Errorf("unconsumed %v, want none", un)
+	}
+
+	ins, events := r.stop()
+	if len(events) != 0 {
+		t.Errorf("got events %+v, want no divergence", events)
+	}
+	if len(ins) != 2 {
+		t.Fatalf("recorded %d interactions, want 2", len(ins))
+	}
+	srcIns, err := src.Interactions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, want := ins[0], srcIns[0]
+	if in.Provenance != "replayed" || in.SourceInteractionID == nil || *in.SourceInteractionID != want.ID {
+		t.Errorf("provenance %s from %v, want replayed from %d", in.Provenance, in.SourceInteractionID, want.ID)
+	}
+	if in.StatusCode != nil || string(in.ResponseHeaders) != string(want.ResponseHeaders) || in.ResponseBlob != nil || in.Streamed {
+		t.Errorf("recorded a response %+v, want none", in)
+	}
+	if in.Error == nil || *in.Error != *want.Error || in.Incomplete() {
+		t.Errorf("error %v, want the complete recording of %q", in.Error, *want.Error)
+	}
+	got, wantEvent := modelResponse(t, r.out, in), modelResponse(t, src, want)
+	if got.Status != wantEvent.Status || got.Error == nil || wantEvent.Error == nil || *got.Error != *wantEvent.Error ||
+		string(got.Result) != string(wantEvent.Result) || !equalPtr(got.Model, wantEvent.Model) ||
+		!equalPtr(got.RequestedModel, wantEvent.RequestedModel) || !equalPtr(got.TokensOut, wantEvent.TokensOut) {
+		t.Errorf("model_response %+v, want the source's %+v", got, wantEvent)
+	}
+}
+
+func equalPtr[T comparable](a, b *T) bool {
+	return a == nil && b == nil || a != nil && b != nil && *a == *b
+}
+
+// modelResponse derives the model_response event of in, an interaction of c.
+func modelResponse(t *testing.T, c *cassette.Cassette, in cassette.Interaction) cassette.Event {
+	t.Helper()
+	req, err := c.Blob(context.Background(), *in.RequestBlob)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []cassette.Event
+	emit := func(e cassette.Event) int64 {
+		events = append(events, e)
+		return int64(len(events))
+	}
+	d := derive.New()
+	d.Begin(in, req, emit)
+	d.Complete(in.ID, cassette.Completion{StatusCode: in.StatusCode, ResponseHeaders: in.ResponseHeaders,
+		ResponseBlob: in.ResponseBlob, Streamed: in.Streamed, DurationMillis: *in.DurationMillis, Error: in.Error}, nil, emit)
+	for _, e := range events {
+		if e.Kind == "model_response" {
+			return e
+		}
+	}
+	t.Fatalf("interaction %d derived no model_response: %+v", in.ID, events)
+	return cassette.Event{}
+}
+
+// A head with a status but no recorded body has no response to replay: it is
+// a miss, so nothing is fabricated (ADR 0006).
 func TestLLMHandlerMissOnUnservableHead(t *testing.T) {
-	src := sourceCassette(t, recorded{request: `{"q":"a"}`, noResponse: true})
+	src := sourceCassette(t, recorded{request: `{"q":"a"}`, noBody: true})
 	r := newReplayHarness(t, src, nil, Options{})
 	status, body := r.post(`{"q":"a"}`)
 	checkMissResponse(t, status, body, "interaction 1 has no recorded response")

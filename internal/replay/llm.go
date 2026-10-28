@@ -14,6 +14,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/match"
+	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
@@ -44,10 +45,11 @@ type LLMConfig struct {
 
 // LLMHandler answers the LLM channel of an exact replay from the cassette
 // (spec §4.1). It records each served interaction in the new session with
-// provenance replayed (spec §4.4). On a cassette miss it applies steps 1 and 2
-// of strict (spec §6.2): it appends a divergence event and answers 422; the
-// caller ends the session as diverged (docs/plan/mvp.md, "Miss handling
-// before strict"). It is safe for concurrent use.
+// provenance replayed (spec §4.4), a recorded transport error included,
+// which it answers as the proxy did (spec §5 step 2). On a cassette miss it
+// applies steps 1 and 2 of strict (spec §6.2): it appends a divergence event
+// and answers 422; the caller ends the session as diverged (docs/plan/mvp.md,
+// "Miss handling before strict"). It is safe for concurrent use.
 type LLMHandler struct {
 	cfg      LLMConfig
 	clock    Clock
@@ -104,6 +106,10 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.miss(w, start, res, "no recorded request matches this one")
 		return
 	}
+	if transportError(src) {
+		h.serveTransportError(w, r, start, body, stored, fp, src)
+		return
+	}
 	if err := servable(src); err != nil {
 		h.miss(w, start, missResult{ReceivedFingerprint: &fp},
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
@@ -112,8 +118,56 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.serve(w, r, start, body, stored, fp, src)
 }
 
+// transportError reports whether in records a transport error, the upstream
+// request having failed with no response, and its recording is complete
+// (spec §7.3). Queues.Next never returns an incomplete head (AC-28); the
+// check restates the spec condition (§5 step 2).
+func transportError(in cassette.Interaction) bool {
+	return in.StatusCode == nil && in.Error != nil && !in.Incomplete()
+}
+
+// serveTransportError answers r with the 502 the proxy sent when it recorded
+// src, and records the exchange in the new session with src's error and no
+// status, so it derives the same events as src (spec §5 step 2, AC-29). This
+// is what the agent saw while recording, not a miss: the replay goes on.
+func (h *LLMHandler) serveTransportError(w http.ResponseWriter, r *http.Request, start time.Time, body, stored []byte, fp string, src cassette.Interaction) {
+	id := h.begin(r, start, body, stored, fp, src)
+	// Completed before the answer reaches the agent, as serve does.
+	h.cfg.Writer.CompleteInteraction(id, cassette.Completion{
+		DurationMillis: h.clock.Now().Sub(start).Milliseconds(), Error: src.Error,
+	})
+	proxy.UpstreamFailed(w, *src.Error)
+}
+
 // serve answers r with src and records the exchange in the new session.
 func (h *LLMHandler) serve(w http.ResponseWriter, r *http.Request, start time.Time, body, stored []byte, fp string, src cassette.Interaction) {
+	rec := &replayRecorder{h: h, src: src, start: start, id: h.begin(r, start, body, stored, fp, src)}
+	err := serve(r.Context(), w, h.cfg.Source, src, h.cfg.Options, rec)
+	switch {
+	case err == nil:
+		rec.complete(nil) // a safety net: the headers or the last write already completed it
+	case !rec.wroteHeader && errors.Is(err, context.Canceled):
+		// The agent left while the cassette was being read.
+		msg := "the agent closed the connection before the response arrived"
+		rec.complete(&msg)
+	case !rec.wroteHeader:
+		// The cassette could not be read: nothing was sent yet.
+		h.log.Error("reading the cassette", "interaction", src.ID, "error", err)
+		msg := "reading the recorded response: " + err.Error()
+		rec.complete(&msg)
+		http.Error(w, "retrace: "+msg, http.StatusInternalServerError)
+	default:
+		msg := "serving the recorded response: " + err.Error()
+		if errors.Is(err, context.Canceled) {
+			msg = "the agent closed the connection before the response ended"
+		}
+		rec.complete(&msg)
+	}
+}
+
+// begin records the start of r, answered from src, in the new session and
+// returns its interaction id.
+func (h *LLMHandler) begin(r *http.Request, start time.Time, body, stored []byte, fp string, src cassette.Interaction) int64 {
 	path := r.URL.Path
 	if path == "" {
 		path = "/"
@@ -137,28 +191,7 @@ func (h *LLMHandler) serve(w http.ResponseWriter, r *http.Request, start time.Ti
 		in.RequestBlob = &key
 		blobs = append(blobs, stored)
 	}
-	rec := &replayRecorder{h: h, src: src, start: start, id: h.cfg.Writer.BeginInteraction(in, blobs...)}
-	err = serve(r.Context(), w, h.cfg.Source, src, h.cfg.Options, rec)
-	switch {
-	case err == nil:
-		rec.complete(nil) // a safety net: the headers or the last write already completed it
-	case !rec.wroteHeader && errors.Is(err, context.Canceled):
-		// The agent left while the cassette was being read.
-		msg := "the agent closed the connection before the response arrived"
-		rec.complete(&msg)
-	case !rec.wroteHeader:
-		// The cassette could not be read: nothing was sent yet.
-		h.log.Error("reading the cassette", "interaction", src.ID, "error", err)
-		msg := "reading the recorded response: " + err.Error()
-		rec.complete(&msg)
-		http.Error(w, "retrace: "+msg, http.StatusInternalServerError)
-	default:
-		msg := "serving the recorded response: " + err.Error()
-		if errors.Is(err, context.Canceled) {
-			msg = "the agent closed the connection before the response ended"
-		}
-		rec.complete(&msg)
-	}
+	return h.cfg.Writer.BeginInteraction(in, blobs...)
 }
 
 // missResult is the result of a divergence event (spec §7.4).

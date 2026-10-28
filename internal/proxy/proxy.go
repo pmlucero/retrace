@@ -186,7 +186,15 @@ func (p *Proxy) onError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	ex.fail(msg)
 	p.log.Warn("upstream request failed", "interaction", ex.id, "error", err)
-	http.Error(w, "retrace: upstream request failed: "+err.Error(), http.StatusBadGateway)
+	UpstreamFailed(w, err.Error())
+}
+
+// UpstreamFailed answers a request whose upstream request failed with no
+// response: 502 and a plain-text body that includes msg. Replay answers an
+// interaction recorded with a transport error the same way, so the agent gets
+// what it got while recording (spec §5 step 2).
+func UpstreamFailed(w http.ResponseWriter, msg string) {
+	http.Error(w, "retrace: upstream request failed: "+msg, http.StatusBadGateway)
 }
 
 // exchange is the recording state of one request.
