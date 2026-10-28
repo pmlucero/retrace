@@ -84,7 +84,8 @@ var mcpScenarios = []scenario{
 	{
 		// tools/call responses that are missing or not usable each give an
 		// error, mirroring model_response. A response that arrived before
-		// the agent closed the stream still counts.
+		// the agent closed the stream still counts. A POST whose body was
+		// not stored derives nothing, as its tools/call is unknown.
 		name: "mcp_incomplete",
 		exchanges: []exchange{
 			mcpPost(0, searchCall).stream(40, sse("message", `{"jsonrpc":"2.0","method":"notifications/progress"}`)).
@@ -99,6 +100,7 @@ var mcpScenarios = []scenario{
 				failed("the agent closed the connection before the response ended"),
 			mcpPost(45000, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":"[REDACTED:1a2b3c4d]"}`).
 				answer(200, `{"jsonrpc":"2.0","id":6,"result":"[REDACTED:5e6f7a8b]"}`, 10),
+			mcpPost(46000, "").answer(200, searchOK, 10),
 		},
 	},
 }
