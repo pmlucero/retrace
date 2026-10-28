@@ -120,7 +120,8 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // transportError reports whether in records a transport error, the upstream
 // request having failed with no response, and its recording is complete
-// (spec §7.3).
+// (spec §7.3). Queues.Next never returns an incomplete head (AC-28); the
+// check restates the spec condition (§5 step 2).
 func transportError(in cassette.Interaction) bool {
 	return in.StatusCode == nil && in.Error != nil && !in.Incomplete()
 }
