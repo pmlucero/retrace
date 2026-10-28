@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
 )
@@ -98,6 +100,78 @@ func TestRunSessionFailsWithoutACommand(t *testing.T) {
 	}
 }
 
+// AC-28: a cassette miss ends the session diverged, however the agent then exits,
+// and agent_exit_code keeps its code (spec §6.2, §9.3), but a session whose
+// agent never ran stays failed.
+func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
+	diverged := make(chan struct{})
+	close(diverged)
+	for _, tc := range []struct {
+		name      string
+		mode      string // the helper agent's mode; "" runs no agent
+		exit      string
+		interrupt bool
+		want      string
+		wantCode  *int
+		wantExit  int
+	}{
+		{"agent exits 0", "call", "0", false, "diverged", ptr(0), ExitDiverged},
+		{"agent exits non-zero", "call", "3", false, "diverged", ptr(3), ExitDiverged},
+		{"interrupted", "wait", "", true, "diverged", ptr(130), ExitDiverged},
+		{"agent never ran", "", "", false, "failed", nil, ExitError},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.interrupt && runtime.GOOS == "windows" {
+				t.Skip("SIGINT cannot be sent to a process on Windows")
+			}
+			t.Setenv(agentModeEnv, tc.mode)
+			t.Setenv(agentExitEnv, tc.exit)
+			sigs := make(chan chan<- os.Signal, 1)
+			saved := notifySignals
+			notifySignals = func(c chan<- os.Signal) func() {
+				sigs <- c
+				return func() {}
+			}
+			t.Cleanup(func() { notifySignals = saved })
+
+			cfg, path := newTestSession(t)
+			cfg.diverged = diverged
+			if tc.mode != "" {
+				cfg.command = agentCommand()
+			}
+			out := &syncBuffer{}
+			env := &Env{Stdout: out, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
+			if tc.interrupt {
+				go func() {
+					c := <-sigs
+					// Not waitUntil: t.Fatal must not run outside the test's goroutine.
+					deadline := time.Now().Add(30 * time.Second)
+					for !strings.Contains(out.String(), "ready") && time.Now().Before(deadline) {
+						time.Sleep(10 * time.Millisecond)
+					}
+					c <- os.Interrupt
+				}()
+			}
+			res, err := runSession(context.Background(), env, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := openCassette(t, path).Session(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.status != tc.want || s.Status != tc.want || res.exitCode() != tc.wantExit {
+				t.Errorf("status %q, stored %q, exit %d; want %q and %d", res.status, s.Status, res.exitCode(), tc.want, tc.wantExit)
+			}
+			if (s.AgentExitCode == nil) != (tc.wantCode == nil) || (s.AgentExitCode != nil && *s.AgentExitCode != *tc.wantCode) {
+				t.Errorf("agent_exit_code %v, want %v", s.AgentExitCode, tc.wantCode)
+			}
+		})
+	}
+}
+
+func ptr(n int) *int { return &n }
+
 func TestSessionResultExitCode(t *testing.T) {
 	for _, tc := range []struct {
 		res  sessionResult
@@ -108,6 +182,7 @@ func TestSessionResultExitCode(t *testing.T) {
 		{sessionResult{status: "interrupted", agent: agentResult{exitCode: 130, interrupted: true}}, ExitAgentFailed},
 		{sessionResult{status: "interrupted", agent: agentResult{interrupted: true}}, ExitOK},
 		{sessionResult{status: "failed"}, ExitError},
+		{sessionResult{status: "diverged", agent: agentResult{exitCode: 1}}, ExitDiverged},
 	} {
 		if got := tc.res.exitCode(); got != tc.want {
 			t.Errorf("%+v: exit code %d, want %d", tc.res, got, tc.want)
