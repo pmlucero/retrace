@@ -98,6 +98,36 @@ func TestRunSessionFailsWithoutACommand(t *testing.T) {
 	}
 }
 
+// A cassette miss ends the session diverged, however the agent then exits
+// (spec §6.2, §9.3), but a session whose agent never ran stays failed.
+func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
+	t.Setenv(cwdAgentEnv, "1")
+	diverged := make(chan struct{})
+	close(diverged)
+	for _, tc := range []struct {
+		command []string
+		want    string
+	}{
+		{[]string{os.Args[0], "-test.run=^TestHelperCwdAgent$"}, "diverged"},
+		{nil, "failed"},
+	} {
+		cfg, path := newTestSession(t)
+		cfg.command, cfg.diverged = tc.command, diverged
+		env := &Env{Stdout: &syncBuffer{}, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
+		res, err := runSession(context.Background(), env, cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		s, err := openCassette(t, path).Session(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if res.status != tc.want || s.Status != tc.want {
+			t.Errorf("command %q: status %q, stored %q; want %q", tc.command, res.status, s.Status, tc.want)
+		}
+	}
+}
+
 func TestSessionResultExitCode(t *testing.T) {
 	for _, tc := range []struct {
 		res  sessionResult
@@ -108,6 +138,7 @@ func TestSessionResultExitCode(t *testing.T) {
 		{sessionResult{status: "interrupted", agent: agentResult{exitCode: 130, interrupted: true}}, ExitAgentFailed},
 		{sessionResult{status: "interrupted", agent: agentResult{interrupted: true}}, ExitOK},
 		{sessionResult{status: "failed"}, ExitError},
+		{sessionResult{status: "diverged", agent: agentResult{exitCode: 1}}, ExitDiverged},
 	} {
 		if got := tc.res.exitCode(); got != tc.want {
 			t.Errorf("%+v: exit code %d, want %d", tc.res, got, tc.want)

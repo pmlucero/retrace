@@ -29,6 +29,7 @@ type sessionConfig struct {
 	mcp      []string           // registered MCP server names
 	command  []string           // the agent command; an empty one fails the session
 	cwd      string             // the agent's working directory; "" inherits retrace's
+	diverged <-chan struct{}    // closed at a cassette miss in a replay; nil when recording
 }
 
 // sessionResult is how a session ended.
@@ -78,6 +79,15 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 		log.Warn("in-flight requests did not finish in time; they are recorded as incomplete", "error", err)
 		_ = srv.Close()
 	}
+	// Checked after the shutdown, so a miss among the last requests counts. A
+	// miss outweighs how the agent then ended (spec §6.2, §9.3).
+	select {
+	case <-cfg.diverged:
+		if res.status != "failed" {
+			res.status = "diverged"
+		}
+	default:
+	}
 	end := cassette.SessionEnd{Status: res.status, EndedAt: time.Now()}
 	if res.status != "failed" {
 		end.AgentExitCode = &res.agent.exitCode
@@ -117,6 +127,8 @@ func (r sessionResult) exitCode() int {
 	switch {
 	case r.status == "failed":
 		return ExitError
+	case r.status == "diverged":
+		return ExitDiverged
 	case r.agent.exitCode != 0:
 		return ExitAgentFailed
 	}
