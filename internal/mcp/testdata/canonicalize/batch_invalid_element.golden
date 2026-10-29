@@ -1,0 +1,2 @@
+{"batch":[{"kind":"request","method":"tools/list"},{"element":{"a":[2],"b":1},"kind":"invalid"},{"element":7,"kind":"invalid"}],"server":"fs"}
+187a099b2fb8b828690a1a76768c19ed87efdc7872fa793c70ee5de1a87a8f81

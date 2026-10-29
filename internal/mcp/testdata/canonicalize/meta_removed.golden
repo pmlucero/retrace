@@ -1,0 +1,2 @@
+{"message":{"kind":"request","method":"tools/call","params":{"arguments":{"_meta":{"kept":true},"path":"/tmp/a"},"name":"read_file"}},"server":"fs"}
+b23e7d3e1a068b99bc144727891d3d8c7980346c8477af4f0ce6af39f814ce73

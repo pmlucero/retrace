@@ -1,0 +1,2 @@
+{"message":{"kind":"request","method":"tools/call","params":{"arguments":{"text":"café é \u2028 <b>&amp; \"q\" 😀 / \t"},"name":"echo"}},"server":"fs"}
+656fb4f494871ec3ec77dab722982fd3de41b53947a28b101d60278c79bdc9f3

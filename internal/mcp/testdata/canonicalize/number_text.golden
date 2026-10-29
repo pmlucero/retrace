@@ -1,0 +1,2 @@
+{"message":{"kind":"request","method":"tools/call","params":{"arguments":{"a":1.0,"b":1e2,"c":-0},"name":"add"}},"server":"fs"}
+7ec565b59115424a673d1d5b1b7d179fd3d92079835bba38af0ba920f05328be
