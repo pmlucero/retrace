@@ -324,7 +324,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 **Linking `tool_call` to `tool_use`.** Agents often rename MCP tools when exposing them to the model (e.g. `weather__get_forecast`), so linking is best-effort. A `tool_call` is linked to the most recent unlinked `tool_use` whose canonical arguments are equal and whose tool name equals or ends with the MCP tool name. If none qualifies, `parent_seq` stays null.
 
 - "Ends with" is a plain, case-sensitive suffix. An empty MCP tool name links to nothing.
-- Arguments are compared in their canonical form (ADR 0007): keys sorted, number text kept. Absent MCP `arguments` compare as `{}`. A `tool_use` input kept as a JSON string (§7.4) is compared as that string, and one that cannot be decoded (nested more than 1000 levels deep) is never linked.
+- Arguments are compared in their canonical form (ADR 0007): keys sorted, number text kept. Absent MCP `arguments` compare as `{}`. A `tool_use` input kept as a JSON string (§7.4) is compared as that string. Arguments on either side that cannot be decoded (nested more than 1000 levels deep) are never linked.
 - Each `tool_use` is linked at most once. Only the 128 most recent unlinked `tool_use` events are considered, so derivation keeps bounded state.
 - A `tool_call` appended before the `tool_use` it answers (when the agent acts on a streamed response before its end is recorded, see Order) stays unlinked, because events are append-only.
 
