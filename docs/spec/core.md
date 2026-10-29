@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.17
-- Last updated: 2026-10-28
+- Version: 0.18
+- Last updated: 2026-10-29
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -156,6 +156,10 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
 1. Incoming requests on a matched channel are canonicalized and fingerprinted.
    - **LLM**: the body without `metadata`.
    - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`. A batch is fingerprinted as one unit: the server name and the list of its messages, each canonicalized the same way, in their order. A batch of one message and the bare message get different fingerprints, because their responses have different shapes. A batch the agent composes differently from the recording (for example, a notification sent in it alongside a request) is therefore a miss. This refines point 1 of ADR 0007, which predates batches.
+     - Each message in the canonical form carries its kind (request, notification, response or invalid), so a notification never matches a request with the same method and params.
+     - `_meta` is removed only from `params` itself. A `_meta` nested deeper (e.g. in `params.arguments`) or inside a client response's `result` is kept.
+     - A response from the client contributes its `result` or `error`, without its id. A batch element that is not a JSON-RPC message contributes the whole element.
+     - A body that is valid JSON but is neither a JSON-RPC message nor a non-empty batch is canonicalized as a whole, together with the server name.
 
    Body redaction rules (§3.5) are applied first. A body that is not valid JSON, or that is nested more than 1000 levels deep, is fingerprinted over its raw bytes (for MCP, together with the server name). This refines point 1 of ADR 0007. A request whose body cannot be redacted (§3.5) cannot be matched: it is a cassette miss, and its divergence event has a null `received_fingerprint`, so no hash of unredacted data reaches the cassette.
 2. Each fingerprint has a FIFO queue of recorded interactions. A request consumes the head of its queue, and an empty queue is a cassette miss.
@@ -305,7 +309,24 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 - `tool_use`: `arguments` is the block's `input`. A streamed input that is not valid JSON is kept as a JSON string. It happens when the response ends, and has no duration.
 - Order: the events of a request are appended when the request is recorded, and those of a response when it is complete, so `seq` follows causality: an agent cannot send a request based on a response before that response's events exist. Derivation never delays forwarding.
 
+**Deriving MCP events.** MCP events are derived from `POST` interactions on the MCP channel whose body is JSON-RPC. `GET`, `DELETE`, bodies that are not JSON-RPC and invalid batch elements produce no events. A batch gives one event per message.
+
+- `tool_call` and `mcp_message` are request events: they start at the interaction's `started_at` and have no duration. `mcp_message` has `status = ok` and only `arguments.method`. Client notifications also give an `mcp_message`. Client responses give no event, and neither do responses to methods other than `tools/call`, so a failing `initialize` shows only in the raw layer.
+- `tool_result` also sets `tool`. It starts at the interaction's `started_at` and lasts its `duration_ms`, also inside an SSE batch. Its `status` is `error`, and `error` is set, in this order of precedence:
+  - a JSON-RPC error gives `<code>: <message>`;
+  - an incomplete recording (§7.3) gives the interaction's `error`, keeping a stored `result`;
+  - `isError: true` gives the `text` blocks of its content joined with `\n`, or `the tool reported an error` when it has none;
+  - a missing response gives the interaction's `error`, or a fixed message saying why there is none (no response, an HTTP error status, a body that is not JSON-RPC, a stream that ended first, a body that was not recorded, or no message with the request's id).
+- A transport error recorded after the response arrived does not fail the `tool_result`: MCP clients often close an SSE stream as soon as they have their answer.
+- Messages that the server sends inside a response (progress, logging, server requests), and responses that answer no request, produce no events in the MVP.
+- Redacted values are kept as stored. `params` that are not an object give a `tool_call` with null `tool` and `arguments`, and a `result` that is not an object is `ok` with that value.
+
 **Linking `tool_call` to `tool_use`.** Agents often rename MCP tools when exposing them to the model (e.g. `weather__get_forecast`), so linking is best-effort. A `tool_call` is linked to the most recent unlinked `tool_use` whose canonical arguments are equal and whose tool name equals or ends with the MCP tool name. If none qualifies, `parent_seq` stays null.
+
+- "Ends with" is a plain, case-sensitive suffix. An empty MCP tool name links to nothing.
+- Arguments are compared in their canonical form (ADR 0007): keys sorted, number text kept. Absent MCP `arguments` compare as `{}`. A `tool_use` input kept as a JSON string (§7.4) is compared as that string. Arguments on either side that cannot be decoded (nested more than 1000 levels deep) are never linked.
+- Each `tool_use` is linked at most once. Only the 128 most recent unlinked `tool_use` events are considered, so derivation keeps bounded state.
+- A `tool_call` appended before the `tool_use` it answers (when the agent acts on a streamed response before its end is recorded, see Order) stays unlinked, because events are append-only.
 
 ### 7.5 Cost estimation
 
@@ -440,7 +461,7 @@ The mode is derived from the flags:
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
-- MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace.
+- MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. In `exact` and `swap-model`, where every MCP answer comes from the cassette, its `mcp_servers` is a copy of the source's. In `live-tools`, each server keeps its name, its `url` is the one actually used (after `--mcp`, redacted as in §3.5), and `protocol_version` and `server_info` are read from the replay's own exchanges as in §3.4.
 - Errors in the flags and arguments (exit `2`), including a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The empty-command check needs the source, so it comes after, and before the check that an `--as` id already exists (exit `1`).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
