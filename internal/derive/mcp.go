@@ -141,11 +141,10 @@ func (c *mcpCall) responses(done cassette.Completion, response []byte) ([]mcp.Me
 // interaction error, such as the agent closing an SSE stream after its
 // answer, does not undo a response that was received.
 func toolResult(done cassette.Completion, resp *mcp.Message, parseErr error) (json.RawMessage, string) {
-	incomplete := done.Error != nil && strings.Contains(*done.Error, cassette.RecordingIncomplete)
 	switch {
 	case resp != nil && resp.Error != nil:
 		return nil, rpcError(resp.Error)
-	case incomplete:
+	case done.Incomplete():
 		var result json.RawMessage
 		if resp != nil {
 			result = compact(resp.Result)
