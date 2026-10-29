@@ -1,8 +1,8 @@
 # MVP implementation plan
 
 - Status: Approved
-- Last updated: 2026-10-28
-- Spec: [core.md](../spec/core.md) v0.17 (updated whenever the spec version changes)
+- Last updated: 2026-10-29
+- Spec: [core.md](../spec/core.md) v0.18 (updated whenever the spec version changes)
 
 This plan orders the implementation of the MVP defined in the [core spec](../spec/core.md). It says *in what order* things are built and *how* progress is tracked. *What* is built is defined by the spec and the [ADRs](../adr/README.md). If they disagree, the spec wins, and this plan is updated.
 
