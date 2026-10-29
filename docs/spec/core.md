@@ -157,7 +157,7 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
    - **LLM**: the body without `metadata`.
    - **MCP**: `server + method + params` without JSON-RPC `id` and without `params._meta`. A batch is fingerprinted as one unit: the server name and the list of its messages, each canonicalized the same way, in their order. A batch of one message and the bare message get different fingerprints, because their responses have different shapes. A batch the agent composes differently from the recording (for example, a notification sent in it alongside a request) is therefore a miss. This refines point 1 of ADR 0007, which predates batches.
      - Each message in the canonical form carries its kind (request, notification, response or invalid), so a notification never matches a request with the same method and params.
-     - `_meta` is removed only from `params`, and kept anywhere else.
+     - `_meta` is removed only from `params` itself. A `_meta` nested deeper (e.g. in `params.arguments`) or inside a client response's `result` is kept.
      - A response from the client contributes its `result` or `error`, without its id. A batch element that is not a JSON-RPC message contributes the whole element.
      - A body that is valid JSON but is neither a JSON-RPC message nor a non-empty batch is canonicalized as a whole, together with the server name.
 
@@ -324,7 +324,7 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 **Linking `tool_call` to `tool_use`.** Agents often rename MCP tools when exposing them to the model (e.g. `weather__get_forecast`), so linking is best-effort. A `tool_call` is linked to the most recent unlinked `tool_use` whose canonical arguments are equal and whose tool name equals or ends with the MCP tool name. If none qualifies, `parent_seq` stays null.
 
 - "Ends with" is a plain, case-sensitive suffix. An empty MCP tool name links to nothing.
-- Arguments are compared in their canonical form (ADR 0007): keys sorted, number text kept. Absent MCP `arguments` compare as `{}`. A `tool_use` input kept as a JSON string (§7.4) is compared as that string.
+- Arguments are compared in their canonical form (ADR 0007): keys sorted, number text kept. Absent MCP `arguments` compare as `{}`. A `tool_use` input kept as a JSON string (§7.4) is compared as that string, and one that cannot be decoded (nested more than 1000 levels deep) is never linked.
 - Each `tool_use` is linked at most once. Only the 128 most recent unlinked `tool_use` events are considered, so derivation keeps bounded state.
 - A `tool_call` appended before the `tool_use` it answers (when the agent acts on a streamed response before its end is recorded, see Order) stays unlinked, because events are append-only.
 
@@ -461,7 +461,7 @@ The mode is derived from the flags:
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs.
-- MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. Its `mcp_servers` is a copy of the source's.
+- MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. In `exact` and `swap-model`, where every MCP answer comes from the cassette, its `mcp_servers` is a copy of the source's. In `live-tools`, each server keeps its name, its `url` is the one actually used (after `--mcp`, redacted as in §3.5), and `protocol_version` and `server_info` are read from the replay's own exchanges as in §3.4.
 - Errors in the flags and arguments (exit `2`), including a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The empty-command check needs the source, so it comes after, and before the check that an `--as` id already exists (exit `1`).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
