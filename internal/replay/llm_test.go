@@ -352,6 +352,13 @@ func TestLLMHandlerRedactsBeforeFingerprinting(t *testing.T) {
 // it is a divergence.
 func divergence(t *testing.T, events []cassette.Event) map[string]any {
 	t.Helper()
+	return divergenceOn(t, events, "llm", "anthropic")
+}
+
+// divergenceOn checks that events hold one divergence on channel and
+// upstream, and returns its result.
+func divergenceOn(t *testing.T, events []cassette.Event, channel, upstream string) map[string]any {
+	t.Helper()
 	if len(events) != 1 {
 		t.Fatalf("got %d events, want one divergence", len(events))
 	}
@@ -364,8 +371,8 @@ func divergence(t *testing.T, events []cassette.Event) map[string]any {
 	if err := json.Unmarshal(e.Result, &res); err != nil {
 		t.Fatalf("divergence result %s: %v", e.Result, err)
 	}
-	if res["channel"] != "llm" || res["upstream"] != "anthropic" {
-		t.Errorf("divergence result %s: want channel llm, upstream anthropic", e.Result)
+	if res["channel"] != channel || res["upstream"] != upstream {
+		t.Errorf("divergence result %s: want channel %s, upstream %s", e.Result, channel, upstream)
 	}
 	if diff, ok := res["diff"].([]any); !ok || len(diff) != 0 {
 		t.Errorf("divergence diff %v, want an empty list", res["diff"])

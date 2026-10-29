@@ -85,6 +85,19 @@ type exchange struct {
 	stored []byte // body after redaction
 	fp     string
 	src    cassette.Interaction // the recorded interaction that answers it
+	// adapt, when set, says how the response to serve differs from src's.
+	// It may read the cassette, so it runs once the exchange is recorded.
+	adapt func() (adaptation, error)
+}
+
+// adaptation is how a served response differs from the recorded one: the MCP
+// handler gives it the agent's JSON-RPC ids and session id (spec §5 step 3).
+// Its zero value serves and stores the response as recorded.
+type adaptation struct {
+	// headers to serve and to store, as response_headers JSON; nil serves
+	// and stores the recorded ones.
+	served, stored json.RawMessage
+	rewrite        rewrite // nil serves and stores the data as recorded
 }
 
 // transportError reports whether in records a transport error, the upstream
@@ -112,8 +125,18 @@ func (rc *recorder) serveTransportError(w http.ResponseWriter, ex exchange) {
 // exchange in the new session. ctx is the request's context.
 func (rc *recorder) serveRecorded(ctx context.Context, w http.ResponseWriter, ex exchange) {
 	src := ex.src
-	rec := &servedResponse{rc: rc, src: src, start: ex.start, id: rc.begin(ex)}
-	err := serve(ctx, w, rc.source, src, rc.opts, rec)
+	rec := &servedResponse{rc: rc, src: src, start: ex.start, id: rc.begin(ex), headersStored: src.ResponseHeaders}
+	var ad adaptation
+	var err error
+	if ex.adapt != nil {
+		ad, err = ex.adapt()
+	}
+	if err == nil {
+		if ad.served != nil {
+			src.ResponseHeaders, rec.headersStored = ad.served, ad.stored
+		}
+		err = serve(ctx, w, rc.source, src, rc.opts, rec, ad.rewrite)
+	}
 	switch {
 	case err == nil:
 		rec.complete(nil) // a safety net: the headers or the last write already completed it
@@ -214,15 +237,17 @@ func (rc *recorder) miss(start time.Time, res missResult, reason string) string 
 // a last write that fails leaves the interaction recorded as complete. It is
 // used by one request's goroutine only.
 type servedResponse struct {
-	rc          *recorder
-	src         cassette.Interaction
-	id          int64
-	start       time.Time
-	body        []byte // the non-streamed body, as served
-	chunks      int    // chunks recorded so far
-	headerAt    time.Time
-	wroteHeader bool
-	done        bool
+	rc     *recorder
+	src    cassette.Interaction
+	id     int64
+	start  time.Time
+	body   []byte // the non-streamed body, as stored
+	chunks int    // chunks recorded so far
+	// headersStored are the response headers to store.
+	headersStored json.RawMessage
+	headerAt      time.Time
+	wroteHeader   bool
+	done          bool
 }
 
 func (r *servedResponse) headers(empty bool) {
@@ -259,7 +284,7 @@ func (r *servedResponse) complete(errMsg *string) {
 	var blobs [][]byte
 	if r.wroteHeader {
 		ttfb := r.headerAt.Sub(r.start).Milliseconds()
-		done.StatusCode, done.ResponseHeaders, done.TTFBMillis = r.src.StatusCode, r.src.ResponseHeaders, &ttfb
+		done.StatusCode, done.ResponseHeaders, done.TTFBMillis = r.src.StatusCode, r.headersStored, &ttfb
 		done.Streamed = r.src.Streamed
 		if !r.src.Streamed && errMsg == nil {
 			body := r.body
