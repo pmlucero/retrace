@@ -382,7 +382,7 @@ func TestProxyForwardsButDoesNotRecordOversizedBodies(t *testing.T) {
 // incomplete reports whether in carries the marker of an incomplete recording
 // (spec §7.2).
 func incomplete(in cassette.Interaction) bool {
-	return in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete)
+	return cassette.MarksIncomplete(in.Error)
 }
 
 // AC-25
