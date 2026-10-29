@@ -30,6 +30,9 @@ type sessionConfig struct {
 	command  []string           // the agent command; an empty one fails the session
 	cwd      string             // the agent's working directory; "" inherits retrace's
 	diverged <-chan struct{}    // closed at a cassette miss in a replay; nil when recording
+	// finish, if set, completes the session's metadata from what was
+	// recorded. It runs once the writer has written everything.
+	finish func(ctx context.Context, c *cassette.Cassette) error
 }
 
 // sessionResult is how a session ended.
@@ -95,6 +98,15 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	wctx, cancelW := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
 	defer cancelW()
 	werr := cfg.writer.Close(wctx, end)
+	if werr == nil && cfg.finish != nil {
+		// A step of its own, with its own deadline. The cassette is valid
+		// without it, so the session still succeeds.
+		fctx, cancelF := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
+		defer cancelF()
+		if err := cfg.finish(fctx, cfg.cassette); err != nil {
+			log.Warn("cannot complete the session metadata", "path", path, "error", err)
+		}
+	}
 	if err := errors.Join(werr, cfg.cassette.Close()); err != nil {
 		log.Error("the cassette may be incomplete", "path", path, "error", err)
 		return res, err

@@ -62,6 +62,9 @@ func TestHelperAgent(t *testing.T) {
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
+	if mode == "mcp" {
+		runMCPAgent()
+	}
 
 	vars := map[string]string{}
 	for _, k := range []string{"ANTHROPIC_BASE_URL", "RETRACE_SESSION_ID", "RETRACE_MODE", "RETRACE_MCP_ORDERS_DB_URL"} {
