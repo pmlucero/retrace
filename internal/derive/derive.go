@@ -18,8 +18,9 @@ import (
 // Version is the version of the derivation logic, stored in each event and in
 // the session (spec §7.2, §7.4). Bump it whenever the events derived from the
 // same interactions change, so cassettes can be told apart and reindexed.
-// Version 2 adds the MCP events.
-const Version = 2
+// Version 2 adds the MCP events, and version 3 links each tool_call to its
+// tool_use.
+const Version = 3
 
 // Deriver derives LLM and MCP events (spec §7.4). It implements
 // cassette.Deriver. It is not safe for concurrent use: the cassette writer
@@ -31,6 +32,7 @@ type Deriver struct {
 	// event, so it is emitted once (spec §7.4). It grows by one entry per
 	// distinct user message of the session.
 	userMessages map[string]int64
+	links        toolLinks
 }
 
 // llmCall is what a Messages API interaction contributes until it completes.
@@ -142,11 +144,12 @@ func (d *Deriver) Complete(id int64, done cassette.Completion, response []byte, 
 	parent := emit(e)
 
 	for _, tu := range msg.ToolUses {
-		emit(cassette.Event{
+		seq := emit(cassette.Event{
 			ParentSeq: ptr(parent), InteractionID: ptr(id), Kind: "tool_use", Source: "model", Target: "agent",
 			StartedAt: ended, Tool: ptr(tu.Name), Arguments: tu.Input,
 			Status: "ok", Provenance: call.in.Provenance, DeriverVersion: Version,
 		})
+		d.links.add(seq, tu.Name, tu.Input)
 	}
 }
 

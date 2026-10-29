@@ -33,8 +33,9 @@ func isMCPPost(in cassette.Interaction) bool {
 }
 
 // beginMCP derives the events of the messages in a POST body, in body order:
-// a tool_call for each tools/call request, and an mcp_message for every other
-// request or notification (spec §7.4). Client responses, invalid batch
+// a tool_call for each tools/call request, linked to its tool_use when one
+// qualifies, and an mcp_message for every other request or notification
+// (spec §7.4). Client responses, invalid batch
 // elements and bodies that are not JSON-RPC derive nothing.
 func (d *Deriver) beginMCP(in cassette.Interaction, request []byte, emit cassette.EmitFunc) {
 	body, err := mcp.ParseBody(request)
@@ -47,10 +48,8 @@ func (d *Deriver) beginMCP(in cassette.Interaction, request []byte, emit cassett
 		switch {
 		case m.Kind == mcp.Request && m.Method == mcp.MethodToolsCall:
 			tc, _ := mcp.ParseToolCall(m.Params) // params that are not an object leave both empty
-			// No parent_seq yet: linking to the model's tool_use is
-			// best-effort and not derived here (spec §7.4).
 			seq := emit(cassette.Event{
-				InteractionID: ptr(in.ID), Kind: "tool_call", Source: "agent", Target: in.Upstream,
+				ParentSeq: d.links.link(tc.Name, tc.Arguments), InteractionID: ptr(in.ID), Kind: "tool_call", Source: "agent", Target: in.Upstream,
 				StartedAt: in.StartedAt, Tool: nonEmpty(tc.Name), Arguments: compact(tc.Arguments),
 				Status: "ok", Provenance: in.Provenance, DeriverVersion: Version,
 			})
