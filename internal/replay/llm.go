@@ -105,7 +105,7 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
 		return
 	}
-	h.rc.serveRecorded(w, ex)
+	h.rc.serveRecorded(r.Context(), w, ex)
 }
 
 // miss handles a cassette miss with steps 1 and 2 of strict (spec §6.2).

@@ -109,11 +109,11 @@ func (rc *recorder) serveTransportError(w http.ResponseWriter, ex exchange) {
 }
 
 // serveRecorded answers ex with its recorded interaction and records the
-// exchange in the new session.
-func (rc *recorder) serveRecorded(w http.ResponseWriter, ex exchange) {
+// exchange in the new session. ctx is the request's context.
+func (rc *recorder) serveRecorded(ctx context.Context, w http.ResponseWriter, ex exchange) {
 	src := ex.src
 	rec := &servedResponse{rc: rc, src: src, start: ex.start, id: rc.begin(ex)}
-	err := serve(ex.r.Context(), w, rc.source, src, rc.opts, rec)
+	err := serve(ctx, w, rc.source, src, rc.opts, rec)
 	switch {
 	case err == nil:
 		rec.complete(nil) // a safety net: the headers or the last write already completed it
