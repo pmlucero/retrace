@@ -643,7 +643,7 @@ func (failingSource) Blob(context.Context, string) ([]byte, error) {
 
 func TestLLMHandlerCassetteReadError(t *testing.T) {
 	r := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})
-	r.h.cfg.Source = failingSource{r.h.cfg.Source}
+	r.h.rc.source = failingSource{r.h.rc.source}
 	status, body := r.post(`{"q":"a"}`)
 	if status != http.StatusInternalServerError || !strings.Contains(body, "disk I/O error") {
 		t.Errorf("got %d %s, want 500 with the cassette error", status, body)
@@ -728,7 +728,7 @@ func (s blockingSource) Blob(ctx context.Context, _ string) ([]byte, error) {
 func TestLLMHandlerRecordsAnAgentThatLeavesBeforeTheResponse(t *testing.T) {
 	r := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})
 	reading := make(chan struct{})
-	r.h.cfg.Source = blockingSource{Source: r.h.cfg.Source, reading: reading}
+	r.h.rc.source = blockingSource{Source: r.h.rc.source, reading: reading}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
@@ -785,5 +785,27 @@ func TestLLMHandlerRedactsTheQuery(t *testing.T) {
 	}
 	if p := ins[0].Path; strings.Contains(p, "sk-secret") || !strings.HasPrefix(p, "/v1/messages?beta=true&key=") {
 		t.Errorf("path stored as %q, want the key masked", p)
+	}
+}
+
+// Spec §6.2: a miss on any channel ends the replay, so the handlers of one
+// replay share its Divergence.
+func TestLLMHandlerSharedDivergence(t *testing.T) {
+	d := NewDivergence()
+	r := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})
+	r.h.rc.divergence = d
+	other := NewLLMHandler(LLMConfig{Divergence: d})
+	select {
+	case <-other.Diverged():
+		t.Fatal("diverged before any miss")
+	default:
+	}
+	if status, _ := r.post(`{"q":"b"}`); status != http.StatusUnprocessableEntity {
+		t.Fatalf("status %d, want a miss", status)
+	}
+	select {
+	case <-other.Diverged():
+	default:
+		t.Error("a miss on one handler did not close the shared Diverged")
 	}
 }

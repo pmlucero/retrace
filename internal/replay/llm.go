@@ -34,7 +34,10 @@ type LLMConfig struct {
 	Fingerprint func(body []byte) string
 	// Writer records the new session.
 	Writer *cassette.Writer
-	Logger *slog.Logger
+	// Divergence is signaled at a cassette miss. Nil selects the handler's
+	// own.
+	Divergence *Divergence
+	Logger     *slog.Logger
 	Options
 }
 
@@ -53,14 +56,16 @@ type LLMHandler struct {
 // NewLLMHandler returns an LLMHandler for cfg. It serves paths relative to the
 // LLM route, as http.StripPrefix leaves them.
 func NewLLMHandler(cfg LLMConfig) *LLMHandler {
-	rc := newRecorder(llmChannel, llmUpstream, cfg.Redact, cfg.Writer, cfg.Clock, cfg.Logger)
+	rc := newRecorder(recorderConfig{channel: llmChannel, upstream: llmUpstream, source: cfg.Source,
+		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence})
 	cfg.Redact = rc.redact
 	return &LLMHandler{cfg: cfg, rc: rc}
 }
 
-// Diverged is closed at the first cassette miss. The replay then ends with
-// status diverged and exit code 3 (spec §6.2, AC-28).
-func (h *LLMHandler) Diverged() <-chan struct{} { return h.rc.diverged }
+// Diverged is closed at the first cassette miss, on this handler or on any
+// other sharing its Divergence. The replay then ends with status diverged and
+// exit code 3 (spec §6.2, AC-28).
+func (h *LLMHandler) Diverged() <-chan struct{} { return h.rc.divergence.Done() }
 
 // ServeHTTP answers r from the cassette, or as a cassette miss.
 func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -90,8 +95,9 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.miss(w, start, res, "no recorded request matches this one")
 		return
 	}
+	ex := exchange{r: r, start: start, body: body, stored: stored, fp: fp, src: src}
 	if transportError(src) {
-		h.rc.serveTransportError(w, r, start, body, stored, fp, src)
+		h.rc.serveTransportError(w, ex)
 		return
 	}
 	if err := servable(src); err != nil {
@@ -99,12 +105,12 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
 		return
 	}
-	h.rc.serve(w, r, h.cfg.Source, h.cfg.Options, start, body, stored, fp, src)
+	h.rc.serveRecorded(w, ex)
 }
 
 // miss handles a cassette miss with steps 1 and 2 of strict (spec §6.2).
 func (h *LLMHandler) miss(w http.ResponseWriter, start time.Time, res missResult, reason string) {
-	msg := h.rc.divergence(start, res, reason)
+	msg := h.rc.miss(start, res, reason)
 
 	resp, err := json.Marshal(map[string]any{
 		"type":  "error",

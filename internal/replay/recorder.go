@@ -15,34 +15,76 @@ import (
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
+// Divergence signals the first cassette miss of a replay, on any channel or
+// upstream: the replay then ends as diverged (spec §6.2). The handlers of one
+// replay share it. It is safe for concurrent use.
+type Divergence struct {
+	once sync.Once
+	ch   chan struct{}
+}
+
+// NewDivergence returns a Divergence that has not been signaled.
+func NewDivergence() *Divergence { return &Divergence{ch: make(chan struct{})} }
+
+// Done is closed at the first cassette miss.
+func (d *Divergence) Done() <-chan struct{} { return d.ch }
+
+func (d *Divergence) signal() { d.once.Do(func() { close(d.ch) }) }
+
 // recorder records what one replay handler answers in the new session: the
 // exchanges it serves and the cassette misses (spec §4.4, §6.2 step 1). It
 // is safe for concurrent use.
 type recorder struct {
 	channel, upstream string
+	source            Source
+	opts              Options
 	redact            *redact.Rules
 	writer            *cassette.Writer
 	clock             Clock
 	log               *slog.Logger
-	once              sync.Once
-	diverged          chan struct{}
+	divergence        *Divergence
 }
 
-// newRecorder returns a recorder for the route channel and upstream. Nil
-// rules select the defaults, a nil clock the system clock and a nil logger
-// discards.
-func newRecorder(channel, upstream string, rules *redact.Rules, w *cassette.Writer, clock Clock, log *slog.Logger) *recorder {
-	if rules == nil {
-		rules = redact.NewRules(nil, nil)
+// recorderConfig is what a handler shares with its recorder.
+type recorderConfig struct {
+	channel, upstream string
+	source            Source
+	opts              Options
+	redact            *redact.Rules
+	writer            *cassette.Writer
+	log               *slog.Logger
+	divergence        *Divergence
+}
+
+// newRecorder returns a recorder for cfg. Nil rules select the defaults, a
+// nil clock the system clock, a nil logger discards and a nil divergence is
+// the recorder's own.
+func newRecorder(cfg recorderConfig) *recorder {
+	rc := &recorder{channel: cfg.channel, upstream: cfg.upstream, source: cfg.source, opts: cfg.opts,
+		redact: cfg.redact, writer: cfg.writer, clock: cfg.opts.Clock, log: cfg.log, divergence: cfg.divergence}
+	if rc.redact == nil {
+		rc.redact = redact.NewRules(nil, nil)
 	}
-	if clock == nil {
-		clock = systemClock{}
+	if rc.clock == nil {
+		rc.clock = systemClock{}
 	}
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
+	if rc.log == nil {
+		rc.log = slog.New(slog.DiscardHandler)
 	}
-	return &recorder{channel: channel, upstream: upstream, redact: rules, writer: w,
-		clock: clock, log: log, diverged: make(chan struct{})}
+	if rc.divergence == nil {
+		rc.divergence = NewDivergence()
+	}
+	return rc
+}
+
+// exchange is one request a handler answers from the cassette.
+type exchange struct {
+	r      *http.Request
+	start  time.Time
+	body   []byte // as received
+	stored []byte // body after redaction
+	fp     string
+	src    cassette.Interaction // the recorded interaction that answers it
 }
 
 // transportError reports whether in records a transport error, the upstream
@@ -57,20 +99,21 @@ func transportError(in cassette.Interaction) bool {
 // src, and records the exchange in the new session with src's error and no
 // status, so it derives the same events as src (spec §5 step 2, AC-29). This
 // is what the agent saw while recording, not a miss: the replay goes on.
-func (rc *recorder) serveTransportError(w http.ResponseWriter, r *http.Request, start time.Time, body, stored []byte, fp string, src cassette.Interaction) {
-	id := rc.begin(r, start, body, stored, fp, src)
+func (rc *recorder) serveTransportError(w http.ResponseWriter, ex exchange) {
+	id := rc.begin(ex)
 	// Completed before the answer reaches the agent, as serve does.
 	rc.writer.CompleteInteraction(id, cassette.Completion{
-		DurationMillis: rc.clock.Now().Sub(start).Milliseconds(), Error: src.Error,
+		DurationMillis: rc.clock.Now().Sub(ex.start).Milliseconds(), Error: ex.src.Error,
 	})
-	proxy.UpstreamFailed(w, *src.Error)
+	proxy.UpstreamFailed(w, *ex.src.Error)
 }
 
-// serve answers r with src, read from source, and records the exchange in the
-// new session.
-func (rc *recorder) serve(w http.ResponseWriter, r *http.Request, source Source, opts Options, start time.Time, body, stored []byte, fp string, src cassette.Interaction) {
-	rec := &replayRecorder{rc: rc, src: src, start: start, id: rc.begin(r, start, body, stored, fp, src)}
-	err := serve(r.Context(), w, source, src, opts, rec)
+// serveRecorded answers ex with its recorded interaction and records the
+// exchange in the new session.
+func (rc *recorder) serveRecorded(w http.ResponseWriter, ex exchange) {
+	src := ex.src
+	rec := &servedResponse{rc: rc, src: src, start: ex.start, id: rc.begin(ex)}
+	err := serve(ex.r.Context(), w, rc.source, src, rc.opts, rec)
 	switch {
 	case err == nil:
 		rec.complete(nil) // a safety net: the headers or the last write already completed it
@@ -93,9 +136,10 @@ func (rc *recorder) serve(w http.ResponseWriter, r *http.Request, source Source,
 	}
 }
 
-// begin records the start of r, answered from src, in the new session and
-// returns its interaction id.
-func (rc *recorder) begin(r *http.Request, start time.Time, body, stored []byte, fp string, src cassette.Interaction) int64 {
+// begin records the start of ex in the new session and returns its
+// interaction id.
+func (rc *recorder) begin(ex exchange) int64 {
+	r := ex.r
 	path := r.URL.Path
 	if path == "" {
 		path = "/"
@@ -107,17 +151,17 @@ func (rc *recorder) begin(r *http.Request, start time.Time, body, stored []byte,
 	if err != nil {
 		headers = json.RawMessage(`{}`) // http.Header always marshals; unreachable
 	}
-	srcID := src.ID
+	srcID, fp := ex.src.ID, ex.fp
 	in := cassette.Interaction{
 		Channel: rc.channel, Upstream: rc.upstream, HTTPMethod: r.Method, Path: path,
-		RequestHeaders: headers, Fingerprint: &fp, StartedAt: start,
+		RequestHeaders: headers, Fingerprint: &fp, StartedAt: ex.start,
 		Provenance: "replayed", SourceInteractionID: &srcID,
 	}
 	var blobs [][]byte
-	if len(body) > 0 {
-		key := cassette.BlobKey(stored)
+	if len(ex.body) > 0 {
+		key := cassette.BlobKey(ex.stored)
 		in.RequestBlob = &key
-		blobs = append(blobs, stored)
+		blobs = append(blobs, ex.stored)
 	}
 	return rc.writer.BeginInteraction(in, blobs...)
 }
@@ -140,10 +184,10 @@ type diffItem struct {
 	Received json.RawMessage `json:"received"`
 }
 
-// divergence applies step 1 of strict to a cassette miss (spec §6.2): it
+// miss applies step 1 of strict to a cassette miss (spec §6.2): it
 // appends a divergence event and signals the divergence. It returns the
 // event's error, which says why the request missed.
-func (rc *recorder) divergence(start time.Time, res missResult, reason string) string {
+func (rc *recorder) miss(start time.Time, res missResult, reason string) string {
 	msg := "retrace: cassette miss: " + reason
 	res.Channel, res.Upstream = rc.channel, rc.upstream
 	res.Diff = []diffItem{}
@@ -156,12 +200,12 @@ func (rc *recorder) divergence(start time.Time, res missResult, reason string) s
 		Result: result, Status: "divergence", Error: &msg,
 		Provenance: "replayed", DeriverVersion: derive.Version,
 	})
-	rc.once.Do(func() { close(rc.diverged) })
+	rc.divergence.signal()
 	rc.log.Warn("cassette miss", "channel", rc.channel, "upstream", rc.upstream, "reason", reason)
 	return msg
 }
 
-// replayRecorder records a replayed response in the new session as serve
+// servedResponse records one replayed response in the new session as serve
 // writes it: each SSE chunk with the offset at which it was served, and the
 // completion just before the last write reaches the agent. A request the agent
 // sends after reading the response is then always queued after this
@@ -169,7 +213,7 @@ func (rc *recorder) divergence(start time.Time, res missResult, reason string) s
 // before its write: a chunk whose write fails is still recorded as served, and
 // a last write that fails leaves the interaction recorded as complete. It is
 // used by one request's goroutine only.
-type replayRecorder struct {
+type servedResponse struct {
 	rc          *recorder
 	src         cassette.Interaction
 	id          int64
@@ -181,14 +225,14 @@ type replayRecorder struct {
 	done        bool
 }
 
-func (r *replayRecorder) headers(empty bool) {
+func (r *servedResponse) headers(empty bool) {
 	r.wroteHeader, r.headerAt = true, r.rc.clock.Now()
 	if empty {
 		r.complete(nil)
 	}
 }
 
-func (r *replayRecorder) write(data []byte, last bool) {
+func (r *servedResponse) write(data []byte, last bool) {
 	if r.src.Streamed {
 		r.rc.writer.AppendChunk(cassette.Chunk{
 			InteractionID: r.id, Index: r.chunks,
@@ -205,7 +249,7 @@ func (r *replayRecorder) write(data []byte, last bool) {
 
 // complete queues the completion of the replayed interaction once. errMsg
 // says why the agent did not get the whole response, if it did not.
-func (r *replayRecorder) complete(errMsg *string) {
+func (r *servedResponse) complete(errMsg *string) {
 	if r.done {
 		return
 	}
