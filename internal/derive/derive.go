@@ -153,13 +153,16 @@ func (d *Deriver) Complete(id int64, done cassette.Completion, response []byte, 
 	}
 }
 
-// message returns the response as a Message, or an error when a stored JSON
-// body is not one.
+// message returns the response as a Message, or an error when a stored body
+// is not one.
 func (c *llmCall) message(done cassette.Completion, response []byte) (anthropic.Message, error) {
 	if done.Streamed {
 		return c.stream.Message(), nil
 	}
-	if response == nil {
+	if done.ResponseBlob == nil {
+		// Whether a body was stored comes from the completion, not from
+		// response: an empty body is nil or empty depending on who read it
+		// back, and is not a Messages response either way.
 		return anthropic.Message{}, nil
 	}
 	return anthropic.ParseResponse(response)

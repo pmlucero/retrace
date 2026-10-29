@@ -267,6 +267,15 @@ var scenarios = append(append([]scenario{
 			{startMillis: 100, status: 200, response: weatherAnswer, durationMillis: 20},
 		},
 	},
+	{
+		// An empty 2xx body is stored as an empty blob, and is not a
+		// Messages response. Reindex reads it back as nil, and must still
+		// derive the same error.
+		name: "empty_response_body",
+		exchanges: []exchange{
+			{request: weatherQuestion, status: 200, response: "", durationMillis: 20},
+		},
+	},
 }, mcpScenarios...), linkScenarios...)
 
 // AC-05: events are derived with their §7.4 fields, including tokens and
