@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
-	"strings"
 	"testing"
 
 	"github.com/pmlucero/retrace/internal/cassette"
@@ -69,7 +68,7 @@ func TestReindexRestoresEventsDroppedWhileRecording(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, in := range interactions {
-		if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+		if cassette.MarksIncomplete(in.Error) {
 			t.Errorf("interaction %d is marked incomplete; only events should be lost", in.ID)
 		}
 	}

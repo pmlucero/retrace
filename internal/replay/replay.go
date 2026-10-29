@@ -127,7 +127,7 @@ func servable(in cassette.Interaction) error {
 	}
 	// Matching keeps incomplete recordings out of its queues (spec §5); this
 	// check keeps a truncated stream from being served as a complete one.
-	if in.Error != nil && strings.Contains(*in.Error, cassette.RecordingIncomplete) {
+	if cassette.MarksIncomplete(in.Error) {
 		return fmt.Errorf("serving interaction %d: %s: %w", in.ID, cassette.RecordingIncomplete, ErrUnservable)
 	}
 	if !in.Streamed && in.ResponseBlob == nil {

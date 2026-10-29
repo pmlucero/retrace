@@ -70,11 +70,19 @@ type Interaction struct {
 	Error               *string
 }
 
+// MarksIncomplete reports whether err, an interaction's error, contains
+// RecordingIncomplete. It is the half of the definition of an incomplete
+// recording (spec §7.3) that does not look at the duration. Prefer
+// Interaction.Incomplete or Completion.Incomplete, which apply all of it.
+func MarksIncomplete(err *string) bool {
+	return err != nil && strings.Contains(*err, RecordingIncomplete)
+}
+
 // Incomplete reports whether the recording of the interaction is incomplete
 // (spec §7.3): its error contains RecordingIncomplete, or it has no duration
 // because the recording stopped before it completed, e.g. retrace was killed.
 func (in Interaction) Incomplete() bool {
-	return in.DurationMillis == nil || (in.Error != nil && strings.Contains(*in.Error, RecordingIncomplete))
+	return in.DurationMillis == nil || MarksIncomplete(in.Error)
 }
 
 // Completion holds the fields set when an interaction's response ends.
@@ -86,6 +94,13 @@ type Completion struct {
 	TTFBMillis      *int64
 	DurationMillis  int64
 	Error           *string
+}
+
+// Incomplete reports whether the recording of the interaction that c
+// completes is incomplete (spec §7.3). A completion always has a duration, so
+// only its error can say so.
+func (c Completion) Incomplete() bool {
+	return MarksIncomplete(c.Error)
 }
 
 // Chunk is one raw SSE event of a streamed response, with its offset from the

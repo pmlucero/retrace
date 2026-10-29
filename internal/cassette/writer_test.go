@@ -208,7 +208,7 @@ func TestWriterDropsInsteadOfBlockingWhenTheQueueIsFull(t *testing.T) {
 	}
 
 	in := all[partial]
-	if in.Error == nil || !strings.Contains(*in.Error, RecordingIncomplete) || in.StatusCode == nil || *in.StatusCode != 200 {
+	if !MarksIncomplete(in.Error) || in.StatusCode == nil || *in.StatusCode != 200 {
 		t.Errorf("interaction %d = %+v, want its completion with a 'recording incomplete' error", partial, in)
 	}
 	if in.RequestBlob == nil {

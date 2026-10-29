@@ -589,6 +589,29 @@ func journalMode(t *testing.T, path string) string {
 	return mode
 }
 
+func TestMarksIncomplete(t *testing.T) {
+	msg := func(s string) *string { return &s }
+	tests := []struct {
+		name string
+		err  *string
+		want bool
+	}{
+		{name: "no error", err: nil, want: false},
+		{name: "transport error", err: msg("connection reset"), want: false},
+		{name: "records dropped", err: msg(RecordingIncomplete + ": 2 record(s) not written: queue full"), want: true},
+		{name: "marker after a transport error", err: msg("connection reset; " + RecordingIncomplete + ": body"), want: true},
+	}
+	for _, tt := range tests {
+		if got := MarksIncomplete(tt.err); got != tt.want {
+			t.Errorf("%s: MarksIncomplete() = %v, want %v", tt.name, got, tt.want)
+		}
+		// A completion always has a duration, so only its error decides.
+		if got := (Completion{DurationMillis: 5, Error: tt.err}).Incomplete(); got != tt.want {
+			t.Errorf("%s: Completion.Incomplete() = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
 func TestInteractionIncomplete(t *testing.T) {
 	duration := int64(5)
 	msg := func(s string) *string { return &s }

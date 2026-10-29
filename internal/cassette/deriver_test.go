@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"slices"
-	"strings"
 	"sync"
 	"testing"
 )
@@ -280,7 +279,7 @@ func TestWriterCountsTheDroppedChildrenOfADroppedUserMessage(t *testing.T) {
 			t.Errorf("interaction %d = %+v, want it complete: a dropped event does not mark it", id, in)
 		}
 	}
-	if in := all[lost]; in.Error == nil || !strings.Contains(*in.Error, RecordingIncomplete) {
+	if in := all[lost]; !MarksIncomplete(in.Error) {
 		t.Errorf("interaction %d = %+v, want it marked as incomplete", lost, in)
 	}
 }
