@@ -13,6 +13,9 @@ import (
 // A tool_use the agent runs without MCP is never linked, so without a cap
 // the list would grow with the session. An agent answers a tool_use within
 // a turn or two, so the most recent ones are the only ones worth keeping.
+// The value is a generous guess, not a measurement: a turn rarely holds more
+// than a few dozen tool_use blocks. Changing it changes the derived events,
+// so it needs a Version bump.
 const maxUnlinked = 128
 
 // toolUse is a tool_use event that no tool_call has linked to yet.

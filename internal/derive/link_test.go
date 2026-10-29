@@ -4,7 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
+
+	"github.com/pmlucero/retrace/internal/jsonvalue"
 )
 
 const threeToolUses = `{"id":"msg_4","type":"message","role":"assistant","model":"claude-sonnet-5-5","content":[` +
@@ -118,6 +121,20 @@ func TestToolLinksOnceAndBounded(t *testing.T) {
 	}
 	if got := l.link("t", json.RawMessage(`{"i":1}`)); deref(got) != 2 {
 		t.Errorf("link = %d, want 2", deref(got))
+	}
+}
+
+// AC-05: a tool_use whose input is nested too deep to decode has no
+// canonical form, so it is not kept and nothing links to it.
+func TestToolLinksSkipUndecodableInput(t *testing.T) {
+	deep := json.RawMessage(`{"a":` + strings.Repeat("[", jsonvalue.MaxDepth) + strings.Repeat("]", jsonvalue.MaxDepth) + `}`)
+	var l toolLinks
+	l.add(1, "t", deep)
+	if len(l.unlinked) != 0 {
+		t.Errorf("kept %d tool_use events, want 0", len(l.unlinked))
+	}
+	if got := l.link("t", deep); got != nil {
+		t.Errorf("link = %d, want no link", *got)
 	}
 }
 
