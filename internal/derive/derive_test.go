@@ -55,6 +55,9 @@ type exchange struct {
 	chunks                          []string // set for a streamed response
 	durationMillis                  int64
 	err                             string
+	// completeAfterNext writes the completion after the next exchange's
+	// request, as when the agent sends it before the response's body ends.
+	completeAfterNext bool
 }
 
 func (x exchange) interaction() cassette.Interaction {
@@ -128,17 +131,30 @@ func recordWith(t *testing.T, exchanges []exchange, prepare func(path string)) (
 	if err != nil {
 		t.Fatal(err)
 	}
+	var pending func() // the completion of an exchange with completeAfterNext
 	for _, x := range exchanges {
 		var reqBlobs [][]byte
 		if x.request != "" {
 			reqBlobs = append(reqBlobs, []byte(x.request))
 		}
 		id := w.BeginInteraction(x.interaction(), reqBlobs...)
+		if pending != nil {
+			pending()
+			pending = nil
+		}
 		for i, ch := range x.chunks {
 			w.AppendChunk(cassette.Chunk{InteractionID: id, Index: i, OffsetMillis: int64(i), Data: []byte(ch)})
 		}
 		done, respBlobs := x.completion()
-		w.CompleteInteraction(id, done, respBlobs...)
+		complete := func() { w.CompleteInteraction(id, done, respBlobs...) }
+		if x.completeAfterNext {
+			pending = complete
+		} else {
+			complete()
+		}
+	}
+	if pending != nil {
+		pending()
 	}
 	if err := w.Close(ctx, cassette.SessionEnd{Status: "completed", EndedAt: t0.Add(time.Minute)}); err != nil {
 		t.Fatal(err)
@@ -197,7 +213,7 @@ type scenario struct {
 	exchanges []exchange
 }
 
-var scenarios = append([]scenario{
+var scenarios = append(append([]scenario{
 	{
 		// A tool loop with JSON responses: one user_message, two
 		// model_responses, one tool_use.
@@ -251,7 +267,7 @@ var scenarios = append([]scenario{
 			{startMillis: 100, status: 200, response: weatherAnswer, durationMillis: 20},
 		},
 	},
-}, mcpScenarios...)
+}, mcpScenarios...), linkScenarios...)
 
 // AC-05: events are derived with their §7.4 fields, including tokens and
 // estimated cost for each model_response, the tool, arguments, result and
