@@ -3,6 +3,8 @@ package mcp
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 )
 
 // IDRewriter gives the responses of a replayed POST the ids of the incoming
@@ -89,6 +91,8 @@ func (r *IDRewriter) Event(event []byte) []byte {
 			out = append(append(out, l.text...), l.eol...)
 			continue
 		}
+		// Rewriting adds no line break, since a JSON id holds none, so there
+		// is one value per data line.
 		out = append(out, l.text[:n]...)
 		out = append(out, values[0]...)
 		out = append(out, l.eol...)
@@ -113,7 +117,7 @@ type span struct{ start, end int }
 
 // messageSpans returns where each top-level message of a JSON-RPC body is:
 // the whole value for a single message, or each element of a batch. It
-// returns nil for a batch that is not valid JSON.
+// returns nil for a batch that is not valid JSON, as ParseBody rejects it.
 func messageSpans(body []byte) []span {
 	start := len(body) - len(bytes.TrimLeft(body, " \t\r\n"))
 	end := len(bytes.TrimRight(body, " \t\r\n"))
@@ -136,6 +140,12 @@ func messageSpans(body []byte) []span {
 		// The decoded value holds no surrounding whitespace or comma.
 		e := int(dec.InputOffset())
 		spans = append(spans, span{e - len(v), e})
+	}
+	if _, err := dec.Token(); err != nil { // ']', missing in a cut body
+		return nil
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil
 	}
 	return spans
 }
