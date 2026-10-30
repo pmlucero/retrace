@@ -3,6 +3,7 @@ package replay
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -135,8 +136,15 @@ func newMCPHarness(t *testing.T, src *cassette.Cassette, rules *redact.Rules) *m
 	return &mcpHarness{t: t, h: h, queues: queues, out: out, w: w, server: server}
 }
 
+// response is what the agent got.
+type response struct {
+	status int
+	header http.Header
+	length int64
+}
+
 // post sends body with the session id, if any, and returns the response.
-func (m *mcpHarness) post(session, body string) (*http.Response, string) {
+func (m *mcpHarness) post(session, body string) (response, string) {
 	m.t.Helper()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
 		m.server.URL+"/mcp/"+testServer, strings.NewReader(body))
@@ -156,7 +164,7 @@ func (m *mcpHarness) post(session, body string) (*http.Response, string) {
 	if err != nil {
 		m.t.Fatal(err)
 	}
-	return resp, string(b)
+	return response{status: resp.StatusCode, header: resp.Header, length: resp.ContentLength}, string(b)
 }
 
 // stop ends the new session and returns what it recorded.
@@ -229,10 +237,10 @@ func TestMCPHandlerRewritesIDsAndSessions(t *testing.T) {
 	if body != fmtID(initResp, `"a"`) {
 		t.Errorf("initialize got %s, want the recorded response with id \"a\"", body)
 	}
-	if resp.ContentLength != int64(len(body)) {
-		t.Errorf("Content-Length %d, want %d, the length served", resp.ContentLength, len(body))
+	if resp.length != int64(len(body)) {
+		t.Errorf("Content-Length %d, want %d, the length served", resp.length, len(body))
 	}
-	first := resp.Header.Get(sessionHeader)
+	first := resp.header.Get(sessionHeader)
 	if first == "" || first == "recorded-session" {
 		t.Fatalf("Mcp-Session-Id %q, want a fresh one", first)
 	}
@@ -241,12 +249,12 @@ func TestMCPHandlerRewritesIDsAndSessions(t *testing.T) {
 	if body != fmtID(listResp, "42") {
 		t.Errorf("tools/list got %s, want the recorded response with id 42", body)
 	}
-	if got := resp.Header.Get(sessionHeader); got != first {
+	if got := resp.header.Get(sessionHeader); got != first {
 		t.Errorf("Mcp-Session-Id %q, want the issued %q", got, first)
 	}
 
 	resp, _ = m.post(first, fmtID(initReq, "7"))
-	second := resp.Header.Get(sessionHeader)
+	second := resp.header.Get(sessionHeader)
 	if second == "" || second == first || second == "recorded-session" {
 		t.Errorf("second initialize got Mcp-Session-Id %q, want a fresh one", second)
 	}
@@ -294,7 +302,7 @@ func TestMCPHandlerSessionHeader(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newMCPHarness(t, mcpSourceCassette(t, mcpRecorded{request: req, body: resp, header: tc.recorded}), nil)
 			got, _ := m.post(tc.incoming, req)
-			if v := got.Header.Values(sessionHeader); len(v) != 0 {
+			if v := got.header.Values(sessionHeader); len(v) != 0 {
 				t.Errorf("Mcp-Session-Id %v, want none", v)
 			}
 			ins, _ := m.stop()
@@ -414,8 +422,8 @@ func TestMCPHandlerMiss(t *testing.T) {
 			src := mcpSourceCassette(t, mcpRecorded{request: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, body: `{}`})
 			m := newMCPHarness(t, src, nil)
 			resp, body := m.post("", tc.request)
-			if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "application/json" {
-				t.Errorf("got %d %s, want 200 application/json", resp.StatusCode, resp.Header.Get("Content-Type"))
+			if resp.status != http.StatusOK || resp.header.Get("Content-Type") != "application/json" {
+				t.Errorf("got %d %s, want 200 application/json", resp.status, resp.header.Get("Content-Type"))
 			}
 			if tc.wantIDs != nil {
 				var errs []missError
@@ -471,9 +479,9 @@ func TestMCPHandlerServesATransportError(t *testing.T) {
 	const req = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
 	m := newMCPHarness(t, mcpSourceCassette(t, mcpRecorded{request: req, noResponse: true}), nil)
 	resp, body := m.post("", `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
-	if resp.StatusCode != http.StatusBadGateway || !strings.HasPrefix(body, "retrace: upstream request failed: ") ||
+	if resp.status != http.StatusBadGateway || !strings.HasPrefix(body, "retrace: upstream request failed: ") ||
 		!strings.Contains(body, "dial tcp: connection refused") {
-		t.Errorf("got %d %q, want 502 with the recorded error", resp.StatusCode, body)
+		t.Errorf("got %d %q, want 502 with the recorded error", resp.status, body)
 	}
 	if m.diverged() {
 		t.Error("Diverged closed by a recorded transport error")
@@ -489,5 +497,70 @@ func TestMCPHandlerServesATransportError(t *testing.T) {
 	if in.Provenance != "replayed" || in.StatusCode != nil || in.Error == nil || *in.Error != "dial tcp: connection refused" ||
 		in.SourceInteractionID == nil || *in.SourceInteractionID != 1 {
 		t.Errorf("interaction %+v, want replayed from 1 with no status and the source's error", in)
+	}
+}
+
+// Spec §5 step 1: a body that cannot be redacted cannot be matched. Its
+// divergence event has no fingerprint, and the error still carries the
+// request's id.
+func TestMCPHandlerMissOnUnredactableBody(t *testing.T) {
+	path, err := redact.ParsePath("$..secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := mcpSourceCassette(t, mcpRecorded{request: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, body: `{}`})
+	m := newMCPHarness(t, src, redact.NewRules(nil, []redact.Path{path}))
+	deep := strings.Repeat("[", 1001) + strings.Repeat("]", 1001)
+	_, body := m.post("", `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"arguments":`+deep+`}}`)
+	var e missError
+	if err := json.Unmarshal([]byte(body), &e); err != nil {
+		t.Fatalf("body %s: %v", body, err)
+	}
+	checkMissError(t, e, "7", "cannot be redacted")
+	_, events := m.stop()
+	if res := divergenceOn(t, events, "mcp", "mcp:fs"); res["received_fingerprint"] != nil {
+		t.Errorf("received_fingerprint %v, want null", res["received_fingerprint"])
+	}
+}
+
+// requestFailingSource fails reading the recorded request bodies, which only
+// the MCP handler reads while serving.
+type requestFailingSource struct {
+	Source
+	requests map[string]bool
+}
+
+func (s requestFailingSource) Blob(ctx context.Context, key string) ([]byte, error) {
+	if s.requests[key] {
+		return nil, errors.New("disk I/O error")
+	}
+	return s.Source.Blob(ctx, key)
+}
+
+// A cassette that cannot be read while adapting the response is answered and
+// recorded like any cassette read error: a 500, and no divergence.
+func TestMCPHandlerCassetteReadError(t *testing.T) {
+	src := mcpSourceCassette(t, mcpRecorded{request: `{"jsonrpc":"2.0","id":1,"method":"ping"}`, body: `{}`})
+	m := newMCPHarness(t, src, nil)
+	ins, err := src.Interactions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.h.rc.source = requestFailingSource{Source: m.h.rc.source, requests: map[string]bool{*ins[0].RequestBlob: true}}
+
+	resp, body := m.post("", `{"jsonrpc":"2.0","id":2,"method":"ping"}`)
+	if resp.status != http.StatusInternalServerError || !strings.Contains(body, "reading the cassette") ||
+		!strings.Contains(body, "disk I/O error") {
+		t.Errorf("got %d %s, want 500 with the cassette error", resp.status, body)
+	}
+	if m.diverged() {
+		t.Error("a cassette read error is not a divergence")
+	}
+	got, events := m.stop()
+	if len(events) != 0 {
+		t.Errorf("got %d events, want none", len(events))
+	}
+	if len(got) != 1 || got[0].Error == nil || !strings.Contains(*got[0].Error, "disk I/O error") || got[0].StatusCode != nil {
+		t.Errorf("recorded %+v, want one interaction with the error and no status", got)
 	}
 }

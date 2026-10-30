@@ -86,8 +86,9 @@ type exchange struct {
 	fp     string
 	src    cassette.Interaction // the recorded interaction that answers it
 	// adapt, when set, says how the response to serve differs from src's.
-	// It may read the cassette, so it runs once the exchange is recorded.
-	adapt func() (adaptation, error)
+	// It may fail reading the cassette, so it runs after begin: a failure is
+	// then recorded and answered like any cassette read error in serve.
+	adapt func(ctx context.Context) (adaptation, error)
 }
 
 // adaptation is how a served response differs from the recorded one: the MCP
@@ -129,7 +130,7 @@ func (rc *recorder) serveRecorded(ctx context.Context, w http.ResponseWriter, ex
 	var ad adaptation
 	var err error
 	if ex.adapt != nil {
-		ad, err = ex.adapt()
+		ad, err = ex.adapt(ctx)
 	}
 	if err == nil {
 		if ad.served != nil {
@@ -147,7 +148,7 @@ func (rc *recorder) serveRecorded(ctx context.Context, w http.ResponseWriter, ex
 	case !rec.wroteHeader:
 		// The cassette could not be read: nothing was sent yet.
 		rc.log.Error("reading the cassette", "interaction", src.ID, "error", err)
-		msg := "reading the recorded response: " + err.Error()
+		msg := "reading the cassette: " + err.Error()
 		rec.complete(&msg)
 		http.Error(w, "retrace: "+msg, http.StatusInternalServerError)
 	default:

@@ -117,7 +117,7 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
 		return
 	}
-	ex.adapt = func() (adaptation, error) { return h.adapt(r.Context(), ex) }
+	ex.adapt = func(ctx context.Context) (adaptation, error) { return h.adapt(ctx, ex) }
 	h.rc.serveRecorded(r.Context(), w, ex)
 }
 
@@ -130,7 +130,7 @@ func (h *MCPHandler) adapt(ctx context.Context, ex exchange) (adaptation, error)
 	storedIncoming, _ := mcp.ParseBody(ex.stored)
 	var recorded mcp.Body
 	if ex.src.RequestBlob != nil {
-		b, err := h.cfg.Source.Blob(ctx, *ex.src.RequestBlob)
+		b, err := h.rc.source.Blob(ctx, *ex.src.RequestBlob)
 		if err != nil {
 			return adaptation{}, fmt.Errorf("reading the recorded request of interaction %d: %w", ex.src.ID, err)
 		}
