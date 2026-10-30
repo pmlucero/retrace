@@ -109,13 +109,15 @@ func TestRunReplaysMCPOffline(t *testing.T) {
 	}
 }
 
-// AC-13: requests that arrive in another order than recorded, here the two
-// servers' sessions swapped, replay without a divergence.
+// AC-13: requests that arrive in another order than recorded replay without
+// a divergence: the two tool calls to each server swapped, as parallel calls
+// may arrive, and the two servers' sessions swapped too.
 func TestRunReplaysMCPInAnotherOrder(t *testing.T) {
 	dir := t.TempDir()
 	recorded := recordMCPForReplay(t, dir, "s")
 
 	t.Setenv(mcpReverseEnv, "1")
+	t.Setenv(mcpSwapEnv, "1")
 	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
@@ -124,10 +126,19 @@ func TestRunReplaysMCPInAnotherOrder(t *testing.T) {
 	if len(replayed) != len(recorded) {
 		t.Fatalf("replay saw %d exchanges, want %d", len(replayed), len(recorded))
 	}
+	// Per server: initialize, notification, the two calls, GET, DELETE.
 	half := len(recorded) / 2
-	for i := range half {
-		sameExchange(t, recorded[i], replayed[half+i])
-		sameExchange(t, recorded[half+i], replayed[i])
+	swapped := func(i int) int {
+		switch i % half {
+		case 3:
+			return i + 1
+		case 4:
+			return i - 1
+		}
+		return i
+	}
+	for i := range recorded {
+		sameExchange(t, recorded[i], replayed[swapped((i+half)%len(recorded))])
 	}
 }
 
@@ -143,6 +154,9 @@ func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
 	replayed := agentExchanges(t, r.stdout.String())
+	if len(replayed) != 14 {
+		t.Fatalf("the agent saw %d exchanges, want 7 per server", len(replayed))
+	}
 	call := replayed[3] // orders, tools/call with the new key
 	if call.Status != 200 || !strings.Contains(call.Body, `"code":-32099`) || !strings.Contains(call.Body, `"id":3`) ||
 		!strings.Contains(call.Body, "retrace: cassette miss") {
@@ -170,5 +184,32 @@ func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 	}
 	if strings.Join(upstreams, ",") != "mcp:orders,mcp:weather" {
 		t.Errorf("divergences on %v, want one per server's changed call", upstreams)
+	}
+}
+
+// The source's mcp_servers is untrusted input: each name becomes a route and
+// an environment variable, so it must be one that record accepts.
+func TestMCPServerNames(t *testing.T) {
+	long := strings.Repeat("a", 65)
+	for _, tc := range []struct {
+		stored  string
+		want    string // names joined with ","
+		wantErr bool
+	}{
+		{stored: ``, want: ""},
+		{stored: `[]`, want: ""},
+		{stored: `null`, want: ""},
+		{stored: `[{"name":"orders","url":"http://x"},{"name":"db_2-x"}]`, want: "orders,db_2-x"},
+		{stored: `{}`, wantErr: true},
+		{stored: `[{"name":""}]`, wantErr: true},
+		{stored: `[{"name":"../x"}]`, wantErr: true},
+		{stored: `[{"name":"a/b"}]`, wantErr: true},
+		{stored: `[{"name":"` + long + `"}]`, wantErr: true},
+		{stored: `[{"name":"a"},{"name":"a"}]`, wantErr: true},
+	} {
+		got, err := mcpServerNames(json.RawMessage(tc.stored))
+		if (err != nil) != tc.wantErr || strings.Join(got, ",") != tc.want {
+			t.Errorf("mcpServerNames(%s) = %v, %v; want %q, error %t", tc.stored, got, err, tc.want, tc.wantErr)
+		}
 	}
 }

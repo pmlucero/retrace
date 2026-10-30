@@ -299,9 +299,7 @@ func mcpServerNames(stored json.RawMessage) ([]string, error) {
 	if len(stored) == 0 {
 		return nil, nil
 	}
-	var servers []struct {
-		Name string `json:"name"`
-	}
+	var servers []mcpServer
 	if err := json.Unmarshal(stored, &servers); err != nil {
 		return nil, fmt.Errorf("parsing mcp_servers: %w", err)
 	}

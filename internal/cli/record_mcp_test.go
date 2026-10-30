@@ -23,10 +23,12 @@ import (
 var mcpAgentServers = []string{"orders", "weather"}
 
 // What the run tests change in the MCP helper agent: the key it looks up
-// first (default A1), and the order of its servers.
+// first (default A1), the order of its servers, and the order of its two
+// tool calls to each server.
 const (
 	mcpKeyEnv     = "RETRACE_TEST_MCP_KEY"
 	mcpReverseEnv = "RETRACE_TEST_MCP_REVERSE"
+	mcpSwapEnv    = "RETRACE_TEST_MCP_SWAP"
 )
 
 // mcpExchange is one HTTP exchange of the MCP helper agent, as it saw it.
@@ -72,8 +74,16 @@ func runMCPAgent() {
 		}
 		send(http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 		send(http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
-		send(http.MethodPost, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"`+key+`"}}}`)
-		send(http.MethodPost, `[{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"B2"}}},{"jsonrpc":"2.0","id":"p","method":"ping"}]`)
+		calls := []string{
+			`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"` + key + `"}}}`,
+			`[{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"B2"}}},{"jsonrpc":"2.0","id":"p","method":"ping"}]`,
+		}
+		if os.Getenv(mcpSwapEnv) != "" {
+			slices.Reverse(calls)
+		}
+		for _, c := range calls {
+			send(http.MethodPost, c)
+		}
 		send(http.MethodGet, "")
 		send(http.MethodDelete, "")
 	}
