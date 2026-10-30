@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/match"
+	"github.com/pmlucero/retrace/internal/mcp"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/redact"
 	"github.com/pmlucero/retrace/internal/replay"
@@ -42,7 +45,7 @@ Runs the agent of session <id> again, by default with its recorded command
 and working directory, and answers its requests from the cassette. The
 replay is recorded as a new session.
 
-This version replays the LLM channel in exact mode; --model and
+This version replays the LLM and MCP channels in exact mode; --model and
 --tools live are not implemented yet.
 
 Flags:
@@ -198,7 +201,12 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		log.Error("cannot read the session's redaction rules", "session", opts.source, "error", err)
 		return ExitError
 	}
-	queues, err := llmQueues(ctx, src)
+	servers, err := mcpServerNames(srcSession.MCPServers)
+	if err != nil {
+		log.Error("cannot read the session's MCP servers", "session", opts.source, "error", err)
+		return ExitError
+	}
+	queues, err := replayQueues(ctx, src, servers)
 	if err != nil {
 		log.Error("cannot read the recorded interactions", "session", opts.source, "error", err)
 		return ExitError
@@ -215,7 +223,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
 		Mode: mode, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
 		Command: command, Cwd: cwd, OnMiss: opts.onMiss,
-		MCPServers: json.RawMessage(`[]`), Redaction: srcSession.Redaction, RetraceVersion: Version(),
+		MCPServers: mcpServersCopy(srcSession.MCPServers), Redaction: srcSession.Redaction, RetraceVersion: Version(),
 		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 	})
 	if err != nil {
@@ -231,14 +239,25 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 
-	h := replay.NewLLMHandler(replay.LLMConfig{
-		Source: src, Queues: queues, Redact: rules, Fingerprint: llmFingerprint, Writer: w, Logger: log,
-		Options: replay.Options{Realtime: opts.realtime},
-	})
-	// Only the LLM channel is replayed until M4; nothing is forwarded upstream
-	// in exact mode (spec §4.1).
+	// Every channel answers from the cassette; nothing is forwarded upstream
+	// in exact mode (spec §4.1). A miss on any of them ends the replay
+	// (spec §6.2).
+	divergence := replay.NewDivergence()
+	replayOpts := replay.Options{Realtime: opts.realtime}
 	mux := http.NewServeMux()
-	mux.Handle("/llm/anthropic/", http.StripPrefix("/llm/anthropic", h))
+	mux.Handle("/llm/anthropic/", http.StripPrefix("/llm/anthropic", replay.NewLLMHandler(replay.LLMConfig{
+		Source: src, Queues: queues.llm, Redact: rules, Fingerprint: llmFingerprint, Writer: w,
+		Divergence: divergence, Logger: log, Options: replayOpts,
+	})))
+	for _, name := range servers {
+		prefix := "/mcp/" + name
+		h := http.StripPrefix(prefix, replay.NewMCPHandler(replay.MCPConfig{
+			Server: name, Source: src, Queues: queues.mcp[name], Redact: rules,
+			Fingerprint: mcpFingerprint(name), Writer: w, Divergence: divergence, Logger: log, Options: replayOpts,
+		}))
+		mux.Handle(prefix, h) // the URL the agent got (spec §3.2)
+		mux.Handle(prefix+"/", h)
+	}
 	path := c.Path()
 	res, err := runSession(ctx, env, sessionConfig{
 		listener: ln,
@@ -248,14 +267,15 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		id:       id,
 		mode:     mode,
 		startMsg: "replaying " + opts.source,
+		mcp:      servers,
 		command:  command,
 		cwd:      cwd,
-		diverged: h.Diverged(),
+		diverged: divergence.Done(),
 	})
 	if err != nil {
 		return ExitError
 	}
-	warnUnconsumed(env, queues.Unconsumed())
+	warnUnconsumed(env, queues.unconsumed())
 	log.Info("session replayed", "session", id, "source", opts.source, "status", res.status, "cassette", path)
 	return res.exitCode()
 }
@@ -266,31 +286,114 @@ func llmFingerprint(body []byte) string {
 	return match.Fingerprint(anthropic.Canonicalize(body))
 }
 
-// llmQueues queues the recorded LLM interactions of src by the fingerprint of
+// mcpFingerprint returns the matching fingerprint of a request body sent to
+// MCP server name, after redaction (spec §5 step 1).
+func mcpFingerprint(name string) func(body []byte) string {
+	return func(body []byte) string { return match.Fingerprint(mcp.Canonicalize(name, body)) }
+}
+
+// mcpServerNames returns the names of the source session's MCP servers
+// (spec §7.2). The cassette is untrusted input, so each name must be one
+// record accepts: it becomes a route and an environment variable.
+func mcpServerNames(stored json.RawMessage) ([]string, error) {
+	if len(stored) == 0 {
+		return nil, nil
+	}
+	var servers []struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(stored, &servers); err != nil {
+		return nil, fmt.Errorf("parsing mcp_servers: %w", err)
+	}
+	names := make([]string, 0, len(servers))
+	for _, sv := range servers {
+		if !mcpNamePattern.MatchString(sv.Name) {
+			return nil, fmt.Errorf("invalid MCP server name %q", sv.Name)
+		}
+		if slices.Contains(names, sv.Name) {
+			return nil, fmt.Errorf("MCP server %q is listed twice", sv.Name)
+		}
+		names = append(names, sv.Name)
+	}
+	return names, nil
+}
+
+// mcpServersCopy returns the mcp_servers of an exact replay: a copy of the
+// source's, since every MCP answer comes from its cassette (spec §9.3).
+func mcpServersCopy(stored json.RawMessage) json.RawMessage {
+	if len(stored) == 0 {
+		return json.RawMessage(`[]`)
+	}
+	return stored
+}
+
+// queueSet holds the queues of each replayed route.
+type queueSet struct {
+	llm *match.Queues
+	mcp map[string]*match.Queues // by server name
+}
+
+// unconsumed returns the recorded interactions of every route that the
+// replay never served, in recorded order (spec §4.4).
+func (q queueSet) unconsumed() []cassette.Interaction {
+	all := q.llm.Unconsumed()
+	for _, mq := range q.mcp {
+		all = append(all, mq.Unconsumed()...)
+	}
+	slices.SortFunc(all, func(a, b cassette.Interaction) int { return cmp.Compare(a.ID, b.ID) })
+	return all
+}
+
+// replayQueues queues the recorded interactions of src by the fingerprint of
 // their stored request bodies, which are already redacted, so they match
-// incoming requests redacted with the same rules.
-func llmQueues(ctx context.Context, src *cassette.Cassette) (*match.Queues, error) {
+// incoming requests redacted with the same rules: one set of queues for the
+// LLM route and one per MCP server in servers. MCP requests that replay
+// answers without matching are left out, so they are never reported as
+// unconsumed (spec §5 step 3, AC-32).
+func replayQueues(ctx context.Context, src *cassette.Cassette, servers []string) (queueSet, error) {
 	ins, err := src.Interactions(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("reading interactions: %w", err)
+		return queueSet{}, fmt.Errorf("reading interactions: %w", err)
 	}
-	fps := make(map[int64]string, len(ins))
+	type key struct {
+		route string // "" for the LLM, or the MCP server name
+		fp    string
+	}
+	keys := make(map[int64]key, len(ins))
 	for _, in := range ins {
-		if in.Channel != "llm" {
+		var route string
+		switch name, isMCP := strings.CutPrefix(in.Upstream, "mcp:"); {
+		case in.Channel == "llm":
+			route = ""
+		case in.Channel == "mcp" && isMCP && slices.Contains(servers, name):
+			route = name
+		default:
 			continue
 		}
 		var body []byte
 		if in.RequestBlob != nil {
 			if body, err = src.Blob(ctx, *in.RequestBlob); err != nil {
-				return nil, fmt.Errorf("interaction %d: %w", in.ID, err)
+				return queueSet{}, fmt.Errorf("interaction %d: %w", in.ID, err)
 			}
 		}
-		fps[in.ID] = llmFingerprint(body)
+		switch {
+		case in.Channel == "llm":
+			keys[in.ID] = key{route, llmFingerprint(body)}
+		case !replay.AnsweredWithoutMatching(in.HTTPMethod, body):
+			keys[in.ID] = key{route, mcpFingerprint(route)(body)}
+		}
 	}
-	return match.NewQueues(ins, func(in cassette.Interaction) (string, bool) {
-		fp, ok := fps[in.ID]
-		return fp, ok
-	}), nil
+	queuesOf := func(route string) *match.Queues {
+		return match.NewQueues(ins, func(in cassette.Interaction) (string, bool) {
+			k, ok := keys[in.ID]
+			return k.fp, ok && k.route == route
+		})
+	}
+	qs := queueSet{llm: queuesOf(""), mcp: make(map[string]*match.Queues, len(servers))}
+	for _, name := range servers {
+		qs.mcp[name] = queuesOf(name)
+	}
+	return qs, nil
 }
 
 // errNoDefaultID reports that the default replay id cannot be used, which is

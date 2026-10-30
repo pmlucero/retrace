@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +21,13 @@ import (
 
 // The MCP servers the MCP helper agent talks to, by registered name.
 var mcpAgentServers = []string{"orders", "weather"}
+
+// What the run tests change in the MCP helper agent: the key it looks up
+// first (default A1), and the order of its servers.
+const (
+	mcpKeyEnv     = "RETRACE_TEST_MCP_KEY"
+	mcpReverseEnv = "RETRACE_TEST_MCP_REVERSE"
+)
 
 // mcpExchange is one HTTP exchange of the MCP helper agent, as it saw it.
 type mcpExchange struct {
@@ -39,7 +48,12 @@ type mcpExchange struct {
 // GET stream and ends the session, then prints what it saw as JSON.
 func runMCPAgent() {
 	var seen []mcpExchange
-	for _, name := range mcpAgentServers {
+	key := cmp.Or(os.Getenv(mcpKeyEnv), "A1")
+	names := slices.Clone(mcpAgentServers)
+	if os.Getenv(mcpReverseEnv) != "" {
+		slices.Reverse(names)
+	}
+	for _, name := range names {
 		url := os.Getenv(mcpEnvName(name))
 		var session, version string
 		send := func(method, body string) {
@@ -58,7 +72,7 @@ func runMCPAgent() {
 		}
 		send(http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 		send(http.MethodPost, `{"jsonrpc":"2.0","id":2,"method":"tools/list"}`)
-		send(http.MethodPost, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"A1"}}}`)
+		send(http.MethodPost, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"`+key+`"}}}`)
 		send(http.MethodPost, `[{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"lookup","arguments":{"key":"B2"}}},{"jsonrpc":"2.0","id":"p","method":"ping"}]`)
 		send(http.MethodGet, "")
 		send(http.MethodDelete, "")
