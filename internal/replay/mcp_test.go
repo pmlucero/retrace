@@ -23,6 +23,7 @@ const testServer = "fs"
 // testServer. Bodies are stored as given: a test with body rules passes them
 // redacted, as record would have stored them.
 type mcpRecorded struct {
+	method     string // HTTP method; empty selects POST
 	request    string
 	body       string      // non-streamed response body
 	chunks     []string    // SSE events of a streamed response, if set
@@ -46,8 +47,12 @@ func mcpSourceCassette(t *testing.T, recs ...mcpRecorded) *cassette.Cassette {
 			if err != nil {
 				return err
 			}
+			method := r.method
+			if method == "" {
+				method = http.MethodPost
+			}
 			if err := tx.BeginInteraction(ctx, cassette.Interaction{ID: id, Channel: "mcp", Upstream: "mcp:" + testServer,
-				HTTPMethod: http.MethodPost, Path: "/", RequestBlob: &req,
+				HTTPMethod: method, Path: "/", RequestBlob: &req,
 				StartedAt: time.Now(), Provenance: "recorded"}); err != nil {
 				return err
 			}
@@ -122,6 +127,11 @@ func newMCPHarness(t *testing.T, src *cassette.Cassette, rules *redact.Rules) *m
 			t.Errorf("reading request %d: %v", in.ID, err)
 			return "", false
 		}
+		// As run builds them: requests answered without matching are not
+		// queued (AC-32).
+		if AnsweredWithoutMatching(in.HTTPMethod, b) {
+			return "", false
+		}
 		return mcpFingerprint(b), true
 	})
 	out := newCassette(t, "exact")
@@ -146,7 +156,13 @@ type response struct {
 // post sends body with the session id, if any, and returns the response.
 func (m *mcpHarness) post(session, body string) (response, string) {
 	m.t.Helper()
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost,
+	return m.do(http.MethodPost, session, body)
+}
+
+// do sends an HTTP request with method and body, and the session id if any.
+func (m *mcpHarness) do(method, session, body string) (response, string) {
+	m.t.Helper()
+	req, err := http.NewRequestWithContext(context.Background(), method,
 		m.server.URL+"/mcp/"+testServer, strings.NewReader(body))
 	if err != nil {
 		m.t.Fatal(err)
@@ -568,5 +584,96 @@ func TestMCPHandlerCassetteReadError(t *testing.T) {
 	}
 	if len(got) != 1 || got[0].Error == nil || !strings.Contains(*got[0].Error, "disk I/O error") || got[0].StatusCode != nil {
 		t.Errorf("recorded %+v, want one interaction with the error and no status", got)
+	}
+}
+
+func TestAnsweredWithoutMatching(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, body string
+		want               bool
+	}{
+		{"GET", http.MethodGet, "", true},
+		{"DELETE", http.MethodDelete, "", true},
+		{"notification", http.MethodPost, `{"jsonrpc":"2.0","method":"notifications/initialized"}`, true},
+		{"client response", http.MethodPost, `{"jsonrpc":"2.0","id":"s1","result":{}}`, true},
+		{"notifications and responses", http.MethodPost, `[{"jsonrpc":"2.0","method":"n"},{"jsonrpc":"2.0","id":1,"error":{"code":1,"message":"no"}}]`, true},
+		{"request", http.MethodPost, `{"jsonrpc":"2.0","id":1,"method":"ping"}`, false},
+		{"batch with a request", http.MethodPost, `[{"jsonrpc":"2.0","method":"n"},{"jsonrpc":"2.0","id":1,"method":"ping"}]`, false},
+		{"batch with an invalid element", http.MethodPost, `[{"jsonrpc":"2.0","method":"n"},1]`, false},
+		{"not JSON-RPC", http.MethodPost, `hello`, false},
+		{"empty POST", http.MethodPost, ``, false},
+		{"other method", http.MethodPut, `{"jsonrpc":"2.0","method":"n"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AnsweredWithoutMatching(tc.method, []byte(tc.body)); got != tc.want {
+				t.Errorf("AnsweredWithoutMatching(%s, %s) = %t, want %t", tc.method, tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// AC-32
+func TestMCPHandlerAnswersWithoutMatching(t *testing.T) {
+	const (
+		notification = `{"jsonrpc":"2.0","method":"notifications/initialized"}`
+		ping         = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+	)
+	src := mcpSourceCassette(t,
+		mcpRecorded{request: notification, body: ``},
+		mcpRecorded{method: http.MethodGet, request: ``, chunks: []string{"data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/tools/list_changed\"}\n\n"}},
+		mcpRecorded{request: ping, body: `{"jsonrpc":"2.0","id":1,"result":{}}`},
+		mcpRecorded{method: http.MethodDelete, request: ``, body: ``},
+	)
+	m := newMCPHarness(t, src, nil)
+
+	for _, tc := range []struct {
+		method, body string
+		status       int
+		allow        string
+	}{
+		{http.MethodPost, notification, http.StatusAccepted, ""},
+		{http.MethodPost, `{"jsonrpc":"2.0","id":"s1","result":{}}`, http.StatusAccepted, ""},
+		{http.MethodGet, ``, http.StatusMethodNotAllowed, "POST, DELETE"},
+		{http.MethodDelete, ``, http.StatusOK, ""},
+	} {
+		resp, body := m.do(tc.method, "", tc.body)
+		if resp.status != tc.status || body != "" || resp.header.Get("Allow") != tc.allow {
+			t.Errorf("%s %s got %d %q Allow %q, want %d with no body and Allow %q",
+				tc.method, tc.body, resp.status, body, resp.header.Get("Allow"), tc.status, tc.allow)
+		}
+	}
+	// Nothing was consumed: the recorded request is still served, and
+	// the recorded requests of the other kinds are not left over.
+	if _, body := m.post("", ping); body != `{"jsonrpc":"2.0","id":1,"result":{}}` {
+		t.Errorf("ping got %s, want the recorded response", body)
+	}
+	if un := m.queues.Unconsumed(); len(un) != 0 {
+		t.Errorf("unconsumed %v, want none", un)
+	}
+	if m.diverged() {
+		t.Error("diverged without a miss")
+	}
+
+	ins, events := m.stop()
+	if len(ins) != 5 {
+		t.Fatalf("recorded %d interactions, want 5", len(ins))
+	}
+	for i, want := range []int{http.StatusAccepted, http.StatusAccepted, http.StatusMethodNotAllowed, http.StatusOK} {
+		in := ins[i]
+		if in.Provenance != "replayed" || in.SourceInteractionID != nil || in.Fingerprint != nil ||
+			in.StatusCode == nil || *in.StatusCode != want || in.Incomplete() {
+			t.Errorf("interaction %d: %+v, want replayed with no source, no fingerprint and status %d", i, in, want)
+		}
+	}
+	if got := storedHeader(t, ins[2]).Get("Allow"); got != "POST, DELETE" {
+		t.Errorf("stored Allow %q, want POST, DELETE", got)
+	}
+	if got := m.blob(ins[0].RequestBlob); got != notification {
+		t.Errorf("stored request %s, want the notification", got)
+	}
+	for _, e := range events {
+		if e.Kind == "divergence" {
+			t.Errorf("got a divergence event %+v", e)
+		}
 	}
 }

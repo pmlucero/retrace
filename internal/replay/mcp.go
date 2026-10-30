@@ -54,10 +54,11 @@ type MCPConfig struct {
 // cassette (spec §4.1). It serves each matched POST with the recorded
 // response, rewritten to carry the incoming JSON-RPC ids and the session ids
 // it issued (spec §5 step 3), and records it in the new session with
-// provenance replayed (spec §4.4). It answers a recorded transport error as
-// the proxy did (spec §5 step 2), and a cassette miss with a JSON-RPC error
-// -32099 after appending a divergence event (spec §6.2 steps 1 and 2). It is
-// safe for concurrent use.
+// provenance replayed (spec §4.4). GET, DELETE and a POST with no request
+// are answered without matching (see AnsweredWithoutMatching). It answers a
+// recorded transport error as the proxy did (spec §5 step 2), and a cassette
+// miss with a JSON-RPC error -32099 after appending a divergence event
+// (spec §6.2 steps 1 and 2). It is safe for concurrent use.
 type MCPHandler struct {
 	cfg MCPConfig
 	rc  *recorder
@@ -94,6 +95,10 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.miss(w, start, body, missResult{}, "the request body cannot be redacted, so it cannot be matched: "+err.Error())
 		return
 	}
+	if AnsweredWithoutMatching(r.Method, body) {
+		h.answerUnmatched(w, exchange{r: r, start: start, body: body, stored: stored})
+		return
+	}
 	fp := h.cfg.Fingerprint(stored)
 	src, ok := h.cfg.Queues.Next(fp)
 	if !ok {
@@ -119,6 +124,48 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	ex.adapt = func(ctx context.Context) (adaptation, error) { return h.adapt(ctx, ex) }
 	h.rc.serveRecorded(r.Context(), w, ex)
+}
+
+// AnsweredWithoutMatching reports whether exact replay answers an MCP request
+// with this HTTP method and body without matching it (spec §5 step 3): a GET,
+// a DELETE, or a POST that holds only notifications and responses from the
+// client. Such requests consume no recorded interaction, so recorded ones
+// are left out of the queues and never reported as unconsumed (spec §4.4,
+// AC-32). Redaction does not change what a body holds, so the stored body of
+// a recorded request answers the same as the one the agent sent.
+func AnsweredWithoutMatching(method string, body []byte) bool {
+	switch method {
+	case http.MethodGet, http.MethodDelete:
+		return true
+	case http.MethodPost:
+		parsed, err := mcp.ParseBody(body)
+		if err != nil {
+			return false
+		}
+		for _, m := range parsed.Messages {
+			if m.Kind != mcp.Notification && m.Kind != mcp.Response {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// answerUnmatched answers a request that replay does not match (spec §5
+// step 3): GET with 405, as a server without a stream to offer, DELETE with
+// 200, and a POST with only notifications and responses with 202. Recorded
+// server-initiated messages on a GET stream are therefore not replayed
+// (ADR 0004).
+func (h *MCPHandler) answerUnmatched(w http.ResponseWriter, ex exchange) {
+	switch ex.r.Method {
+	case http.MethodGet:
+		h.rc.answerUnmatched(w, ex, http.StatusMethodNotAllowed, http.Header{"Allow": {"POST, DELETE"}})
+	case http.MethodDelete:
+		h.rc.answerUnmatched(w, ex, http.StatusOK, http.Header{})
+	default:
+		h.rc.answerUnmatched(w, ex, http.StatusAccepted, http.Header{})
+	}
 }
 
 // adapt returns how the response to ex differs from the recorded one
