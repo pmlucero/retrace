@@ -6,7 +6,7 @@
 
 **Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.**
 
-> **Status: MVP in progress.** The design (phase 0) is approved. Built from source, retrace can already record and replay sessions of agents that only talk to the LLM. There is no release yet. See [Project status](#project-status).
+> **Status: MVP in progress.** The design (phase 0) is approved. Built from source, retrace can already record and replay sessions of agents that talk to the LLM and to MCP servers. There is no release yet. See [Project status](#project-status).
 
 ## What is retrace
 
@@ -85,7 +85,7 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 | MVP | Record (LLM + MCP), exact replay, swap-model with `strict`, terminal diff, demo agent with two MCP servers | **In progress** |
 | Later | Web UI (sequence view, tool topology, model diff), more divergence strategies, more providers and transports | Planned |
 
-Inside the MVP, milestones M0–M3 are done. Built from source, retrace can record an agent that only talks to the LLM with `retrace record` and replay that session offline with `retrace run <id>` (exact mode). MCP, swap-model and diff come next, in the order of the [MVP plan](docs/plan/mvp.md).
+Inside the MVP, milestones M0–M4 are done. Built from source, retrace can record an agent that talks to the LLM and to MCP servers over Streamable HTTP with `retrace record`, and replay that session offline with `retrace run <id>` (exact mode), with every LLM and MCP answer served from the cassette. Swap-model and diff come next, in the order of the [MVP plan](docs/plan/mvp.md).
 
 ## Documentation
 
