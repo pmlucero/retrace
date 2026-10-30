@@ -91,6 +91,10 @@ type exchange struct {
 	adapt func(ctx context.Context) (adaptation, error)
 }
 
+// matched reports whether ex was matched to a recorded interaction, rather
+// than answered without matching (spec §5 step 3).
+func (ex exchange) matched() bool { return ex.fp != "" }
+
 // adaptation is how a served response differs from the recorded one: the MCP
 // handler gives it the agent's JSON-RPC ids and session id (spec §5 step 3).
 // Its zero value serves and stores the response as recorded.
@@ -179,7 +183,7 @@ func (rc *recorder) begin(ex exchange) int64 {
 		Channel: rc.channel, Upstream: rc.upstream, HTTPMethod: r.Method, Path: path,
 		RequestHeaders: headers, StartedAt: ex.start, Provenance: "replayed",
 	}
-	if ex.fp != "" {
+	if ex.matched() {
 		srcID, fp := ex.src.ID, ex.fp
 		in.Fingerprint, in.SourceInteractionID = &fp, &srcID
 	}

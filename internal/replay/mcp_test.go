@@ -677,3 +677,30 @@ func TestMCPHandlerAnswersWithoutMatching(t *testing.T) {
 		}
 	}
 }
+
+// AC-32: the handler classifies the body as stored, as the queues do. A rule
+// that masks whole batch elements turns recorded notifications into strings,
+// so the recorded batch is queued, and the same batch from the agent is
+// matched to it rather than answered with 202 and left unconsumed.
+func TestMCPHandlerClassifiesTheStoredBody(t *testing.T) {
+	path, err := redact.ParsePath("$[*]")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := redact.NewRules(nil, []redact.Path{path})
+	const batch = `[{"jsonrpc":"2.0","method":"notifications/initialized"}]`
+	stored, err := rules.Body([]byte(batch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := mcpSourceCassette(t, mcpRecorded{request: string(stored), body: ``,
+		header: http.Header{"X-Recorded": {"yes"}}})
+	m := newMCPHarness(t, src, rules)
+	resp, _ := m.post("", batch)
+	if resp.status != http.StatusOK || resp.header.Get("X-Recorded") != "yes" {
+		t.Errorf("got %d %v, want the recorded response", resp.status, resp.header)
+	}
+	if un := m.queues.Unconsumed(); len(un) != 0 {
+		t.Errorf("unconsumed %v, want none", un)
+	}
+}

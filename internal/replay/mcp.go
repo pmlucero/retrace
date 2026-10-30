@@ -95,7 +95,10 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.miss(w, start, body, missResult{}, "the request body cannot be redacted, so it cannot be matched: "+err.Error())
 		return
 	}
-	if AnsweredWithoutMatching(r.Method, body) {
+	// The stored body, as the queues classify the recorded ones: a rule can
+	// turn a batch element into a string, which no longer reads as a
+	// notification.
+	if AnsweredWithoutMatching(r.Method, stored) {
 		h.answerUnmatched(w, exchange{r: r, start: start, body: body, stored: stored})
 		return
 	}
@@ -126,13 +129,13 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.rc.serveRecorded(r.Context(), w, ex)
 }
 
-// AnsweredWithoutMatching reports whether exact replay answers an MCP request
-// with this HTTP method and body without matching it (spec §5 step 3): a GET,
-// a DELETE, or a POST that holds only notifications and responses from the
-// client. Such requests consume no recorded interaction, so recorded ones
+// AnsweredWithoutMatching reports whether replay answers an MCP request with
+// this HTTP method and redacted body without matching it (spec §5 step 3): a
+// GET, a DELETE, or a POST that holds only notifications and responses from
+// the client. Such requests consume no recorded interaction, so recorded ones
 // are left out of the queues and never reported as unconsumed (spec §4.4,
-// AC-32). Redaction does not change what a body holds, so the stored body of
-// a recorded request answers the same as the one the agent sent.
+// AC-32). Both sides pass the body as stored, after redaction, so they agree
+// whatever the rules mask.
 func AnsweredWithoutMatching(method string, body []byte) bool {
 	switch method {
 	case http.MethodGet, http.MethodDelete:
