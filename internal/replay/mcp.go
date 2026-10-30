@@ -173,18 +173,19 @@ func (h *MCPHandler) adapt(ctx context.Context, ex exchange) (adaptation, error)
 	return ad, nil
 }
 
-// sessionID returns the Mcp-Session-Id of the response to r (spec §5 step 3):
-// a fresh one for initialize, the agent's own when this handler issued it
-// and the recorded response carried one, and "" to drop the recorded one.
-// ok is false when the recorded header is kept: there is none to change.
+// sessionID returns the Mcp-Session-Id of the response to r (spec §5 step 3)
+// when the recorded response carried one: a fresh one for initialize, the
+// agent's own when this handler issued it, and "" to drop the recorded one.
+// ok is false when the recorded response carried none: the replay then shows
+// no session the recorded server did not open.
 func (h *MCPHandler) sessionID(r *http.Request, incoming mcp.Body, recorded http.Header) (id string, ok bool) {
+	if recorded.Get(sessionHeader) == "" {
+		return "", false
+	}
 	for _, m := range incoming.Messages {
 		if m.Kind == mcp.Request && m.Method == mcp.MethodInitialize {
 			return h.issue(), true
 		}
-	}
-	if recorded.Get(sessionHeader) == "" {
-		return "", false
 	}
 	id = r.Header.Get(sessionHeader)
 	h.mu.Lock()

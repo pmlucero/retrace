@@ -284,24 +284,30 @@ func TestMCPHandlerRewritesIDsAndSessions(t *testing.T) {
 
 func fmtID(format, id string) string { return strings.Replace(format, "%s", id, 1) }
 
-// Spec §5 step 3: a session id retrace did not issue is not echoed, and a
-// recorded response without one gets none.
+// AC-11, spec §5 step 3: a session id retrace did not issue is not echoed,
+// and a recorded response without one gets none, initialize included: the
+// replay shows no session the recorded server did not open.
 func TestMCPHandlerSessionHeader(t *testing.T) {
 	withSession := http.Header{"Content-Type": {"application/json"}, sessionHeader: {"recorded-session"}}
-	req := `{"jsonrpc":"2.0","id":1,"method":"ping"}`
-	resp := `{"jsonrpc":"2.0","id":1,"result":{}}`
+	const (
+		ping       = `{"jsonrpc":"2.0","id":1,"method":"ping"}`
+		initialize = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
+	)
 	for _, tc := range []struct {
 		name     string
+		request  string
 		recorded http.Header
 		incoming string
 	}{
-		{"unknown session id", withSession, "other"},
-		{"no session id", withSession, ""},
-		{"none recorded", nil, "other"},
+		{"unknown session id", ping, withSession, "other"},
+		{"no session id", ping, withSession, ""},
+		{"none recorded", ping, nil, "other"},
+		{"initialize recorded without one", initialize, nil, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := newMCPHarness(t, mcpSourceCassette(t, mcpRecorded{request: req, body: resp, header: tc.recorded}), nil)
-			got, _ := m.post(tc.incoming, req)
+			src := mcpSourceCassette(t, mcpRecorded{request: tc.request, body: `{"jsonrpc":"2.0","id":1,"result":{}}`, header: tc.recorded})
+			m := newMCPHarness(t, src, nil)
+			got, _ := m.post(tc.incoming, tc.request)
 			if v := got.header.Values(sessionHeader); len(v) != 0 {
 				t.Errorf("Mcp-Session-Id %v, want none", v)
 			}
