@@ -81,15 +81,19 @@ func newRecorder(cfg recorderConfig) *recorder {
 type exchange struct {
 	r      *http.Request
 	start  time.Time
-	body   []byte // as received
-	stored []byte // body after redaction
-	fp     string
-	src    cassette.Interaction // the recorded interaction that answers it
+	body   []byte               // as received
+	stored []byte               // body after redaction
+	fp     string               // empty when answered without matching
+	src    cassette.Interaction // the recorded interaction that answers it, if matched
 	// adapt, when set, says how the response to serve differs from src's.
 	// It may fail reading the cassette, so it runs after begin: a failure is
 	// then recorded and answered like any cassette read error in serve.
 	adapt func(ctx context.Context) (adaptation, error)
 }
+
+// matched reports whether ex was matched to a recorded interaction, rather
+// than answered without matching (spec §5 step 3).
+func (ex exchange) matched() bool { return ex.fp != "" }
 
 // adaptation is how a served response differs from the recorded one: the MCP
 // handler gives it the agent's JSON-RPC ids and session id (spec §5 step 3).
@@ -175,11 +179,13 @@ func (rc *recorder) begin(ex exchange) int64 {
 	if err != nil {
 		headers = json.RawMessage(`{}`) // http.Header always marshals; unreachable
 	}
-	srcID, fp := ex.src.ID, ex.fp
 	in := cassette.Interaction{
 		Channel: rc.channel, Upstream: rc.upstream, HTTPMethod: r.Method, Path: path,
-		RequestHeaders: headers, Fingerprint: &fp, StartedAt: ex.start,
-		Provenance: "replayed", SourceInteractionID: &srcID,
+		RequestHeaders: headers, StartedAt: ex.start, Provenance: "replayed",
+	}
+	if ex.matched() {
+		srcID, fp := ex.src.ID, ex.fp
+		in.Fingerprint, in.SourceInteractionID = &fp, &srcID
 	}
 	var blobs [][]byte
 	if len(ex.body) > 0 {
@@ -188,6 +194,28 @@ func (rc *recorder) begin(ex exchange) int64 {
 		blobs = append(blobs, ex.stored)
 	}
 	return rc.writer.BeginInteraction(in, blobs...)
+}
+
+// answerUnmatched answers ex, a request answered without matching, with
+// status, header and no body, and records the exchange with no source
+// interaction (spec §4.4, §5 step 3).
+func (rc *recorder) answerUnmatched(w http.ResponseWriter, ex exchange, status int, header http.Header) {
+	id := rc.begin(ex)
+	headers, err := json.Marshal(header)
+	if err != nil {
+		headers = json.RawMessage(`{}`) // http.Header always marshals; unreachable
+	}
+	key := cassette.BlobKey([]byte{})
+	ttfb := rc.clock.Now().Sub(ex.start).Milliseconds()
+	// Completed before the answer reaches the agent, as serve does.
+	rc.writer.CompleteInteraction(id, cassette.Completion{
+		StatusCode: &status, ResponseHeaders: headers, TTFBMillis: &ttfb,
+		DurationMillis: ttfb, ResponseBlob: &key,
+	}, []byte{})
+	for name, values := range header {
+		w.Header()[name] = values
+	}
+	w.WriteHeader(status)
 }
 
 // missResult is the result of a divergence event (spec §7.4).
