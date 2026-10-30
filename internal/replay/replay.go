@@ -48,7 +48,7 @@ type Options struct {
 // (spec §4.1, AC-10). It returns when the response is written, when writing
 // to the agent fails, or when ctx is done.
 func Serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options) error {
-	return serve(ctx, w, src, in, opts, noObserver{})
+	return serve(ctx, w, src, in, opts, noObserver{}, nil)
 }
 
 // observer sees a response as serve writes it, each step just before it
@@ -57,9 +57,9 @@ type observer interface {
 	// headers runs before the status is written. empty reports that no body
 	// or chunk follows.
 	headers(empty bool)
-	// write runs before the body or a chunk is written. last reports the final
-	// write of the response.
-	write(data []byte, last bool)
+	// write runs before the body or a chunk is written, with the data to
+	// store of it. last reports the final write of the response.
+	write(stored []byte, last bool)
 }
 
 type noObserver struct{}
@@ -67,7 +67,18 @@ type noObserver struct{}
 func (noObserver) headers(bool)       {}
 func (noObserver) write([]byte, bool) {}
 
-func serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options, obs observer) error {
+// rewrite changes the recorded body, or one recorded SSE event, as it is
+// served. It returns what the agent gets and what the new session stores of
+// it, which differ when the change must be redacted (spec §3.5).
+type rewrite func(recorded []byte, event bool) (served, stored []byte)
+
+// asRecorded serves and stores data as recorded.
+func asRecorded(recorded []byte, _ bool) (served, stored []byte) { return recorded, recorded }
+
+func serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.Interaction, opts Options, obs observer, rw rewrite) error {
+	if rw == nil {
+		rw = asRecorded
+	}
 	if err := servable(in); err != nil {
 		return err
 	}
@@ -93,6 +104,10 @@ func serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.I
 		return fmt.Errorf("serving interaction %d: %w", in.ID, err)
 	}
 
+	var stored []byte
+	if len(body) > 0 {
+		body, stored = rw(body, false)
+	}
 	h := w.Header()
 	copyHeaders(h, recorded)
 	if !in.Streamed && len(body) > 0 {
@@ -108,13 +123,13 @@ func serve(ctx context.Context, w http.ResponseWriter, src Source, in cassette.I
 		if len(body) == 0 {
 			return nil
 		}
-		obs.write(body, true)
+		obs.write(stored, true)
 		if _, err := w.Write(body); err != nil {
 			return fmt.Errorf("serving interaction %d: writing body: %w", in.ID, err)
 		}
 		return nil
 	}
-	return serveChunks(ctx, w, in.ID, chunks, opts, obs)
+	return serveChunks(ctx, w, in.ID, chunks, opts, obs, rw)
 }
 
 // servable returns an error wrapping ErrUnservable when Serve would refuse in
@@ -138,7 +153,7 @@ func servable(in cassette.Interaction) error {
 
 // serveChunks writes chunks after the headers were written, flushing the
 // headers first: recorded offsets count from when they arrived (spec §3.3).
-func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []cassette.Chunk, opts Options, obs observer) error {
+func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []cassette.Chunk, opts Options, obs observer, rw rewrite) error {
 	rc := http.NewResponseController(w)
 	if err := rc.Flush(); err != nil {
 		return fmt.Errorf("serving interaction %d: flushing headers: %w", id, err)
@@ -160,8 +175,9 @@ func serveChunks(ctx context.Context, w http.ResponseWriter, id int64, chunks []
 				}
 			}
 		}
-		obs.write(ch.Data, i == len(chunks)-1)
-		if _, err := w.Write(ch.Data); err != nil {
+		served, stored := rw(ch.Data, true)
+		obs.write(stored, i == len(chunks)-1)
+		if _, err := w.Write(served); err != nil {
 			return fmt.Errorf("serving interaction %d: writing chunk %d: %w", id, ch.Index, err)
 		}
 		if err := rc.Flush(); err != nil {
