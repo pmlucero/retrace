@@ -32,10 +32,12 @@ type Entry struct {
 }
 
 // Diff is the structural diff of a cassette miss. Truncated is set when
-// more than MaxEntries paths differ or a value was elided.
+// more than MaxEntries paths differ or a value was elided; MorePaths only in
+// the first case.
 type Diff struct {
 	Entries   []Entry
 	Truncated bool
+	MorePaths bool
 }
 
 // Compare returns the paths where received differs from expected. Both are
@@ -71,7 +73,7 @@ func (c *collector) diff() Diff {
 	if entries == nil {
 		entries = []Entry{}
 	}
-	return Diff{Entries: entries, Truncated: c.full || c.elided}
+	return Diff{Entries: entries, Truncated: c.full || c.elided, MorePaths: c.full}
 }
 
 // missing marks a side where a path does not exist.

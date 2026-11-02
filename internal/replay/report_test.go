@@ -1,6 +1,7 @@
 package replay
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -67,6 +68,24 @@ func TestDivergenceReportSaysWhyThereIsNoDiff(t *testing.T) {
 				t.Errorf("first miss = %+v, %v; want no diff because %q", first, ok, tc.want)
 			}
 		})
+	}
+}
+
+// A recorded request that cannot be read leaves the miss with no
+// reference to compare against.
+func TestDivergenceReportOnAnUnreadableReference(t *testing.T) {
+	const rec = `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`
+	src := mcpSourceCassette(t, mcpRecorded{request: rec, body: `{}`})
+	m := newMCPHarness(t, src, nil)
+	ins, err := src.Interactions(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.h.rc.source = requestFailingSource{Source: m.h.rc.source, requests: map[string]bool{*ins[0].RequestBlob: true}}
+	m.post("", `{"jsonrpc":"2.0","id":2,"method":"ping"}`)
+	first, _, ok := m.h.rc.divergence.Report()
+	if !ok || len(first.Diff) != 0 || first.NoDiff != NoDiffNoReference {
+		t.Errorf("first miss = %+v, %v; want no diff because %q", first, ok, NoDiffNoReference)
 	}
 }
 

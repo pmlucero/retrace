@@ -197,7 +197,8 @@ func TestRunEndsDivergedOnACassetteMiss(t *testing.T) {
 	// The recorded interaction was never served.
 	if !strings.Contains(r.stderr.String(), "never replayed") || !strings.Contains(r.stderr.String(), "count=1") {
 		t.Errorf("stderr lacks the unconsumed warning:\n%s", r.stderr)
-	} // The divergence report (spec §6.4).
+	}
+	// AC-15: the divergence report (spec §6.4).
 	for _, want := range []string{
 		"retrace: replay rome diverged from s\n",
 		"first miss: anthropic POST /v1/messages\n",

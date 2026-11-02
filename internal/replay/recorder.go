@@ -70,6 +70,8 @@ type MissReport struct {
 	Request       string
 	Diff          []divergence.Entry
 	DiffTruncated bool
+	// MorePaths reports that more paths differ than Diff holds.
+	MorePaths bool
 	// NoDiff says why Diff is empty, when it is.
 	NoDiff string
 }
@@ -79,7 +81,6 @@ const (
 	NoDiffIncomplete   = "the matching recording is incomplete; record the session again"
 	NoDiffUnredactable = "the request could not be redacted"
 	NoDiffNoReference  = "no recorded request was left to compare against"
-	NoDiffUnreadable   = "the recorded request could not be read"
 	NoDiffEqual        = "the request is the same as the recorded one"
 )
 
@@ -322,8 +323,10 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 	case res.diff:
 		var d divergence.Diff
 		d, report.NoDiff = rc.diff(recordCtx, res.stored)
-		res.Diff, res.DiffTruncated = d.Entries, d.Truncated
+		res.Diff, res.DiffTruncated, report.MorePaths = d.Entries, d.Truncated, d.MorePaths
 		if report.NoDiff == "" && len(d.Entries) == 0 {
+			// Unreachable in practice: a request that missed has another
+			// fingerprint, so another canonical form, than the reference.
 			report.NoDiff = NoDiffEqual
 		}
 	case res.IncompleteInteraction != nil:
@@ -364,7 +367,8 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 // redacted bodies. The recorded one is canonicalized again, as the queues
 // were built from it: a recorded request with no stored body was queued as
 // an empty body, so it is compared as one. With no reference, or one that
-// cannot be read, the diff is empty and the reason says why.
+// cannot be read, the diff is empty and the reason says why: a reference
+// that cannot be read is reported as none, after a warning (spec §6.4).
 func (rc *recorder) diff(ctx context.Context, stored []byte) (divergence.Diff, string) {
 	empty := divergence.Diff{Entries: []divergence.Entry{}}
 	if rc.queues == nil || rc.diffForm == nil {
@@ -380,7 +384,7 @@ func (rc *recorder) diff(ctx context.Context, stored []byte) (divergence.Diff, s
 		var err error
 		if recorded, err = rc.source.Blob(ctx, *ref.RequestBlob); err != nil {
 			rc.log.Warn("cannot read the recorded request for the miss diff", "interaction", ref.ID, "error", err)
-			return empty, NoDiffUnreadable
+			return empty, NoDiffNoReference
 		}
 	}
 	return divergence.Compare(rc.diffForm(recorded), rc.diffForm(stored)), ""

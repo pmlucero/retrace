@@ -77,8 +77,8 @@ func TestCompareCapsEntries(t *testing.T) {
 		if len(d.Entries) != MaxEntries {
 			t.Errorf("%d differences: %d entries, want %d", n, len(d.Entries), MaxEntries)
 		}
-		if want := n > MaxEntries; d.Truncated != want {
-			t.Errorf("%d differences: Truncated = %v, want %v", n, d.Truncated, want)
+		if want := n > MaxEntries; d.Truncated != want || d.MorePaths != want {
+			t.Errorf("%d differences: Truncated = %v, MorePaths = %v, want %v", n, d.Truncated, d.MorePaths, want)
 		}
 		if d.Entries[0].Path != "$.k000" || d.Entries[MaxEntries-1].Path != fmt.Sprintf("$.k%03d", MaxEntries-1) {
 			t.Errorf("%d differences: entries from %s to %s, want the first %d in order",
@@ -117,7 +117,7 @@ func TestCompareElidesLargeValues(t *testing.T) {
 	if got := string(d.Entries[0].Received); got != want {
 		t.Errorf("received = %.40s…, want %s", got, want)
 	}
-	if !d.Truncated {
-		t.Error("Truncated = false, want true after an elided value")
+	if !d.Truncated || d.MorePaths {
+		t.Errorf("Truncated = %v, MorePaths = %v; want true and false after an elided value", d.Truncated, d.MorePaths)
 	}
 }

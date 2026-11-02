@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/pmlucero/retrace/internal/divergence"
 	"github.com/pmlucero/retrace/internal/replay"
 )
 
@@ -35,7 +34,7 @@ func (r divergenceReport) write(w io.Writer) {
 	switch {
 	case len(r.first.Diff) == 0:
 		fmt.Fprintf(w, "    no diff: %s\n", r.first.NoDiff)
-	case r.first.DiffTruncated && len(r.first.Diff) == divergence.MaxEntries:
+	case r.first.MorePaths:
 		fmt.Fprintf(w, "    … more paths differ\n")
 	}
 	fmt.Fprintf(w, "  misses: %d\n", r.misses)

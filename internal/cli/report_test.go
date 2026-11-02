@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -23,6 +24,8 @@ func TestDivergenceReport(t *testing.T) {
 	for i := range many {
 		many[i] = divergence.Entry{Path: fmt.Sprintf("$.k%02d", i), Expected: json.RawMessage(`1`), Received: json.RawMessage(`2`)}
 	}
+	elided := slices.Clone(many)
+	elided[0].Received = json.RawMessage(`"[retrace: 2048 bytes elided]"`)
 	for _, tc := range []struct {
 		name   string
 		report divergenceReport
@@ -42,7 +45,11 @@ func TestDivergenceReport(t *testing.T) {
 			Upstream: "mcp:fs", NoDiff: replay.NoDiffUnredactable,
 		}}},
 		{"truncated", divergenceReport{source: "s", replay: "s.exact.1", misses: 1, first: replay.MissReport{
-			Upstream: "anthropic", Request: "POST /v1/messages", Diff: many, DiffTruncated: true,
+			Upstream: "anthropic", Request: "POST /v1/messages", Diff: many, DiffTruncated: true, MorePaths: true,
+		}}},
+		// The cap holds every differing path; one value was elided.
+		{"elided at the cap", divergenceReport{source: "s", replay: "s.exact.1", misses: 1, first: replay.MissReport{
+			Upstream: "anthropic", Request: "POST /v1/messages", Diff: elided, DiffTruncated: true,
 		}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
