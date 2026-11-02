@@ -262,10 +262,11 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 	msg := "retrace: cassette miss: " + reason
 	res.Channel, res.Upstream = rc.channel, rc.upstream
 	res.Diff = []divergence.Entry{}
-	// The event is recorded even when the agent is already gone.
-	ctx = context.WithoutCancel(ctx)
+	// The event is recorded even when the agent is already gone. The
+	// strategy keeps the request's context: what it does is for the agent.
+	recordCtx := context.WithoutCancel(ctx)
 	if res.diff {
-		d := rc.diff(ctx, res.stored)
+		d := rc.diff(recordCtx, res.stored)
 		res.Diff, res.DiffTruncated = d.Entries, d.Truncated
 	}
 	result, err := json.Marshal(res)

@@ -38,8 +38,9 @@ func TestStrict(t *testing.T) {
 	}
 }
 
-// Spec §6.1: the handlers ask their strategy about each miss, after
-// recording it.
+// Spec §6.1: the handlers ask their strategy about each miss, with the
+// channel, upstream and reason of its divergence event, and the event is
+// recorded.
 func TestHandlersAskTheStrategy(t *testing.T) {
 	llm := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})
 	llmStrategy := &fakeStrategy{}
@@ -81,8 +82,7 @@ func TestUnsupportedResolutionsAbort(t *testing.T) {
 		strategy *fakeStrategy
 	}{
 		{"error", &fakeStrategy{err: errors.New("boom")}},
-		{"respond", &fakeStrategy{res: Resolution{Respond: &Response{
-			Provenance: "synthetic", Status: http.StatusOK, Body: []byte(`{}`)}}}},
+		{"respond", &fakeStrategy{res: Resolution{Respond: &Response{Provenance: "synthetic"}}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := newReplayHarness(t, sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`}), nil, Options{})

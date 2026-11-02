@@ -1,9 +1,6 @@
 package replay
 
-import (
-	"context"
-	"net/http"
-)
+import "context"
 
 // DivergenceStrategy decides how a replay answers a request that missed the
 // cassette (spec §6.1). The handlers append the miss's divergence event
@@ -36,15 +33,15 @@ type Resolution struct {
 	Respond *Response
 }
 
-// Response is a response that a strategy makes up for a miss.
+// Response is a response that a strategy makes up for a miss. It holds only
+// what spec §6.1 makes normative: the fields that carry the response itself
+// come with the first strategy that responds, whose needs (a stream, one
+// JSON-RPC message per batch element) decide their shape.
 type Response struct {
 	// Provenance says where the response came from, and is stored with it.
 	// It is mandatory (spec §6.1): fallthrough, nearest or synthetic for
 	// the reserved strategies (spec §6.3).
 	Provenance string
-	Status     int
-	Header     http.Header
-	Body       []byte
 }
 
 // Strict is the default strategy, and the only one in the MVP: every miss is
