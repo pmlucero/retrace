@@ -43,10 +43,12 @@ type MCPConfig struct {
 	Canonicalize func(body []byte) []byte
 	// Writer records the new session.
 	Writer *cassette.Writer
-	// Divergence is signaled at a cassette miss. Nil selects the handler's
-	// own.
+	// Divergence is signaled when a cassette miss ends the replay. Nil
+	// selects the handler's own.
 	Divergence *Divergence
-	Logger     *slog.Logger
+	// Strategy answers cassette misses (spec §6). Nil selects Strict.
+	Strategy DivergenceStrategy
+	Logger   *slog.Logger
 	Options
 }
 
@@ -56,9 +58,10 @@ type MCPConfig struct {
 // it issued (spec §5 step 3), and records it in the new session with
 // provenance replayed (spec §4.4). GET, DELETE and a POST with no request
 // are answered without matching (see AnsweredWithoutMatching). It answers a
-// recorded transport error as the proxy did (spec §5 step 2), and a cassette
-// miss with a JSON-RPC error -32099 after appending a divergence event
-// (spec §6.2 steps 1 and 2). It is safe for concurrent use.
+// recorded transport error as the proxy did (spec §5 step 2). On a cassette
+// miss it appends a divergence event and asks its strategy (spec §6): an
+// aborted miss is answered with a JSON-RPC error -32099 and signals
+// Diverged (spec §6.2). It is safe for concurrent use.
 type MCPHandler struct {
 	cfg MCPConfig
 	rc  *recorder
@@ -74,7 +77,7 @@ func NewMCPHandler(cfg MCPConfig) *MCPHandler {
 	diffForm := func(stored []byte) []byte { return mcp.DiffForm(cfg.Canonicalize(stored)) }
 	rc := newRecorder(recorderConfig{channel: mcpChannel, upstream: "mcp:" + cfg.Server, source: cfg.Source,
 		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence,
-		queues: cfg.Queues, diffForm: diffForm})
+		strategy: cfg.Strategy, queues: cfg.Queues, diffForm: diffForm})
 	cfg.Redact = rc.redact
 	return &MCPHandler{cfg: cfg, rc: rc, issued: map[string]bool{}}
 }
@@ -262,9 +265,9 @@ func (h *MCPHandler) issue() string {
 	return id
 }
 
-// miss handles a cassette miss with steps 1 and 2 of strict (spec §6.2): a
-// JSON-RPC error -32099 with each incoming request's id, or null when it
-// cannot be read (spec §5 step 3, AC-31).
+// miss handles a cassette miss. It answers an aborted one (spec §6.2 step
+// 2) with a JSON-RPC error -32099 that has each incoming request's id, or
+// null when it cannot be read (spec §5 step 3, AC-31).
 func (h *MCPHandler) miss(w http.ResponseWriter, r *http.Request, start time.Time, body []byte, res missResult, reason string) {
 	h.rc.miss(r.Context(), start, res, reason)
 
