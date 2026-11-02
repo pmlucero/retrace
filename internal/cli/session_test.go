@@ -193,8 +193,9 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 	}
 }
 
-// AC-15: at a cassette miss the agent gets SIGTERM, then SIGKILL if it has
-// not exited after --grace, or at once with --grace 0 (spec §6.2 step 3).
+// AC-15 (termination only; the divergence report has its own test): at a
+// cassette miss the agent gets SIGTERM, then SIGKILL if it has not exited
+// after --grace, or at once with --grace 0 (spec §6.2 step 3).
 func TestRunSessionTerminatesTheAgentOnAMiss(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Windows has no SIGTERM: the agent is killed at once")
@@ -228,8 +229,12 @@ func TestRunSessionTerminatesTheAgentOnAMiss(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if d := time.Since(start); d > 30*time.Second {
+			d := time.Since(start)
+			if d > 30*time.Second {
 				t.Errorf("session took %s, want the agent ended at the miss", d)
+			}
+			if tc.ignoreTerm && d < tc.grace {
+				t.Errorf("agent killed after %s, want no sooner than --grace %s", d, tc.grace)
 			}
 			s, err := openCassette(t, path).Session(context.Background())
 			if err != nil {

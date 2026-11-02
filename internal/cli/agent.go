@@ -89,9 +89,11 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged <-chan struct{}, g
 				_ = cmd.Process.Kill()
 				continue
 			}
+			if !signalAgent(cmd, syscall.SIGTERM) {
+				log.Warn("cassette miss: killing the agent, which cannot get SIGTERM here")
+				continue
+			}
 			log.Warn("cassette miss: stopping the agent", "grace", grace)
-			// Where SIGTERM cannot be sent (Windows), the agent is killed.
-			signalAgent(cmd, syscall.SIGTERM)
 			kill = time.After(grace)
 		case <-kill:
 			log.Warn("the agent did not exit within the grace period; killing it", "grace", grace)
@@ -102,11 +104,14 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged <-chan struct{}, g
 }
 
 // signalAgent delivers sig, or kills the agent where sig cannot be sent
-// (os.Interrupt on Windows).
-func signalAgent(cmd *exec.Cmd, sig os.Signal) {
+// (os.Interrupt and SIGTERM on Windows). It reports whether sig was sent,
+// or the agent had already exited.
+func signalAgent(cmd *exec.Cmd, sig os.Signal) bool {
 	if err := cmd.Process.Signal(sig); err != nil && !errors.Is(err, os.ErrProcessDone) {
 		_ = cmd.Process.Kill()
+		return false
 	}
+	return true
 }
 
 // exitCodeOf returns the agent's exit code, or 128 + the signal number when a
