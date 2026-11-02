@@ -39,6 +39,7 @@ func TestHelperReplayAgent(t *testing.T) {
 	if prompt == "" {
 		t.Skip("subprocess of the run tests")
 	}
+	ignoreTerm()
 	n, _ := strconv.Atoi(os.Getenv(replayCountEnv))
 	body := fmt.Sprintf(`{"model":"claude-sonnet-5-5","max_tokens":16,"stream":true,"metadata":{"user_id":"run-%s"},`+
 		`"messages":[{"role":"user","content":%q}]}`, os.Getenv("RETRACE_MODE"), prompt)
@@ -174,7 +175,8 @@ func TestRunEndsDivergedOnACassetteMiss(t *testing.T) {
 	recordForReplay(t, dir, "s", 1)
 
 	t.Setenv(replayPromptEnv, "Weather in Rome?")
-	r := runRunCmd(t, dir, "s", "--as", "rome", "--listen", "127.0.0.1:0")
+	t.Setenv(agentIgnoreTermEnv, "1") // so it prints what it got
+	r := runRunCmd(t, dir, "s", "--as", "rome", "--grace", "30s", "--listen", "127.0.0.1:0")
 	if r.code != ExitDiverged {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
@@ -323,7 +325,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"reserved strategy", []string{"s", "--on-miss", "nearest-match"}, "not implemented in this version"},
 		{"unknown strategy", []string{"s", "--on-miss", "lenient"}, "want strict"},
 		{"non-loopback listen", []string{"s", "--listen", "0.0.0.0:0"}, "add --listen-unsafe"},
-		{"grace is M5", []string{"s", "--grace", "1s"}, "not defined"},
+		{"negative grace", []string{"s", "--grace", "-1s"}, "want a duration of 0 or more"},
+		{"grace without a unit", []string{"s", "--grace", "5"}, "invalid value"},
 		// Before the source is opened: it does not exist here (spec §9.3).
 		{"default id too long", []string{strings.Repeat("a", 125)}, "--as"},
 	}

@@ -18,6 +18,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -31,7 +32,10 @@ import (
 const (
 	agentModeEnv = "RETRACE_TEST_AGENT"
 	agentExitEnv = "RETRACE_TEST_AGENT_EXIT"
-	agentAPIKey  = "sk-ant-test-0123456789-SECRET" //nolint:gosec // G101: a fake key that AC-06 looks for
+	// agentIgnoreTermEnv makes a helper agent ignore SIGTERM, so it runs
+	// to its end after a cassette miss (spec §6.2 step 3).
+	agentIgnoreTermEnv = "RETRACE_TEST_AGENT_IGNORE_TERM"
+	agentAPIKey        = "sk-ant-test-0123456789-SECRET" //nolint:gosec // G101: a fake key that AC-06 looks for
 )
 
 func agentCommand() []string {
@@ -46,6 +50,7 @@ func TestHelperAgent(t *testing.T) {
 	if mode == "" {
 		t.Skip("subprocess of the record tests")
 	}
+	ignoreTerm()
 	if mode == "wait" {
 		signal.Notify(make(chan os.Signal, 1), os.Interrupt) // survive until the test is ready
 	}
@@ -81,6 +86,14 @@ func TestHelperAgent(t *testing.T) {
 	}
 	code, _ := strconv.Atoi(os.Getenv(agentExitEnv))
 	os.Exit(code)
+}
+
+// ignoreTerm makes a helper agent ignore SIGTERM when agentIgnoreTermEnv is
+// set. It runs before the agent's first request, so before any miss.
+func ignoreTerm() {
+	if os.Getenv(agentIgnoreTermEnv) != "" {
+		signal.Ignore(syscall.SIGTERM)
+	}
 }
 
 // syncBuffer is a bytes.Buffer that the agent's output copier and the test
@@ -443,7 +456,7 @@ func TestWaitAgentCountsASignalThatRacesTheExit(t *testing.T) {
 	}
 	sigs := make(chan os.Signal, 1)
 	sigs <- os.Interrupt
-	res := waitAgent(cmd, sigs, slog.New(slog.DiscardHandler))
+	res := waitAgent(cmd, sigs, nil, 0, slog.New(slog.DiscardHandler))
 	if !res.interrupted {
 		t.Error("the session was not marked as interrupted")
 	}

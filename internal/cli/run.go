@@ -57,6 +57,7 @@ type runOptions struct {
 	model        string
 	tools        string
 	onMiss       string
+	grace        time.Duration
 	realtime     bool
 	listen       string
 	listenUnsafe bool
@@ -73,6 +74,7 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	fs.StringVar(&opts.model, "model", "", "replay with this model (swap-model; not implemented yet)")
 	fs.StringVar(&opts.tools, "tools", "frozen", "frozen, or live (live-tools; not implemented yet)")
 	fs.StringVar(&opts.onMiss, "on-miss", "strict", "divergence strategy")
+	fs.DurationVar(&opts.grace, "grace", 5*time.Second, "how long the agent has to exit after SIGTERM on a cassette miss")
 	fs.BoolVar(&opts.realtime, "realtime", false, "replay SSE chunks with their recorded timing")
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
@@ -127,6 +129,8 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 		return opts, usageError(env.Stderr, fmt.Sprintf("--on-miss %s is not implemented in this version", opts.onMiss)), false
 	case opts.onMiss != "strict":
 		return opts, usageError(env.Stderr, fmt.Sprintf("--on-miss %q: want strict", opts.onMiss)), false
+	case opts.grace < 0:
+		return opts, usageError(env.Stderr, fmt.Sprintf("--grace %s: want a duration of 0 or more", opts.grace)), false
 	}
 	if err := checkListen(opts.listen, opts.listenUnsafe); err != nil {
 		return opts, usageError(env.Stderr, err.Error()), false
@@ -273,6 +277,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		command:  command,
 		cwd:      cwd,
 		diverged: divergence.Done(),
+		grace:    opts.grace,
 	})
 	if err != nil {
 		return ExitError

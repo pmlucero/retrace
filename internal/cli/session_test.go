@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -100,12 +101,21 @@ func TestRunSessionFailsWithoutACommand(t *testing.T) {
 	}
 }
 
+// divergeOnRequest returns a handler that closes the returned channel at the
+// agent's first request, as a cassette miss would, and answers 404.
+func divergeOnRequest() (http.Handler, <-chan struct{}) {
+	diverged := make(chan struct{})
+	var once sync.Once
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		once.Do(func() { close(diverged) })
+		http.NotFound(w, r)
+	}), diverged
+}
+
 // AC-28: a cassette miss ends the session diverged, however the agent then exits,
 // and agent_exit_code keeps its code (spec §6.2, §9.3), but a session whose
 // agent never ran stays failed.
 func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
-	diverged := make(chan struct{})
-	close(diverged)
 	for _, tc := range []struct {
 		name      string
 		mode      string // the helper agent's mode; "" runs no agent
@@ -115,8 +125,11 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 		wantCode  *int
 		wantExit  int
 	}{
+		// The agent ignores the miss's SIGTERM and exits within the grace
+		// period, so it is not killed.
 		{"agent exits 0", "call", "0", false, "diverged", ptr(0), ExitDiverged},
 		{"agent exits non-zero", "call", "3", false, "diverged", ptr(3), ExitDiverged},
+		// A signal during the grace period is handled as in spec §3.1.
 		{"interrupted", "wait", "", true, "diverged", ptr(130), ExitDiverged},
 		{"agent never ran", "", "", false, "failed", nil, ExitError},
 	} {
@@ -126,6 +139,7 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 			}
 			t.Setenv(agentModeEnv, tc.mode)
 			t.Setenv(agentExitEnv, tc.exit)
+			t.Setenv(agentIgnoreTermEnv, "1")
 			sigs := make(chan chan<- os.Signal, 1)
 			saved := notifySignals
 			notifySignals = func(c chan<- os.Signal) func() {
@@ -135,9 +149,14 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 			t.Cleanup(func() { notifySignals = saved })
 
 			cfg, path := newTestSession(t)
-			cfg.diverged = diverged
+			cfg.grace = time.Minute
 			if tc.mode != "" {
 				cfg.command = agentCommand()
+				cfg.handler, cfg.diverged = divergeOnRequest()
+			} else {
+				diverged := make(chan struct{})
+				close(diverged)
+				cfg.diverged = diverged
 			}
 			out := &syncBuffer{}
 			env := &Env{Stdout: out, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
@@ -152,9 +171,13 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 					c <- os.Interrupt
 				}()
 			}
+			start := time.Now()
 			res, err := runSession(context.Background(), env, cfg)
 			if err != nil {
 				t.Fatal(err)
+			}
+			if d := time.Since(start); d > 30*time.Second {
+				t.Errorf("session took %s; the agent was not let exit on its own", d)
 			}
 			s, err := openCassette(t, path).Session(context.Background())
 			if err != nil {
@@ -165,6 +188,62 @@ func TestRunSessionEndsDivergedAfterAMiss(t *testing.T) {
 			}
 			if (s.AgentExitCode == nil) != (tc.wantCode == nil) || (s.AgentExitCode != nil && *s.AgentExitCode != *tc.wantCode) {
 				t.Errorf("agent_exit_code %v, want %v", s.AgentExitCode, tc.wantCode)
+			}
+		})
+	}
+}
+
+// AC-15 (termination only; the divergence report has its own test): at a
+// cassette miss the agent gets SIGTERM, then SIGKILL if it has not exited
+// after --grace, or at once with --grace 0 (spec §6.2 step 3).
+func TestRunSessionTerminatesTheAgentOnAMiss(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no SIGTERM: the agent is killed at once")
+	}
+	const (
+		sigterm = 128 + 15
+		sigkill = 128 + 9
+	)
+	for _, tc := range []struct {
+		name       string
+		ignoreTerm bool
+		grace      time.Duration
+		wantCode   int
+	}{
+		{"exits on SIGTERM", false, time.Minute, sigterm},
+		{"killed after the grace period", true, 200 * time.Millisecond, sigkill},
+		{"grace 0 kills at once", false, 0, sigkill},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(agentModeEnv, "wait") // runs until a signal ends it
+			if tc.ignoreTerm {
+				t.Setenv(agentIgnoreTermEnv, "1")
+			}
+			cfg, path := newTestSession(t)
+			cfg.command = agentCommand()
+			cfg.handler, cfg.diverged = divergeOnRequest()
+			cfg.grace = tc.grace
+			env := &Env{Stdout: &syncBuffer{}, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
+			start := time.Now()
+			res, err := runSession(context.Background(), env, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			d := time.Since(start)
+			if d > 30*time.Second {
+				t.Errorf("session took %s, want the agent ended at the miss", d)
+			}
+			if tc.ignoreTerm && d < tc.grace {
+				t.Errorf("agent killed after %s, want no sooner than --grace %s", d, tc.grace)
+			}
+			s, err := openCassette(t, path).Session(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.status != "diverged" || res.exitCode() != ExitDiverged ||
+				s.AgentExitCode == nil || *s.AgentExitCode != tc.wantCode {
+				t.Errorf("status %q, exit %d, agent_exit_code %v; want diverged, %d and %d",
+					res.status, res.exitCode(), s.AgentExitCode, ExitDiverged, tc.wantCode)
 			}
 		})
 	}
