@@ -133,7 +133,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 ### 4.2 `swap-model`
 
 - LLM requests are forwarded to the real API **after rewriting the `model` field** to the value of `--model`. The agent's code is unchanged. All other request fields are preserved.
-  - The rewrite sets the top-level `model` member of the request body, and adds it when it is missing. The other members keep their order and values. A body that is not a JSON object is forwarded unchanged, so the API answers it with its own error.
+  - The rewrite applies to `POST` requests to `/v1/messages` and `/v1/messages/count_tokens`, the endpoints whose body names the model. It sets the top-level `model` member of the request body, and adds it when it is missing. The other members keep their bytes, as body redaction does (§3.5). A body that is not a JSON object is forwarded unchanged, so the API answers it with its own error. Requests to other paths are forwarded unchanged.
   - The upstream is `--anthropic-upstream` (§9.3), with the same default as in `record`.
   - Forwarding follows record mode (§3.3): streaming is not buffered (AC-03), and the interaction is recorded with `provenance = live`.
 - MCP requests are answered from the cassette via matching. A miss triggers the divergence strategy (§6).
@@ -146,7 +146,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - LLM requests are answered from the cassette via matching.
 - MCP requests are forwarded to the real servers: the recorded URLs, unless overridden with `--mcp`.
   - Each server is reached at its `--mcp` URL when one is given, and otherwise at the `url` stored in the source's `mcp_servers` (§7.2).
-  - A stored URL that holds a redaction marker (`REDACTED` userinfo or a `[REDACTED:…]` query value, §3.5) is not the URL that was recorded, so that server needs `--mcp`. Without it, `run` fails with a usage error (exit `2`) that names the server.
+  - A stored URL that holds a redaction marker (§3.5) is not the URL that was recorded, so that server needs `--mcp`. Without it, `run` fails with a usage error (exit `2`) that names the server. A marker is userinfo equal to `REDACTED`, or a query value of the form `[REDACTED:<8 hex digits>]`. A real URL that happens to have that form also needs `--mcp`.
   - Every MCP request is forwarded as in record mode (§3.4), including `GET` streams, `DELETE` and messages that hold only notifications or responses. §5 step 3 does not apply: request ids and `Mcp-Session-Id` headers pass through unchanged, and the interactions are recorded with `provenance = live`.
 - If a live tool returns a different result, the next LLM request's `messages` differ and its fingerprint misses. That is a divergence, handled by the same strategy (§6). No separate tool-result comparison is needed.
 
@@ -155,7 +155,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. MCP requests answered without matching (§5 step 3) are also `replayed`, with no source interaction. Forwarded ones get `provenance = live`.
 - The new session uses the source session's redaction rules (`redaction`, §7.2) and copies them. They apply to everything the replay stores, forwarded interactions included, as in record mode (§3.5).
-- At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error. MCP interactions that replay answers without matching (§5 step 3) are never reported as unconsumed.
+- At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error. Only channels answered from the cassette count: the LLM in `exact` and `live-tools`, and MCP in `exact` and `swap-model`. MCP interactions that replay answers without matching (§5 step 3) are never reported as unconsumed.
 - A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the body as served, which may differ from the original because of redaction and, for MCP, the id rewrite of §5 step 3. An interaction recorded with a transport error has neither status nor headers, and is served as in §5 step 2.
 
 ## 5. Request matching
@@ -179,11 +179,12 @@ Matching follows [ADR 0007](../adr/0007-request-matching-fingerprints.md). In su
    - Some requests are answered without matching, and consume no recorded interaction: a `POST` that holds only notifications or responses from the client gets `202`, `GET` gets `405` with `Allow: POST, DELETE`, and `DELETE` gets `200`. They are stored in the new cassette with `provenance = replayed` and no source interaction, so the replay's log shows what the agent sent. Server-initiated messages recorded on a `GET` stream are therefore not replayed ([ADR 0004](../adr/0004-mcp-streamable-http-first.md)): an agent that reacts to them can behave differently in replay without a divergence event.
    - A miss on the MCP channel is answered with HTTP `200`, `application/json` and a JSON-RPC error `-32099` with message `retrace: cassette miss` (§6.2 step 2) and a `data` string with the details, which says so when the matching recording is incomplete (step 4). It has the incoming request's id (`null` when it cannot be read, as JSON-RPC 2.0 §5 says), or one error per request in a batch.
 4. On a miss, the replayer computes a structural diff against the next unconsumed recorded interaction on the same channel and server. The diff is a list of JSON paths with expected and received values, and it is attached to the divergence event.
-   - The next unconsumed interaction is the one with the lowest `id` among the source interactions on that channel and server that matching can consume and that no request has consumed yet. MCP interactions answered without matching (step 3) are never candidates. When there is no candidate, the diff is empty.
+   - The next unconsumed interaction is the one with the lowest `id` among the source interactions on that channel and server that are queued by fingerprint (step 2) and that no request has consumed yet. MCP interactions answered without matching (step 3) are never candidates. An interaction whose recording is incomplete can be one, because its request is stored. When there is no candidate, the diff is empty.
    - The diff compares the canonical forms (step 1) of the recorded request and the received one. Both are taken after redaction, so a redacted value never reaches the diff. Objects are compared member by member, and arrays element by element, by index. An entry is emitted at the deepest path where the two sides differ: a different scalar, a different type, or a member or element present on only one side.
-   - Paths use the JSONPath subset of §3.5 (`$.messages[3].content`, `$['a name']`). `expected` and `received` hold the JSON values at that path. A side where the path does not exist omits its member.
+   - Paths use the JSONPath subset of §3.5 (`$.messages[3].content`, `$['a name']`). For the LLM, they are relative to the canonical body. For MCP, they leave out the server name, which both sides share: they are relative to the canonical message (its kind, and its method and params or its result), to the array of canonical messages of a batch, or to the canonical body of a JSON body that is neither (step 1). So a changed tool argument is at `$.params.arguments.<name>`, a different kind at `$.kind`, and a batch received where a single message was recorded at `$`.
+   - `expected` and `received` hold the JSON values at that path. A side where the path does not exist omits its member. A value whose compact JSON is longer than 1 KiB is replaced by the string `[retrace: <n> bytes elided]`, and the event's result sets `diff_truncated`.
    - A canonical form that is not JSON (a body fingerprinted over its raw bytes) is compared as a whole: one entry at `$`, with each side as a JSON string, invalid UTF-8 replaced by U+FFFD. No entry is emitted when the two are equal.
-   - The diff is ordered as the walk meets each path (in an object, the recorded side's members in their order, then the members only the received side has, in theirs; in an array, by index), and holds at most 50 entries. When more differ, the divergence event's result sets `diff_truncated` to `true`. It is absent otherwise.
+   - The diff is ordered as the walk meets each path (in an object, the recorded side's members in their order, then the members only the received side has, in theirs; in an array, by index), and holds at most 50 entries. When more differ, or a value is elided, the divergence event's result sets `diff_truncated` to `true`. It is absent otherwise.
    - A request that cannot be redacted (step 1) gets an empty diff, so no unredacted value reaches the cassette.
 
    When the request reaches an interaction whose recording is incomplete, no diff is computed. The divergence event sets `incomplete_interaction` to that interaction's id, and the error the agent receives (its message for the LLM, its `data` for MCP, step 3) says the matching recording is incomplete, so the user knows to record the session again rather than debug the agent.
@@ -217,10 +218,15 @@ Steps 1 and 2 apply to every miss. Step 3 starts at the first miss and happens o
 - An agent that exits within the grace period is not killed.
 - With `--grace 0`, the agent is killed at once. On Windows, which has no `SIGTERM`, the agent is also killed at once.
 - As in §3.1, only the agent process is signalled. Processes it started itself may outlive it.
+- A signal that retrace receives during the grace period is handled as in §3.1. The session still ends `diverged` and retrace exits `3` (§9.3).
+
+### 6.3 Reserved strategies
+
+`fallthrough`, `nearest-match` and `llm-stub` are accepted by the flag parser and rejected with `not implemented in this version` (exit `2`). Any response they produce in the future MUST set `provenance` to `fallthrough`, `nearest` or `synthetic` respectively.
 
 ### 6.4 Divergence report
 
-When a replay ends with status `diverged`, retrace prints a short report on stderr, after the cassette is finalized. It describes the first miss (the `divergence` event with the lowest `seq`) from what the cassette stores, so it shows no unredacted value. The full comparison of the two sessions is `retrace diff` (§8).
+When a replay ends with status `diverged`, retrace prints a short report on stderr, after the cassette is finalized. It describes the first miss the replayer saw, from the same data as that miss's `divergence` event, so it shows no unredacted value. It does not read the events back, so a `divergence` event that the cassette writer dropped (§7.7) does not change it. When the session has `dropped_events > 0`, the report also says that the event log is incomplete. The full comparison of the two sessions is `retrace diff` (§8).
 
 ```text
 retrace: replay 20261023-checkout.swap-model.1 diverged from 20261023-checkout
@@ -233,12 +239,8 @@ retrace: replay 20261023-checkout.swap-model.1 diverged from 20261023-checkout
 - The first-miss line names the upstream and the request: for MCP, the JSON-RPC method, plus the tool name for `tools/call` (`batch` for a batch); for the LLM, the HTTP method and path.
 - Each diff entry (§5 step 4) gives its path and `expected → received`. Values are compact JSON. A missing side is `(missing)`, and a value longer than 80 characters is cut and ends with `…`. A truncated diff ends with a line that says more paths differ.
 - When there is no diff, the report says why: the matching recording is incomplete (record the session again), the request could not be redacted, no recorded request was left to compare against, or the two canonical forms are equal.
-- `misses` counts the `divergence` events of the session.
+- `misses` counts the misses of the session.
 - The layout above is illustrative. Its content is normative.
-
-### 6.3 Reserved strategies
-
-`fallthrough`, `nearest-match` and `llm-stub` are accepted by the flag parser and rejected with `not implemented in this version` (exit `2`). Any response they produce in the future MUST set `provenance` to `fallthrough`, `nearest` or `synthetic` respectively.
 
 ## 7. Cassette data model
 
