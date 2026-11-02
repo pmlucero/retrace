@@ -35,8 +35,14 @@ type agentResult struct {
 
 // waitAgent waits for cmd, which has started, while handling the signals that
 // arrive on sigs: the first is forwarded to the agent (SIGINT after
-// interruptGrace), a second one kills it.
-func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, log *slog.Logger) agentResult {
+// interruptGrace), a second one kills it (spec §3.1).
+//
+// When diverged is closed, a cassette miss ended the replay: the agent gets
+// SIGTERM, then SIGKILL if it has not exited after grace, or at once when
+// grace is 0 (spec §6.2 step 3). It happens once, and signals that arrive
+// during the grace period are still handled as above. A nil diverged never
+// closes.
+func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged <-chan struct{}, grace time.Duration, log *slog.Logger) agentResult {
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait() // the exit status is read from cmd.ProcessState
@@ -47,6 +53,7 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, log *slog.Logger) agentResu
 		res     agentResult
 		forward <-chan time.Time
 		pending os.Signal
+		kill    <-chan time.Time
 	)
 	for {
 		select {
@@ -75,6 +82,21 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, log *slog.Logger) agentResu
 		case <-forward:
 			signalAgent(cmd, pending)
 			forward = nil
+		case <-diverged:
+			diverged = nil
+			if grace <= 0 {
+				log.Warn("cassette miss: killing the agent")
+				_ = cmd.Process.Kill()
+				continue
+			}
+			log.Warn("cassette miss: stopping the agent", "grace", grace)
+			// Where SIGTERM cannot be sent (Windows), the agent is killed.
+			signalAgent(cmd, syscall.SIGTERM)
+			kill = time.After(grace)
+		case <-kill:
+			log.Warn("the agent did not exit within the grace period; killing it", "grace", grace)
+			_ = cmd.Process.Kill()
+			kill = nil
 		}
 	}
 }

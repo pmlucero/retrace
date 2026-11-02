@@ -149,6 +149,7 @@ func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 	recordMCPForReplay(t, dir, "s")
 
 	t.Setenv(mcpKeyEnv, "Z9")
+	t.Setenv(agentIgnoreTermEnv, "1") // so it reports every exchange
 	r := runRunCmd(t, dir, "s", "--as", "z9", "--listen", "127.0.0.1:0")
 	if r.code != ExitDiverged {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)

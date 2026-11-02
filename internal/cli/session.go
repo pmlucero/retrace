@@ -30,6 +30,7 @@ type sessionConfig struct {
 	command  []string           // the agent command; an empty one fails the session
 	cwd      string             // the agent's working directory; "" inherits retrace's
 	diverged <-chan struct{}    // closed at a cassette miss in a replay; nil when recording
+	grace    time.Duration      // how long the agent has to exit after a miss's SIGTERM (spec §6.2)
 	// finish, if set, completes the session's metadata from what was
 	// recorded. It runs once the writer has written everything.
 	finish func(ctx context.Context, c *cassette.Cassette) error
@@ -69,7 +70,7 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	if cmd := startAgent(ctx, env, cfg, base); cmd == nil {
 		res.status = "failed"
 	} else {
-		res.agent = waitAgent(cmd, sigs, log)
+		res.agent = waitAgent(cmd, sigs, cfg.diverged, cfg.grace, log)
 		if res.agent.interrupted {
 			res.status = "interrupted"
 		}
