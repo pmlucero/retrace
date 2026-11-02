@@ -37,10 +37,10 @@ type MCPConfig struct {
 	Queues *match.Queues
 	// Redact holds the session's redaction rules. Nil selects the defaults.
 	Redact *redact.Rules
-	// Fingerprint computes the matching fingerprint of a request body after
-	// redaction (spec §5 step 1). It must agree with the one Queues was built
-	// with.
-	Fingerprint func(body []byte) string
+	// Canonicalize returns the canonical form of a request body sent to
+	// Server, after redaction (spec §5 step 1). Its fingerprint must agree
+	// with the one Queues was built with.
+	Canonicalize func(body []byte) []byte
 	// Writer records the new session.
 	Writer *cassette.Writer
 	// Divergence is signaled at a cassette miss. Nil selects the handler's
@@ -70,8 +70,11 @@ type MCPHandler struct {
 // NewMCPHandler returns an MCPHandler for cfg. It serves paths relative to
 // the server's route, as http.StripPrefix leaves them.
 func NewMCPHandler(cfg MCPConfig) *MCPHandler {
+	// Diff paths leave out the server name both sides share (spec §5 step 4).
+	diffForm := func(stored []byte) []byte { return mcp.DiffForm(cfg.Canonicalize(stored)) }
 	rc := newRecorder(recorderConfig{channel: mcpChannel, upstream: "mcp:" + cfg.Server, source: cfg.Source,
-		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence})
+		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence,
+		queues: cfg.Queues, diffForm: diffForm})
 	cfg.Redact = rc.redact
 	return &MCPHandler{cfg: cfg, rc: rc, issued: map[string]bool{}}
 }
@@ -92,7 +95,7 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// matches the stored, redacted copy of the recorded one.
 	stored, err := h.cfg.Redact.Body(body)
 	if err != nil {
-		h.miss(w, start, body, missResult{}, "the request body cannot be redacted, so it cannot be matched: "+err.Error())
+		h.miss(w, r, start, body, missResult{}, "the request body cannot be redacted, so it cannot be matched: "+err.Error())
 		return
 	}
 	// The stored body, as the queues classify the recorded ones: a rule can
@@ -102,17 +105,18 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.answerUnmatched(w, exchange{r: r, start: start, body: body, stored: stored})
 		return
 	}
-	fp := h.cfg.Fingerprint(stored)
+	fp := match.Fingerprint(h.cfg.Canonicalize(stored))
 	src, ok := h.cfg.Queues.Next(fp)
 	if !ok {
 		res := missResult{ReceivedFingerprint: &fp}
 		if blocked, ok := h.cfg.Queues.Blocked(fp); ok {
 			// No diff for an incomplete recording (spec §5 step 4).
 			res.IncompleteInteraction = &blocked.ID
-			h.miss(w, start, body, res, fmt.Sprintf("the recording of the matching interaction %d is incomplete; record the session again", blocked.ID))
+			h.miss(w, r, start, body, res, fmt.Sprintf("the recording of the matching interaction %d is incomplete; record the session again", blocked.ID))
 			return
 		}
-		h.miss(w, start, body, res, "no recorded request matches this one")
+		res.diff, res.stored = true, stored
+		h.miss(w, r, start, body, res, "no recorded request matches this one")
 		return
 	}
 	ex := exchange{r: r, start: start, body: body, stored: stored, fp: fp, src: src}
@@ -121,7 +125,8 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := servable(src); err != nil {
-		h.miss(w, start, body, missResult{ReceivedFingerprint: &fp},
+		// The request matched src, so there is nothing to diff.
+		h.miss(w, r, start, body, missResult{ReceivedFingerprint: &fp},
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
 		return
 	}
@@ -260,8 +265,8 @@ func (h *MCPHandler) issue() string {
 // miss handles a cassette miss with steps 1 and 2 of strict (spec §6.2): a
 // JSON-RPC error -32099 with each incoming request's id, or null when it
 // cannot be read (spec §5 step 3, AC-31).
-func (h *MCPHandler) miss(w http.ResponseWriter, start time.Time, body []byte, res missResult, reason string) {
-	h.rc.miss(start, res, reason)
+func (h *MCPHandler) miss(w http.ResponseWriter, r *http.Request, start time.Time, body []byte, res missResult, reason string) {
+	h.rc.miss(r.Context(), start, res, reason)
 
 	errObj := map[string]any{"code": missCode, "message": "retrace: cassette miss", "data": reason}
 	answer := func(id json.RawMessage) map[string]any {

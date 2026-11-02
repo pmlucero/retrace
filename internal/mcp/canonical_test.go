@@ -180,3 +180,24 @@ func TestCanonicalizeRedactedBodies(t *testing.T) {
 		}
 	}
 }
+
+// AC-15: MCP diff paths leave out the server name (spec §5 step 4).
+func TestDiffForm(t *testing.T) {
+	tests := []struct {
+		name, body, want string
+	}{
+		{"request", `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search","arguments":{"q":"a"},"_meta":{"t":1}}}`,
+			`{"kind":"request","method":"tools/call","params":{"arguments":{"q":"a"},"name":"search"}}`},
+		{"batch", `[{"jsonrpc":"2.0","id":1,"method":"tools/list"},{"jsonrpc":"2.0","method":"notifications/x"}]`,
+			`[{"kind":"request","method":"tools/list"},{"kind":"notification","method":"notifications/x"}]`},
+		{"JSON that is not JSON-RPC", `{"hello":"world"}`, `{"hello":"world"}`},
+		{"not JSON", "not json\nat all", "not json\nat all"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := string(DiffForm(Canonicalize("fs", []byte(tt.body)))); got != tt.want {
+				t.Errorf("DiffForm = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}

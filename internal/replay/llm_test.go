@@ -31,9 +31,11 @@ type recorded struct {
 	incomplete bool             // the recording is marked incomplete
 }
 
-// testFingerprint stands in for canonicalization: the body is its own
-// fingerprint.
-func testFingerprint(body []byte) string { return "fp:" + string(body) }
+// testCanonicalize stands in for canonicalization: the body is its own
+// canonical form.
+func testCanonicalize(body []byte) []byte { return body }
+
+func testFingerprint(body []byte) string { return match.Fingerprint(testCanonicalize(body)) }
 
 func newCassette(t *testing.T, mode string) *cassette.Cassette {
 	t.Helper()
@@ -144,7 +146,7 @@ func newReplayHarness(t *testing.T, src *cassette.Cassette, rules *redact.Rules,
 		t.Fatal(err)
 	}
 	h := NewLLMHandler(LLMConfig{Source: src, Queues: queues, Redact: rules,
-		Fingerprint: testFingerprint, Writer: w, Options: opts})
+		Canonicalize: testCanonicalize, Writer: w, Options: opts})
 	server := httptest.NewServer(http.StripPrefix("/llm/anthropic", h))
 	t.Cleanup(server.Close)
 	return &replayHarness{t: t, h: h, queues: queues, out: out, w: w, server: server}
@@ -348,9 +350,9 @@ func TestLLMHandlerRedactsBeforeFingerprinting(t *testing.T) {
 	}
 }
 
-// divergence returns the result of the only event in events, checking that
+// divergenceResult returns the result of the only event in events, checking that
 // it is a divergence.
-func divergence(t *testing.T, events []cassette.Event) map[string]any {
+func divergenceResult(t *testing.T, events []cassette.Event) map[string]any {
 	t.Helper()
 	return divergenceOn(t, events, "llm", "anthropic")
 }
@@ -374,8 +376,8 @@ func divergenceOn(t *testing.T, events []cassette.Event, channel, upstream strin
 	if res["channel"] != channel || res["upstream"] != upstream {
 		t.Errorf("divergence result %s: want channel %s, upstream %s", e.Result, channel, upstream)
 	}
-	if diff, ok := res["diff"].([]any); !ok || len(diff) != 0 {
-		t.Errorf("divergence diff %v, want an empty list", res["diff"])
+	if _, ok := res["diff"].([]any); !ok {
+		t.Errorf("divergence diff %v, want a list", res["diff"])
 	}
 	return res
 }
@@ -425,7 +427,7 @@ func TestLLMHandlerMissOnEmptyQueue(t *testing.T) {
 			}
 
 			ins, events := r.stop()
-			res := divergence(t, events)
+			res := divergenceResult(t, events)
 			if want := testFingerprint([]byte(tc.request)); res["received_fingerprint"] != want {
 				t.Errorf("received_fingerprint %v, want %s", res["received_fingerprint"], want)
 			}
@@ -473,7 +475,7 @@ func TestLLMHandlerMissOnIncompleteRecording(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("got %d events, want a divergence per miss", len(events))
 	}
-	res := divergence(t, events[:1])
+	res := divergenceResult(t, events[:1])
 	if res["incomplete_interaction"] != float64(2) {
 		t.Errorf("incomplete_interaction %v, want 2", res["incomplete_interaction"])
 	}
@@ -582,7 +584,7 @@ func TestLLMHandlerMissOnUnservableHead(t *testing.T) {
 	status, body := r.post(`{"q":"a"}`)
 	checkMissResponse(t, status, body, "interaction 1 has no recorded response")
 	ins, events := r.stop()
-	divergence(t, events)
+	divergenceResult(t, events)
 	if len(ins) != 0 {
 		t.Errorf("recorded %d interactions for a miss, want none", len(ins))
 	}
@@ -593,13 +595,100 @@ func TestLLMHandlerMissOnUnredactableBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	r := newReplayHarness(t, sourceCassette(t), redact.NewRules(nil, []redact.Path{path}), Options{})
+	// A recorded request is left to diff against, but an unredacted body
+	// must not reach the diff (spec §5 step 4).
+	src := sourceCassette(t, recorded{request: `{"q":"a"}`, body: `{}`})
+	r := newReplayHarness(t, src, redact.NewRules(nil, []redact.Path{path}), Options{})
 	deep := strings.Repeat("[", 10000) + strings.Repeat("]", 10000)
 	status, body := r.post(deep)
 	checkMissResponse(t, status, body, "cannot be redacted")
 	_, events := r.stop()
-	if res := divergence(t, events); res["received_fingerprint"] != nil {
+	res := divergenceResult(t, events)
+	if res["received_fingerprint"] != nil {
 		t.Errorf("received_fingerprint %v, want null", res["received_fingerprint"])
+	}
+	if got := diffJSON(t, res); got != `[]` {
+		t.Errorf("diff %s, want none for a body that cannot be redacted", got)
+	}
+}
+
+// diffJSON returns the diff of a divergence result as JSON.
+func diffJSON(t *testing.T, res map[string]any) string {
+	t.Helper()
+	b, err := json.Marshal(res["diff"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// AC-15: a miss carries a JSON-path diff against the next unconsumed
+// recorded request (spec §5 step 4).
+func TestLLMHandlerMissDiff(t *testing.T) {
+	email, err := redact.ParsePath("$..email")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := redact.NewRules(nil, []redact.Path{email})
+	storedRequest := func(raw string) string {
+		b, err := rules.Body([]byte(raw))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	marker := func(email string) string {
+		var v struct{ Email string }
+		if err := json.Unmarshal([]byte(storedRequest(`{"email":"`+email+`"}`)), &v); err != nil {
+			t.Fatal(err)
+		}
+		return v.Email
+	}
+	for _, tc := range []struct {
+		name     string
+		recs     []recorded
+		before   []string // requests served before the miss
+		request  string
+		wantDiff string
+	}{
+		{name: "changed value",
+			recs:    []recorded{{request: `{"q":"a","n":1}`, body: `{}`}, {request: `{"q":"c"}`, body: `{}`}},
+			request: `{"q":"b","n":1}`, wantDiff: `[{"expected":"a","path":"$.q","received":"b"}]`},
+		{name: "the reference is the next unconsumed request",
+			recs:    []recorded{{request: `{"q":"a"}`, body: `{}`}, {request: `{"q":"c"}`, body: `{}`}},
+			before:  []string{`{"q":"a"}`},
+			request: `{"q":"a"}`, wantDiff: `[{"expected":"c","path":"$.q","received":"a"}]`},
+		{name: "nothing left to compare",
+			recs:    []recorded{{request: `{"q":"a"}`, body: `{}`}},
+			before:  []string{`{"q":"a"}`},
+			request: `{"q":"b"}`, wantDiff: `[]`},
+		{name: "an incomplete recording is a reference",
+			recs:    []recorded{{request: `{"q":"a"}`, body: `{}`, incomplete: true}},
+			request: `{"q":"b"}`, wantDiff: `[{"expected":"a","path":"$.q","received":"b"}]`},
+		{name: "values are compared after redaction",
+			recs:    []recorded{{request: storedRequest(`{"email":"alice@example.com","q":"a"}`), body: `{}`}},
+			request: `{"email":"bob@example.com","q":"b"}`,
+			wantDiff: `[{"expected":"` + marker("alice@example.com") + `","path":"$.email","received":"` + marker("bob@example.com") +
+				`"},{"expected":"a","path":"$.q","received":"b"}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReplayHarness(t, sourceCassette(t, tc.recs...), rules, Options{})
+			for _, req := range tc.before {
+				if status, _ := r.post(req); status != http.StatusOK {
+					t.Fatalf("status %d before the miss", status)
+				}
+			}
+			status, body := r.post(tc.request)
+			checkMissResponse(t, status, body, "no recorded request matches")
+			_, events := r.stop()
+			res := divergenceResult(t, events)
+			if got := diffJSON(t, res); got != tc.wantDiff {
+				t.Errorf("diff %s, want %s", got, tc.wantDiff)
+			}
+			if _, ok := res["diff_truncated"]; ok {
+				t.Errorf("diff_truncated set on a short diff: %v", res)
+			}
+		})
 	}
 }
 

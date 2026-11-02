@@ -213,21 +213,19 @@ func TestQueuesNextUnconsumed(t *testing.T) {
 		rec(3, "llm", "c"),
 		rec(4, "llm", "d"),
 	}
-	isLLM := func(in cassette.Interaction) bool { return in.Channel == "llm" }
-	notC := func(in cassette.Interaction) bool { return *in.Fingerprint != "c" }
-
 	q := NewQueues(recorded, storedFingerprint)
 	steps := []struct {
 		consume string // fingerprint consumed before the lookup, if any
-		keep    func(cassette.Interaction) bool
-		want    int64 // 0 when nothing is left
+		want    int64  // 0 when nothing is left
 	}{
-		{keep: isLLM, want: 1},
-		{keep: isLLM, want: 1}, // looking does not consume
-		{consume: "a", keep: isLLM, want: 3},
-		{keep: notC, want: 4},
-		{consume: "d", keep: notC, want: 0},
-		{consume: "c", keep: isLLM, want: 0},
+		{want: 1},
+		{want: 1}, // looking does not consume
+		// An incomplete interaction is a candidate: its request is stored
+		// (spec §5 step 4). It blocks its queue, so it stays the first
+		// unconsumed one while the others are consumed.
+		{consume: "a", want: 2},
+		{consume: "c", want: 2},
+		{consume: "d", want: 2},
 	}
 	for i, s := range steps {
 		if s.consume != "" {
@@ -235,7 +233,7 @@ func TestQueuesNextUnconsumed(t *testing.T) {
 				t.Fatalf("step %d: Next(%q) missed", i, s.consume)
 			}
 		}
-		in, ok := q.NextUnconsumed(s.keep)
+		in, ok := q.NextUnconsumed()
 		if !ok {
 			in.ID = 0
 		}
@@ -275,7 +273,7 @@ func TestQueuesConcurrentUse(t *testing.T) {
 		}
 		wg.Go(func() {
 			q.Unconsumed()
-			q.NextUnconsumed(func(cassette.Interaction) bool { return true })
+			q.NextUnconsumed()
 		})
 	}
 	wg.Wait()

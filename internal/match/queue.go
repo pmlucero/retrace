@@ -81,16 +81,17 @@ func (q *Queues) Blocked(fp string) (cassette.Interaction, bool) {
 	return q.queued[queue[0]], true
 }
 
-// NextUnconsumed returns the first complete queued interaction, in recorded
-// order, that was not consumed and satisfies keep, without consuming it. It is the
-// reference for the structural diff of a miss (spec §5 step 4), where keep
-// selects the channel and server of the missed request. keep runs with q
-// locked, so it must not call methods of q.
-func (q *Queues) NextUnconsumed(keep func(cassette.Interaction) bool) (cassette.Interaction, bool) {
+// NextUnconsumed returns the first queued interaction, in recorded order,
+// that was not consumed, without consuming it. It is the reference for the
+// structural diff of a miss (spec §5 step 4). A replay builds one Queues per
+// channel and server, so it is on the missed request's channel and server.
+// An incomplete interaction can be returned: its request is stored, and the
+// diff compares requests.
+func (q *Queues) NextUnconsumed() (cassette.Interaction, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	for i, in := range q.queued {
-		if !q.consumed[i] && !in.Incomplete() && keep(in) {
+		if !q.consumed[i] {
 			return in, true
 		}
 	}

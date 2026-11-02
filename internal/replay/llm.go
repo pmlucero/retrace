@@ -28,10 +28,10 @@ type LLMConfig struct {
 	Queues *match.Queues
 	// Redact holds the session's redaction rules. Nil selects the defaults.
 	Redact *redact.Rules
-	// Fingerprint computes the matching fingerprint of a request body after
-	// redaction (spec §5 step 1). It must agree with the one Queues was built
-	// with.
-	Fingerprint func(body []byte) string
+	// Canonicalize returns the canonical form of a request body after
+	// redaction (spec §5 step 1). Its fingerprint must agree with the one
+	// Queues was built with.
+	Canonicalize func(body []byte) []byte
 	// Writer records the new session.
 	Writer *cassette.Writer
 	// Divergence is signaled at a cassette miss. Nil selects the handler's
@@ -57,7 +57,8 @@ type LLMHandler struct {
 // LLM route, as http.StripPrefix leaves them.
 func NewLLMHandler(cfg LLMConfig) *LLMHandler {
 	rc := newRecorder(recorderConfig{channel: llmChannel, upstream: llmUpstream, source: cfg.Source,
-		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence})
+		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence,
+		queues: cfg.Queues, diffForm: cfg.Canonicalize})
 	cfg.Redact = rc.redact
 	return &LLMHandler{cfg: cfg, rc: rc}
 }
@@ -79,20 +80,21 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// matches the stored, redacted copy of the recorded one.
 	stored, err := h.cfg.Redact.Body(body)
 	if err != nil {
-		h.miss(w, start, missResult{}, "the request body cannot be redacted, so it cannot be matched: "+err.Error())
+		h.miss(w, r, start, missResult{}, "the request body cannot be redacted, so it cannot be matched: "+err.Error())
 		return
 	}
-	fp := h.cfg.Fingerprint(stored)
+	fp := match.Fingerprint(h.cfg.Canonicalize(stored))
 	src, ok := h.cfg.Queues.Next(fp)
 	if !ok {
 		res := missResult{ReceivedFingerprint: &fp}
 		if blocked, ok := h.cfg.Queues.Blocked(fp); ok {
 			// No diff for an incomplete recording (spec §5 step 4).
 			res.IncompleteInteraction = &blocked.ID
-			h.miss(w, start, res, fmt.Sprintf("the recording of the matching interaction %d is incomplete; record the session again", blocked.ID))
+			h.miss(w, r, start, res, fmt.Sprintf("the recording of the matching interaction %d is incomplete; record the session again", blocked.ID))
 			return
 		}
-		h.miss(w, start, res, "no recorded request matches this one")
+		res.diff, res.stored = true, stored
+		h.miss(w, r, start, res, "no recorded request matches this one")
 		return
 	}
 	ex := exchange{r: r, start: start, body: body, stored: stored, fp: fp, src: src}
@@ -101,7 +103,8 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := servable(src); err != nil {
-		h.miss(w, start, missResult{ReceivedFingerprint: &fp},
+		// The request matched src, so there is nothing to diff.
+		h.miss(w, r, start, missResult{ReceivedFingerprint: &fp},
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
 		return
 	}
@@ -109,8 +112,8 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // miss handles a cassette miss with steps 1 and 2 of strict (spec §6.2).
-func (h *LLMHandler) miss(w http.ResponseWriter, start time.Time, res missResult, reason string) {
-	msg := h.rc.miss(start, res, reason)
+func (h *LLMHandler) miss(w http.ResponseWriter, r *http.Request, start time.Time, res missResult, reason string) {
+	msg := h.rc.miss(r.Context(), start, res, reason)
 
 	resp, err := json.Marshal(map[string]any{
 		"type":  "error",
