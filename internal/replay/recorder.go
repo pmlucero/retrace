@@ -45,6 +45,7 @@ type recorder struct {
 	clock             Clock
 	log               *slog.Logger
 	divergence        *Divergence
+	strategy          DivergenceStrategy
 	queues            *match.Queues
 	diffForm          func(stored []byte) []byte
 }
@@ -58,6 +59,7 @@ type recorderConfig struct {
 	writer            *cassette.Writer
 	log               *slog.Logger
 	divergence        *Divergence
+	strategy          DivergenceStrategy
 	// queues and diffForm give the reference and the compared form of the
 	// structural diff of a miss (spec §5 step 4). diffForm maps a stored
 	// request body to the form the diff paths are relative to.
@@ -66,12 +68,12 @@ type recorderConfig struct {
 }
 
 // newRecorder returns a recorder for cfg. Nil rules select the defaults, a
-// nil clock the system clock, a nil logger discards and a nil divergence is
-// the recorder's own.
+// nil clock the system clock, a nil logger discards, a nil divergence is
+// the recorder's own and a nil strategy is Strict.
 func newRecorder(cfg recorderConfig) *recorder {
 	rc := &recorder{channel: cfg.channel, upstream: cfg.upstream, source: cfg.source, opts: cfg.opts,
 		redact: cfg.redact, writer: cfg.writer, clock: cfg.opts.Clock, log: cfg.log, divergence: cfg.divergence,
-		queues: cfg.queues, diffForm: cfg.diffForm}
+		strategy: cfg.strategy, queues: cfg.queues, diffForm: cfg.diffForm}
 	if rc.redact == nil {
 		rc.redact = redact.NewRules(nil, nil)
 	}
@@ -83,6 +85,9 @@ func newRecorder(cfg recorderConfig) *recorder {
 	}
 	if rc.divergence == nil {
 		rc.divergence = NewDivergence()
+	}
+	if rc.strategy == nil {
+		rc.strategy = Strict{}
 	}
 	return rc
 }
@@ -244,17 +249,23 @@ type missResult struct {
 	stored []byte
 }
 
-// miss applies step 1 of strict to a cassette miss (spec §6.2): it
-// appends a divergence event, with the structural diff of the request when
-// res has one, and signals the divergence. It returns the event's error,
-// which says why the request missed.
+// miss handles a cassette miss (spec §6.2): it appends a divergence event,
+// with the structural diff of the request when res has one, and asks the
+// strategy how to answer. It returns the event's error, which says why the
+// request missed, for the handler to answer the agent with.
+//
+// No strategy of this version responds to a miss: the reserved ones are
+// rejected before a replay starts (spec §6.3). Until one does, a Respond
+// resolution is logged and aborted like an error, so the agent never gets a
+// response that is not stored with its provenance.
 func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, reason string) string {
 	msg := "retrace: cassette miss: " + reason
 	res.Channel, res.Upstream = rc.channel, rc.upstream
 	res.Diff = []divergence.Entry{}
+	// The event is recorded even when the agent is already gone.
+	ctx = context.WithoutCancel(ctx)
 	if res.diff {
-		// The event is recorded even when the agent is already gone.
-		d := rc.diff(context.WithoutCancel(ctx), res.stored)
+		d := rc.diff(ctx, res.stored)
 		res.Diff, res.DiffTruncated = d.Entries, d.Truncated
 	}
 	result, err := json.Marshal(res)
@@ -266,8 +277,17 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 		Result: result, Status: "divergence", Error: &msg,
 		Provenance: "replayed", DeriverVersion: derive.Version,
 	})
-	rc.divergence.signal()
 	rc.log.Warn("cassette miss", "channel", rc.channel, "upstream", rc.upstream, "reason", reason)
+
+	resolution, err := rc.strategy.OnMiss(ctx, Miss{Channel: rc.channel, Upstream: rc.upstream, Reason: reason})
+	switch {
+	case err != nil:
+		rc.log.Error("divergence strategy failed; aborting the miss", "strategy", rc.strategy.Name(), "error", err)
+	case resolution.Respond != nil:
+		rc.log.Error("divergence strategy responded, which this version does not support; aborting the miss",
+			"strategy", rc.strategy.Name(), "provenance", resolution.Respond.Provenance)
+	}
+	rc.divergence.signal()
 	return msg
 }
 

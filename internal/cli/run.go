@@ -220,9 +220,10 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	}
 	defer ln.Close()
 
+	strategy := replay.Strict{} // the only one parseRunFlags accepts (spec §6.3)
 	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
 		Mode: mode, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
-		Command: command, Cwd: cwd, OnMiss: opts.onMiss,
+		Command: command, Cwd: cwd, OnMiss: strategy.Name(),
 		MCPServers: mcpServersCopy(srcSession.MCPServers), Redaction: srcSession.Redaction, RetraceVersion: Version(),
 		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 	})
@@ -247,13 +248,14 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	mux := http.NewServeMux()
 	mux.Handle("/llm/anthropic/", http.StripPrefix("/llm/anthropic", replay.NewLLMHandler(replay.LLMConfig{
 		Source: src, Queues: queues.llm, Redact: rules, Canonicalize: anthropic.Canonicalize, Writer: w,
-		Divergence: divergence, Logger: log, Options: replayOpts,
+		Divergence: divergence, Strategy: strategy, Logger: log, Options: replayOpts,
 	})))
 	for _, name := range servers {
 		prefix := "/mcp/" + name
 		h := http.StripPrefix(prefix, replay.NewMCPHandler(replay.MCPConfig{
 			Server: name, Source: src, Queues: queues.mcp[name], Redact: rules,
-			Canonicalize: mcpCanonicalize(name), Writer: w, Divergence: divergence, Logger: log, Options: replayOpts,
+			Canonicalize: mcpCanonicalize(name), Writer: w, Divergence: divergence, Strategy: strategy,
+			Logger: log, Options: replayOpts,
 		}))
 		mux.Handle(prefix, h) // the URL the agent got (spec §3.2)
 		mux.Handle(prefix+"/", h)

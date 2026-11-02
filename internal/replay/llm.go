@@ -34,10 +34,12 @@ type LLMConfig struct {
 	Canonicalize func(body []byte) []byte
 	// Writer records the new session.
 	Writer *cassette.Writer
-	// Divergence is signaled at a cassette miss. Nil selects the handler's
-	// own.
+	// Divergence is signaled when a cassette miss ends the replay. Nil
+	// selects the handler's own.
 	Divergence *Divergence
-	Logger     *slog.Logger
+	// Strategy answers cassette misses (spec §6). Nil selects Strict.
+	Strategy DivergenceStrategy
+	Logger   *slog.Logger
 	Options
 }
 
@@ -45,9 +47,9 @@ type LLMConfig struct {
 // (spec §4.1). It records each served interaction in the new session with
 // provenance replayed (spec §4.4), a recorded transport error included,
 // which it answers as the proxy did (spec §5 step 2). On a cassette miss it
-// applies steps 1 and 2 of strict (spec §6.2): it appends a divergence event
-// and answers 422; the caller ends the session as diverged (docs/plan/mvp.md,
-// "Miss handling before strict"). It is safe for concurrent use.
+// appends a divergence event and asks its strategy (spec §6): an aborted
+// miss is answered 422 and signals Diverged, and the caller ends the session
+// as diverged (spec §6.2). It is safe for concurrent use.
 type LLMHandler struct {
 	cfg LLMConfig
 	rc  *recorder
@@ -58,7 +60,7 @@ type LLMHandler struct {
 func NewLLMHandler(cfg LLMConfig) *LLMHandler {
 	rc := newRecorder(recorderConfig{channel: llmChannel, upstream: llmUpstream, source: cfg.Source,
 		opts: cfg.Options, redact: cfg.Redact, writer: cfg.Writer, log: cfg.Logger, divergence: cfg.Divergence,
-		queues: cfg.Queues, diffForm: cfg.Canonicalize})
+		strategy: cfg.Strategy, queues: cfg.Queues, diffForm: cfg.Canonicalize})
 	cfg.Redact = rc.redact
 	return &LLMHandler{cfg: cfg, rc: rc}
 }
@@ -111,7 +113,8 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.rc.serveRecorded(r.Context(), w, ex)
 }
 
-// miss handles a cassette miss with steps 1 and 2 of strict (spec §6.2).
+// miss handles a cassette miss, answering an aborted one with 422 (spec §6.2
+// step 2).
 func (h *LLMHandler) miss(w http.ResponseWriter, r *http.Request, start time.Time, res missResult, reason string) {
 	msg := h.rc.miss(r.Context(), start, res, reason)
 
