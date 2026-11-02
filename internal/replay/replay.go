@@ -19,7 +19,7 @@ import (
 
 // ErrUnservable reports that an interaction holds no complete response to
 // replay: it has no valid status or no headers, its body was not recorded, or
-// its recording is marked incomplete (spec §7.3). Serve returns it before
+// its recording is incomplete (spec §7.3). Serve returns it before
 // writing anything, so the caller can still answer. A recorded transport error
 // is one such interaction: on the LLM channel, LLMHandler answers it with the
 // proxy's 502 rather than through Serve (spec §5 step 2).
@@ -141,8 +141,10 @@ func servable(in cassette.Interaction) error {
 		return fmt.Errorf("serving interaction %d: %w", in.ID, ErrUnservable)
 	}
 	// Matching keeps incomplete recordings out of its queues (spec §5); this
-	// check keeps a truncated stream from being served as a complete one.
-	if cassette.MarksIncomplete(in.Error) {
+	// check keeps a truncated stream from being served as a complete one. It
+	// applies the whole definition of spec §7.3, so a status without a
+	// duration is not served either.
+	if in.Incomplete() {
 		return fmt.Errorf("serving interaction %d: %s: %w", in.ID, cassette.RecordingIncomplete, ErrUnservable)
 	}
 	if !in.Streamed && in.ResponseBlob == nil {
