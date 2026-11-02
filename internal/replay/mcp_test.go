@@ -32,7 +32,9 @@ type mcpRecorded struct {
 	incomplete bool
 }
 
-func mcpFingerprint(body []byte) string { return match.Fingerprint(mcp.Canonicalize(testServer, body)) }
+func mcpCanonicalize(body []byte) []byte { return mcp.Canonicalize(testServer, body) }
+
+func mcpFingerprint(body []byte) string { return match.Fingerprint(mcpCanonicalize(body)) }
 
 // mcpSourceCassette writes recs as the recorded interactions 1..n of a
 // source cassette.
@@ -140,7 +142,7 @@ func newMCPHarness(t *testing.T, src *cassette.Cassette, rules *redact.Rules) *m
 		t.Fatal(err)
 	}
 	h := NewMCPHandler(MCPConfig{Server: testServer, Source: src, Queues: queues, Redact: rules,
-		Fingerprint: mcpFingerprint, Writer: w})
+		Canonicalize: mcpCanonicalize, Writer: w})
 	server := httptest.NewServer(http.StripPrefix("/mcp/"+testServer, h))
 	t.Cleanup(server.Close)
 	return &mcpHarness{t: t, h: h, queues: queues, out: out, w: w, server: server}
@@ -474,6 +476,19 @@ func TestMCPHandlerMiss(t *testing.T) {
 				t.Errorf("recorded %d interactions, want none", len(ins))
 			}
 		})
+	}
+}
+
+// AC-15: a changed tool argument is reported at its path in the JSON-RPC
+// message, without the server name (spec §5 step 4).
+func TestMCPHandlerMissDiff(t *testing.T) {
+	const rec = `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"search_orders","arguments":{"customer_id":"c_812","status":"open"}}}`
+	m := newMCPHarness(t, mcpSourceCassette(t, mcpRecorded{request: rec, body: `{}`}), nil)
+	m.post("", `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"search_orders","arguments":{"customer_id":"c_812"}}}`)
+	_, events := m.stop()
+	res := divergenceOn(t, events, "mcp", "mcp:fs")
+	if got, want := diffJSON(t, res), `[{"expected":"open","path":"$.params.arguments.status"}]`; got != want {
+		t.Errorf("diff %s, want %s", got, want)
 	}
 }
 

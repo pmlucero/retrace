@@ -11,6 +11,8 @@ import (
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
+	"github.com/pmlucero/retrace/internal/divergence"
+	"github.com/pmlucero/retrace/internal/match"
 	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
 )
@@ -43,6 +45,8 @@ type recorder struct {
 	clock             Clock
 	log               *slog.Logger
 	divergence        *Divergence
+	queues            *match.Queues
+	diffForm          func(stored []byte) []byte
 }
 
 // recorderConfig is what a handler shares with its recorder.
@@ -54,6 +58,11 @@ type recorderConfig struct {
 	writer            *cassette.Writer
 	log               *slog.Logger
 	divergence        *Divergence
+	// queues and diffForm give the reference and the compared form of the
+	// structural diff of a miss (spec §5 step 4). diffForm maps a stored
+	// request body to the form the diff paths are relative to.
+	queues   *match.Queues
+	diffForm func(stored []byte) []byte
 }
 
 // newRecorder returns a recorder for cfg. Nil rules select the defaults, a
@@ -61,7 +70,8 @@ type recorderConfig struct {
 // the recorder's own.
 func newRecorder(cfg recorderConfig) *recorder {
 	rc := &recorder{channel: cfg.channel, upstream: cfg.upstream, source: cfg.source, opts: cfg.opts,
-		redact: cfg.redact, writer: cfg.writer, clock: cfg.opts.Clock, log: cfg.log, divergence: cfg.divergence}
+		redact: cfg.redact, writer: cfg.writer, clock: cfg.opts.Clock, log: cfg.log, divergence: cfg.divergence,
+		queues: cfg.queues, diffForm: cfg.diffForm}
 	if rc.redact == nil {
 		rc.redact = redact.NewRules(nil, nil)
 	}
@@ -220,29 +230,31 @@ func (rc *recorder) answerUnmatched(w http.ResponseWriter, ex exchange, status i
 
 // missResult is the result of a divergence event (spec §7.4).
 type missResult struct {
-	Channel               string     `json:"channel"`
-	Upstream              string     `json:"upstream"`
-	ReceivedFingerprint   *string    `json:"received_fingerprint"`
-	Diff                  []diffItem `json:"diff"`
-	IncompleteInteraction *int64     `json:"incomplete_interaction,omitempty"`
-}
+	Channel               string             `json:"channel"`
+	Upstream              string             `json:"upstream"`
+	ReceivedFingerprint   *string            `json:"received_fingerprint"`
+	Diff                  []divergence.Entry `json:"diff"`
+	DiffTruncated         bool               `json:"diff_truncated,omitempty"`
+	IncompleteInteraction *int64             `json:"incomplete_interaction,omitempty"`
 
-// diffItem is one entry of the structural diff of a miss (spec §5 step 4).
-// The diff is empty until M5 (docs/plan/mvp.md, "Miss handling before
-// strict").
-type diffItem struct {
-	Path     string          `json:"path"`
-	Expected json.RawMessage `json:"expected"`
-	Received json.RawMessage `json:"received"`
+	// stored is the redacted body of a request that matched no recorded
+	// one. It is set only when the miss has a diff (spec §5 step 4).
+	stored []byte
 }
 
 // miss applies step 1 of strict to a cassette miss (spec §6.2): it
-// appends a divergence event and signals the divergence. It returns the
-// event's error, which says why the request missed.
-func (rc *recorder) miss(start time.Time, res missResult, reason string) string {
+// appends a divergence event, with the structural diff of the request when
+// res has one, and signals the divergence. It returns the event's error,
+// which says why the request missed.
+func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, reason string) string {
 	msg := "retrace: cassette miss: " + reason
 	res.Channel, res.Upstream = rc.channel, rc.upstream
-	res.Diff = []diffItem{}
+	res.Diff = []divergence.Entry{}
+	if res.stored != nil {
+		// The event is recorded even when the agent is already gone.
+		d := rc.diff(context.WithoutCancel(ctx), res.stored)
+		res.Diff, res.DiffTruncated = d.Entries, d.Truncated
+	}
 	result, err := json.Marshal(res)
 	if err != nil {
 		result = nil // a struct of strings and numbers always marshals; unreachable
@@ -255,6 +267,28 @@ func (rc *recorder) miss(start time.Time, res missResult, reason string) string 
 	rc.divergence.signal()
 	rc.log.Warn("cassette miss", "channel", rc.channel, "upstream", rc.upstream, "reason", reason)
 	return msg
+}
+
+// diff compares a request that missed with the next unconsumed recorded
+// request on the same channel and server (spec §5 step 4). Both are stored,
+// redacted bodies. The recorded one is canonicalized again, as the queues
+// were built from it. With no reference, or one that cannot be read, the
+// diff is empty.
+func (rc *recorder) diff(ctx context.Context, stored []byte) divergence.Diff {
+	empty := divergence.Diff{Entries: []divergence.Entry{}}
+	if rc.queues == nil || rc.diffForm == nil {
+		return empty
+	}
+	ref, ok := rc.queues.NextUnconsumed(func(cassette.Interaction) bool { return true })
+	if !ok || ref.RequestBlob == nil {
+		return empty
+	}
+	recorded, err := rc.source.Blob(ctx, *ref.RequestBlob)
+	if err != nil {
+		rc.log.Warn("cannot read the recorded request for the miss diff", "interaction", ref.ID, "error", err)
+		return empty
+	}
+	return divergence.Compare(rc.diffForm(recorded), rc.diffForm(stored))
 }
 
 // servedResponse records one replayed response in the new session as serve

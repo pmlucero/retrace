@@ -214,7 +214,7 @@ func TestQueuesNextUnconsumed(t *testing.T) {
 		rec(4, "llm", "d"),
 	}
 	isLLM := func(in cassette.Interaction) bool { return in.Channel == "llm" }
-	notC := func(in cassette.Interaction) bool { return *in.Fingerprint != "c" }
+	notB := func(in cassette.Interaction) bool { return *in.Fingerprint != "b" }
 
 	q := NewQueues(recorded, storedFingerprint)
 	steps := []struct {
@@ -224,10 +224,13 @@ func TestQueuesNextUnconsumed(t *testing.T) {
 	}{
 		{keep: isLLM, want: 1},
 		{keep: isLLM, want: 1}, // looking does not consume
-		{consume: "a", keep: isLLM, want: 3},
-		{keep: notC, want: 4},
-		{consume: "d", keep: notC, want: 0},
-		{consume: "c", keep: isLLM, want: 0},
+		// An incomplete interaction is a candidate: its request is stored
+		// (spec §5 step 4).
+		{consume: "a", keep: isLLM, want: 2},
+		{keep: notB, want: 3},
+		{consume: "c", keep: notB, want: 4},
+		{consume: "d", keep: notB, want: 0},
+		{keep: isLLM, want: 2}, // never consumed: it blocks its queue
 	}
 	for i, s := range steps {
 		if s.consume != "" {

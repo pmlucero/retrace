@@ -246,14 +246,14 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	replayOpts := replay.Options{Realtime: opts.realtime}
 	mux := http.NewServeMux()
 	mux.Handle("/llm/anthropic/", http.StripPrefix("/llm/anthropic", replay.NewLLMHandler(replay.LLMConfig{
-		Source: src, Queues: queues.llm, Redact: rules, Fingerprint: llmFingerprint, Writer: w,
+		Source: src, Queues: queues.llm, Redact: rules, Canonicalize: anthropic.Canonicalize, Writer: w,
 		Divergence: divergence, Logger: log, Options: replayOpts,
 	})))
 	for _, name := range servers {
 		prefix := "/mcp/" + name
 		h := http.StripPrefix(prefix, replay.NewMCPHandler(replay.MCPConfig{
 			Server: name, Source: src, Queues: queues.mcp[name], Redact: rules,
-			Fingerprint: mcpFingerprint(name), Writer: w, Divergence: divergence, Logger: log, Options: replayOpts,
+			Canonicalize: mcpCanonicalize(name), Writer: w, Divergence: divergence, Logger: log, Options: replayOpts,
 		}))
 		mux.Handle(prefix, h) // the URL the agent got (spec §3.2)
 		mux.Handle(prefix+"/", h)
@@ -286,10 +286,10 @@ func llmFingerprint(body []byte) string {
 	return match.Fingerprint(anthropic.Canonicalize(body))
 }
 
-// mcpFingerprint returns the matching fingerprint of a request body sent to
-// MCP server name, after redaction (spec §5 step 1).
-func mcpFingerprint(name string) func(body []byte) string {
-	return func(body []byte) string { return match.Fingerprint(mcp.Canonicalize(name, body)) }
+// mcpCanonicalize returns the canonical form of a request body sent to MCP
+// server name, after redaction (spec §5 step 1).
+func mcpCanonicalize(name string) func(body []byte) []byte {
+	return func(body []byte) []byte { return mcp.Canonicalize(name, body) }
 }
 
 // mcpServerNames returns the names of the source session's MCP servers
@@ -378,7 +378,7 @@ func replayQueues(ctx context.Context, src *cassette.Cassette, servers []string)
 		case in.Channel == "llm":
 			keys[in.ID] = key{route, llmFingerprint(body)}
 		case !replay.AnsweredWithoutMatching(in.HTTPMethod, body):
-			keys[in.ID] = key{route, mcpFingerprint(route)(body)}
+			keys[in.ID] = key{route, match.Fingerprint(mcp.Canonicalize(route, body))}
 		}
 	}
 	queuesOf := func(route string) *match.Queues {
