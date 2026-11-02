@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"bytes"
 	"slices"
 
 	"github.com/pmlucero/retrace/internal/jsonvalue"
@@ -114,4 +115,28 @@ func canonicalMessage(m Message) (jsonvalue.Value, error) {
 	}
 	obj.Members = append(obj.Members, jsonvalue.Member{Key: key, Value: v})
 	return obj, nil
+}
+
+// DiffForm returns the part of a canonical form that a miss diff compares
+// (spec §5 step 4): the canonical message, the array of a batch's canonical
+// messages, or the canonical body, without the server name both sides share.
+// For a body fingerprinted over its raw bytes, it is the body as it is.
+func DiffForm(canonical []byte) []byte {
+	v, err := jsonvalue.Decode(canonical)
+	if err != nil {
+		// The raw form: the server name as a JSON string, which holds no
+		// raw newline, then a newline and the body.
+		if i := bytes.IndexByte(canonical, '\n'); i >= 0 {
+			return canonical[i+1:]
+		}
+		return canonical
+	}
+	if obj, ok := v.(*jsonvalue.Object); ok {
+		for _, m := range obj.Members {
+			if m.Key == "message" || m.Key == "batch" || m.Key == "body" {
+				return jsonvalue.EncodeCanonical(m.Value)
+			}
+		}
+	}
+	return canonical
 }
