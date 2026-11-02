@@ -237,8 +237,10 @@ type missResult struct {
 	DiffTruncated         bool               `json:"diff_truncated,omitempty"`
 	IncompleteInteraction *int64             `json:"incomplete_interaction,omitempty"`
 
-	// stored is the redacted body of a request that matched no recorded
-	// one. It is set only when the miss has a diff (spec §5 step 4).
+	// diff is set when the miss has a structural diff (spec §5 step 4):
+	// the request matched no recorded one. stored is then its redacted
+	// body.
+	diff   bool
 	stored []byte
 }
 
@@ -250,7 +252,7 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 	msg := "retrace: cassette miss: " + reason
 	res.Channel, res.Upstream = rc.channel, rc.upstream
 	res.Diff = []divergence.Entry{}
-	if res.stored != nil {
+	if res.diff {
 		// The event is recorded even when the agent is already gone.
 		d := rc.diff(context.WithoutCancel(ctx), res.stored)
 		res.Diff, res.DiffTruncated = d.Entries, d.Truncated
@@ -272,21 +274,26 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 // diff compares a request that missed with the next unconsumed recorded
 // request on the same channel and server (spec §5 step 4). Both are stored,
 // redacted bodies. The recorded one is canonicalized again, as the queues
-// were built from it. With no reference, or one that cannot be read, the
-// diff is empty.
+// were built from it: a recorded request with no stored body was queued as
+// an empty body, so it is compared as one. With no reference, or one that
+// cannot be read, the diff is empty.
 func (rc *recorder) diff(ctx context.Context, stored []byte) divergence.Diff {
 	empty := divergence.Diff{Entries: []divergence.Entry{}}
 	if rc.queues == nil || rc.diffForm == nil {
 		return empty
 	}
-	ref, ok := rc.queues.NextUnconsumed(func(cassette.Interaction) bool { return true })
-	if !ok || ref.RequestBlob == nil {
+	ref, ok := rc.queues.NextUnconsumed()
+	if !ok {
+		rc.log.Debug("no recorded request left to diff the miss against")
 		return empty
 	}
-	recorded, err := rc.source.Blob(ctx, *ref.RequestBlob)
-	if err != nil {
-		rc.log.Warn("cannot read the recorded request for the miss diff", "interaction", ref.ID, "error", err)
-		return empty
+	var recorded []byte
+	if ref.RequestBlob != nil {
+		var err error
+		if recorded, err = rc.source.Blob(ctx, *ref.RequestBlob); err != nil {
+			rc.log.Warn("cannot read the recorded request for the miss diff", "interaction", ref.ID, "error", err)
+			return empty
+		}
 	}
 	return divergence.Compare(rc.diffForm(recorded), rc.diffForm(stored))
 }

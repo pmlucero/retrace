@@ -280,12 +280,6 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	return res.exitCode()
 }
 
-// llmFingerprint is the matching fingerprint of an LLM request body, after
-// redaction (spec §5 step 1).
-func llmFingerprint(body []byte) string {
-	return match.Fingerprint(anthropic.Canonicalize(body))
-}
-
 // mcpCanonicalize returns the canonical form of a request body sent to MCP
 // server name, after redaction (spec §5 step 1).
 func mcpCanonicalize(name string) func(body []byte) []byte {
@@ -376,7 +370,7 @@ func replayQueues(ctx context.Context, src *cassette.Cassette, servers []string)
 		}
 		switch {
 		case in.Channel == "llm":
-			keys[in.ID] = key{route, llmFingerprint(body)}
+			keys[in.ID] = key{route, match.Fingerprint(anthropic.Canonicalize(body))}
 		case !replay.AnsweredWithoutMatching(in.HTTPMethod, body):
 			keys[in.ID] = key{route, match.Fingerprint(mcp.Canonicalize(route, body))}
 		}

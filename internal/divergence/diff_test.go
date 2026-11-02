@@ -25,6 +25,9 @@ func TestCompare(t *testing.T) {
 			`[{"path":"$.b","expected":1},{"path":"$.c","expected":2,"received":3},{"path":"$.a","received":0}]`},
 		{"different types", `{"a":{"b":1}}`, `{"a":[1]}`,
 			`[{"path":"$.a","expected":{"b":1},"received":[1]}]`},
+		{"bool", `{"a":true,"b":false}`, `{"a":true,"b":true}`,
+			`[{"path":"$.b","expected":false,"received":true}]`},
+		{"duplicate keys: the first one is compared", `{"a":1,"a":2}`, `{"a":1,"a":3}`, `[]`},
 		{"null against a value", `{"a":null}`, `{"a":0}`,
 			`[{"path":"$.a","expected":null,"received":0}]`},
 		{"number text", `{"a":1.0}`, `{"a":1}`,
@@ -81,6 +84,24 @@ func TestCompareCapsEntries(t *testing.T) {
 			t.Errorf("%d differences: entries from %s to %s, want the first %d in order",
 				n, d.Entries[0].Path, d.Entries[len(d.Entries)-1].Path, MaxEntries)
 		}
+	}
+}
+
+// A large differing array stops being walked once the cap is reached.
+func TestCompareCapsNestedEntries(t *testing.T) {
+	elems := func(n int, v string) string {
+		parts := make([]string, n)
+		for i := range parts {
+			parts[i] = `{"a":` + v + `}`
+		}
+		return "[" + strings.Join(parts, ",") + "]"
+	}
+	d := Compare([]byte(elems(60, "1")), []byte(elems(60, "2")))
+	if len(d.Entries) != MaxEntries || !d.Truncated {
+		t.Fatalf("%d entries, Truncated %v; want %d and true", len(d.Entries), d.Truncated, MaxEntries)
+	}
+	if last := d.Entries[MaxEntries-1].Path; last != fmt.Sprintf("$[%d].a", MaxEntries-1) {
+		t.Errorf("last path %s, want $[%d].a", last, MaxEntries-1)
 	}
 }
 

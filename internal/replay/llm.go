@@ -93,7 +93,7 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.miss(w, r, start, res, fmt.Sprintf("the recording of the matching interaction %d is incomplete; record the session again", blocked.ID))
 			return
 		}
-		res.stored = stored
+		res.diff, res.stored = true, stored
 		h.miss(w, r, start, res, "no recorded request matches this one")
 		return
 	}
