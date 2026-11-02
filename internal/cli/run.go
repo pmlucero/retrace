@@ -282,6 +282,12 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	if err != nil {
 		return ExitError
 	}
+	if res.status == "diverged" {
+		if first, misses, ok := divergence.Report(); ok {
+			divergenceReport{source: opts.source, replay: id, first: first, misses: misses,
+				droppedEvents: res.stats.DroppedEvents}.write(env.Stderr)
+		}
+	}
 	warnUnconsumed(env, queues.unconsumed())
 	log.Info("session replayed", "session", id, "source", opts.source, "status", res.status, "cassette", path)
 	return res.exitCode()

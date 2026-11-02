@@ -1,0 +1,7 @@
+retrace: replay checkout.exact.1 diverged from checkout
+  first miss: mcp:orders tools/call search_orders
+    $.params.arguments.status: "open" → (missing)
+    $.params.arguments.limit: (missing) → 10
+    $.params.arguments.query: {"a":[1,2]} → "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…
+  misses: 2
+  compare: retrace diff checkout checkout.exact.1

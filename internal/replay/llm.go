@@ -116,6 +116,8 @@ func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // miss handles a cassette miss, answering an aborted one with 422 (spec §6.2
 // step 2).
 func (h *LLMHandler) miss(w http.ResponseWriter, r *http.Request, start time.Time, res missResult, reason string) {
+	// The path without its query, which may hold a credential.
+	res.request = r.Method + " " + r.URL.Path
 	msg := h.rc.miss(r.Context(), start, res, reason)
 
 	resp, err := json.Marshal(map[string]any{

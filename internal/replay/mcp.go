@@ -111,7 +111,7 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	fp := match.Fingerprint(h.cfg.Canonicalize(stored))
 	src, ok := h.cfg.Queues.Next(fp)
 	if !ok {
-		res := missResult{ReceivedFingerprint: &fp}
+		res := missResult{ReceivedFingerprint: &fp, stored: stored}
 		if blocked, ok := h.cfg.Queues.Blocked(fp); ok {
 			// No diff for an incomplete recording (spec §5 step 4).
 			res.IncompleteInteraction = &blocked.ID
@@ -129,7 +129,7 @@ func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := servable(src); err != nil {
 		// The request matched src, so there is nothing to diff.
-		h.miss(w, r, start, body, missResult{ReceivedFingerprint: &fp},
+		h.miss(w, r, start, body, missResult{ReceivedFingerprint: &fp, stored: stored},
 			fmt.Sprintf("the matching interaction %d has no recorded response to replay", src.ID))
 		return
 	}
@@ -269,6 +269,9 @@ func (h *MCPHandler) issue() string {
 // 2) with a JSON-RPC error -32099 that has each incoming request's id, or
 // null when it cannot be read (spec §5 step 3, AC-31).
 func (h *MCPHandler) miss(w http.ResponseWriter, r *http.Request, start time.Time, body []byte, res missResult, reason string) {
+	if res.ReceivedFingerprint != nil { // the body was redacted, into res.stored
+		res.request = requestName(res.stored)
+	}
 	h.rc.miss(r.Context(), start, res, reason)
 
 	errObj := map[string]any{"code": missCode, "message": "retrace: cassette miss", "data": reason}
@@ -297,4 +300,26 @@ func (h *MCPHandler) miss(w http.ResponseWriter, r *http.Request, start time.Tim
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(b) // the agent may be gone; the miss is already recorded
+}
+
+// requestName names a stored MCP request body in the divergence report: its
+// JSON-RPC method, with the tool name for tools/call, or batch (spec §6.4).
+// It is empty when the body holds no single request it can read.
+func requestName(stored []byte) string {
+	parsed, err := mcp.ParseBody(stored)
+	switch {
+	case err != nil:
+		return ""
+	case parsed.Batch:
+		return "batch"
+	case len(parsed.Messages) != 1:
+		return ""
+	}
+	m := parsed.Messages[0]
+	if m.Method == mcp.MethodToolsCall {
+		if call, err := mcp.ParseToolCall(m.Params); err == nil && call.Name != "" {
+			return m.Method + " " + call.Name
+		}
+	}
+	return m.Method
 }

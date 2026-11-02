@@ -18,11 +18,16 @@ import (
 )
 
 // Divergence signals the first cassette miss of a replay, on any channel or
-// upstream: the replay then ends as diverged (spec §6.2). The handlers of one
-// replay share it. It is safe for concurrent use.
+// upstream: the replay then ends as diverged (spec §6.2). It also keeps what
+// the divergence report needs (spec §6.4). The handlers of one replay share
+// it. It is safe for concurrent use.
 type Divergence struct {
 	once sync.Once
 	ch   chan struct{}
+
+	mu     sync.Mutex
+	first  *MissReport
+	misses int
 }
 
 // NewDivergence returns a Divergence that has not been signaled.
@@ -31,7 +36,52 @@ func NewDivergence() *Divergence { return &Divergence{ch: make(chan struct{})} }
 // Done is closed at the first cassette miss.
 func (d *Divergence) Done() <-chan struct{} { return d.ch }
 
+// Report returns the first miss of the replay and how many misses it had,
+// or false when it had none.
+func (d *Divergence) Report() (first MissReport, misses int, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.first == nil {
+		return MissReport{}, 0, false
+	}
+	return *d.first, d.misses, true
+}
+
+func (d *Divergence) record(m MissReport) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.first == nil {
+		d.first = &m
+	}
+	d.misses++
+}
+
 func (d *Divergence) signal() { d.once.Do(func() { close(d.ch) }) }
+
+// MissReport is what the divergence report shows of a miss (spec §6.4),
+// taken from the data of its divergence event, so it holds no unredacted
+// value.
+type MissReport struct {
+	// Upstream is the miss's upstream: anthropic, or mcp:<server>.
+	Upstream string
+	// Request names the request: the HTTP method and path for the LLM; the
+	// JSON-RPC method, with the tool name for tools/call, or batch, for
+	// MCP. It is empty when the request could not be read.
+	Request       string
+	Diff          []divergence.Entry
+	DiffTruncated bool
+	// NoDiff says why Diff is empty, when it is.
+	NoDiff string
+}
+
+// Why a miss has no diff (spec §6.4).
+const (
+	NoDiffIncomplete   = "the matching recording is incomplete; record the session again"
+	NoDiffUnredactable = "the request could not be redacted"
+	NoDiffNoReference  = "no recorded request was left to compare against"
+	NoDiffUnreadable   = "the recorded request could not be read"
+	NoDiffEqual        = "the request is the same as the recorded one"
+)
 
 // recorder records what one replay handler answers in the new session: the
 // exchanges it serves and the cassette misses (spec §4.4, §6.2 step 1). It
@@ -247,6 +297,8 @@ type missResult struct {
 	// body.
 	diff   bool
 	stored []byte
+	// request names the request in the divergence report (spec §6.4).
+	request string
 }
 
 // miss handles a cassette miss (spec §6.2): it appends a divergence event,
@@ -265,10 +317,24 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 	// The event is recorded even when the agent is already gone. The
 	// strategy keeps the request's context: what it does is for the agent.
 	recordCtx := context.WithoutCancel(ctx)
-	if res.diff {
-		d := rc.diff(recordCtx, res.stored)
+	report := MissReport{Upstream: rc.upstream, Request: res.request}
+	switch {
+	case res.diff:
+		var d divergence.Diff
+		d, report.NoDiff = rc.diff(recordCtx, res.stored)
 		res.Diff, res.DiffTruncated = d.Entries, d.Truncated
+		if report.NoDiff == "" && len(d.Entries) == 0 {
+			report.NoDiff = NoDiffEqual
+		}
+	case res.IncompleteInteraction != nil:
+		report.NoDiff = NoDiffIncomplete
+	case res.ReceivedFingerprint == nil:
+		report.NoDiff = NoDiffUnredactable
+	default:
+		// It matched a recorded request that has no response to replay.
+		report.NoDiff = NoDiffEqual
 	}
+	report.Diff, report.DiffTruncated = res.Diff, res.DiffTruncated
 	result, err := json.Marshal(res)
 	if err != nil {
 		result = nil // a struct of strings and numbers always marshals; unreachable
@@ -278,6 +344,7 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 		Result: result, Status: "divergence", Error: &msg,
 		Provenance: "replayed", DeriverVersion: derive.Version,
 	})
+	rc.divergence.record(report)
 	rc.log.Warn("cassette miss", "channel", rc.channel, "upstream", rc.upstream, "reason", reason)
 
 	resolution, err := rc.strategy.OnMiss(ctx, Miss{Channel: rc.channel, Upstream: rc.upstream, Reason: reason})
@@ -297,26 +364,26 @@ func (rc *recorder) miss(ctx context.Context, start time.Time, res missResult, r
 // redacted bodies. The recorded one is canonicalized again, as the queues
 // were built from it: a recorded request with no stored body was queued as
 // an empty body, so it is compared as one. With no reference, or one that
-// cannot be read, the diff is empty.
-func (rc *recorder) diff(ctx context.Context, stored []byte) divergence.Diff {
+// cannot be read, the diff is empty and the reason says why.
+func (rc *recorder) diff(ctx context.Context, stored []byte) (divergence.Diff, string) {
 	empty := divergence.Diff{Entries: []divergence.Entry{}}
 	if rc.queues == nil || rc.diffForm == nil {
-		return empty
+		return empty, NoDiffNoReference
 	}
 	ref, ok := rc.queues.NextUnconsumed()
 	if !ok {
 		rc.log.Debug("no recorded request left to diff the miss against")
-		return empty
+		return empty, NoDiffNoReference
 	}
 	var recorded []byte
 	if ref.RequestBlob != nil {
 		var err error
 		if recorded, err = rc.source.Blob(ctx, *ref.RequestBlob); err != nil {
 			rc.log.Warn("cannot read the recorded request for the miss diff", "interaction", ref.ID, "error", err)
-			return empty
+			return empty, NoDiffUnreadable
 		}
 	}
-	return divergence.Compare(rc.diffForm(recorded), rc.diffForm(stored))
+	return divergence.Compare(rc.diffForm(recorded), rc.diffForm(stored)), ""
 }
 
 // servedResponse records one replayed response in the new session as serve
