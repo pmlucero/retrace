@@ -55,7 +55,7 @@ func jsonInteraction(t *testing.T, status int, h http.Header, body []byte) (cass
 	t.Helper()
 	key := cassette.BlobKey(body)
 	in := cassette.Interaction{
-		ID: 1, Channel: "llm", StatusCode: &status,
+		ID: 1, Channel: "llm", StatusCode: &status, DurationMillis: duration(10),
 		ResponseHeaders: headersJSON(t, h), ResponseBlob: &key,
 	}
 	return in, &fakeSource{blobs: map[string][]byte{key: body}}
@@ -75,7 +75,7 @@ func sseInteraction(t *testing.T, chunks []cassette.Chunk) (cassette.Interaction
 	t.Helper()
 	status := http.StatusOK
 	in := cassette.Interaction{
-		ID: 7, Channel: "llm", StatusCode: &status, Streamed: true,
+		ID: 7, Channel: "llm", StatusCode: &status, Streamed: true, DurationMillis: duration(1500),
 		ResponseHeaders: headersJSON(t, http.Header{
 			"Content-Type": {"text/event-stream; charset=utf-8"},
 			"Request-Id":   {"req_1"},
@@ -83,6 +83,10 @@ func sseInteraction(t *testing.T, chunks []cassette.Chunk) (cassette.Interaction
 	}
 	return in, &fakeSource{chunks: map[int64][]cassette.Chunk{7: chunks}}
 }
+
+// duration returns a recorded duration: an interaction without one is an
+// incomplete recording (spec §7.3), which Serve refuses.
+func duration(ms int64) *int64 { return &ms }
 
 func concat(chunks []cassette.Chunk) []byte {
 	var b []byte
@@ -477,6 +481,7 @@ func TestServeErrorsWriteNothing(t *testing.T) {
 	key := cassette.BlobKey([]byte("x"))
 	src := &fakeSource{blobs: map[string][]byte{key: []byte("x")}}
 	incomplete := "an SSE event was dropped; " + cassette.RecordingIncomplete
+	d := duration(10)
 	boom := errors.New("disk on fire")
 	tests := []struct {
 		name string
@@ -484,19 +489,20 @@ func TestServeErrorsWriteNothing(t *testing.T) {
 		src  *fakeSource
 		want error // nil accepts any error
 	}{
-		{"no status", cassette.Interaction{ResponseHeaders: hdr}, &fakeSource{}, ErrUnservable},
-		{"status below 100", cassette.Interaction{StatusCode: code(99), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
-		{"informational status", cassette.Interaction{StatusCode: code(103), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
-		{"status above 999", cassette.Interaction{StatusCode: code(1000), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
-		{"malformed headers", cassette.Interaction{StatusCode: &status, ResponseHeaders: json.RawMessage("not json"),
+		{"no status", cassette.Interaction{DurationMillis: d, ResponseHeaders: hdr}, &fakeSource{}, ErrUnservable},
+		{"status below 100", cassette.Interaction{DurationMillis: d, StatusCode: code(99), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"informational status", cassette.Interaction{DurationMillis: d, StatusCode: code(103), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"status above 999", cassette.Interaction{DurationMillis: d, StatusCode: code(1000), ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"malformed headers", cassette.Interaction{DurationMillis: d, StatusCode: &status, ResponseHeaders: json.RawMessage("not json"),
 			ResponseBlob: &key}, src, nil},
-		{"recording incomplete", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr, Streamed: true,
+		{"recording incomplete", cassette.Interaction{DurationMillis: d, StatusCode: &status, ResponseHeaders: hdr, Streamed: true,
 			Error: &incomplete}, &fakeSource{}, ErrUnservable},
-		{"no headers", cassette.Interaction{StatusCode: &status}, &fakeSource{}, ErrUnservable},
-		{"body not recorded", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr}, &fakeSource{}, ErrUnservable},
-		{"blob missing", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr, ResponseBlob: &key},
+		{"no duration", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr, ResponseBlob: &key}, src, ErrUnservable},
+		{"no headers", cassette.Interaction{DurationMillis: d, StatusCode: &status}, &fakeSource{}, ErrUnservable},
+		{"body not recorded", cassette.Interaction{DurationMillis: d, StatusCode: &status, ResponseHeaders: hdr}, &fakeSource{}, ErrUnservable},
+		{"blob missing", cassette.Interaction{DurationMillis: d, StatusCode: &status, ResponseHeaders: hdr, ResponseBlob: &key},
 			&fakeSource{}, cassette.ErrNotFound},
-		{"chunks unreadable", cassette.Interaction{StatusCode: &status, ResponseHeaders: hdr, Streamed: true},
+		{"chunks unreadable", cassette.Interaction{DurationMillis: d, StatusCode: &status, ResponseHeaders: hdr, Streamed: true},
 			&fakeSource{err: boom}, boom},
 	}
 	for _, tt := range tests {
