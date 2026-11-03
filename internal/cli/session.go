@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -18,14 +17,15 @@ import (
 const finishTimeout = 10 * time.Second
 
 // insertSession writes a new cassette's session row. It is a variable so that
-// tests can make the insert fail.
+// tests can make the insert fail. Tests that replace it must not run in
+// parallel with tests that create sessions.
 var insertSession = (*cassette.Tx).InsertSession
 
 // createSessionCassette creates the cassette at path with session row s. If
 // the row cannot be written, it closes and removes the file, so a failed start
 // leaves no cassette without a session and the id stays free (#56). Errors
 // from cassette.Create are wrapped, so callers can test for
-// cassette.ErrExists.
+// cassette.ErrExists. Errors name the path or the session already.
 func createSessionCassette(ctx context.Context, path string, s cassette.Session) (*cassette.Cassette, error) {
 	c, err := cassette.Create(ctx, path)
 	if err != nil {
@@ -34,7 +34,7 @@ func createSessionCassette(ctx context.Context, path string, s cassette.Session)
 	if err := c.Write(ctx, func(tx *cassette.Tx) error { return insertSession(tx, ctx, s) }); err != nil {
 		// Create made this file (it refuses an existing one), so removing it
 		// cannot touch another session's cassette.
-		return nil, errors.Join(fmt.Errorf("writing session %s: %w", s.ID, err), c.Close(), cassette.Remove(path))
+		return nil, errors.Join(err, c.Close(), cassette.Remove(path))
 	}
 	return c, nil
 }

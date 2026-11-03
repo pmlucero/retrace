@@ -573,7 +573,7 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 			return nil, "", fmt.Errorf("session %q already exists in %s", id, dir)
 		}
 		if err != nil {
-			return nil, "", fmt.Errorf("creating session %s: %w", id, err)
+			return nil, "", err
 		}
 		return c, id, nil
 	}
