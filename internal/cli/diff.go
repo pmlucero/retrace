@@ -28,7 +28,7 @@ var diffCommand = command{
 	run:     runDiff,
 }
 
-const diffUsage = `Usage: retrace diff <id-a> <id-b> [--text]
+const diffUsage = `Usage: retrace diff <id-a> <id-b> [--format text|json] [--text]
 
 Compares the trajectories of sessions <id-a> and <id-b>: their tool calls,
 tool results and stops, step by step. It prints both sessions' totals, the
@@ -36,20 +36,33 @@ first divergence, if any, and how many steps were identical before it.
 Model text is not compared unless --text is given. Costs are estimates from
 retrace's price table.
 
+--format json prints the same information as one JSON document, whose
+schema is docs/schema/diff.v1.json in the retrace repository.
+
 Exit codes: 0 identical, 1 the trajectories differ, 2 an error.
 
 Flags:
-  --text   also compare the text of each model response
+  --format text|json   the output format (default text)
+  --text               also compare the text of each model response
 `
 
 // runDiff implements `retrace diff` (spec §8, §9.4).
 func runDiff(ctx context.Context, env *Env, args []string) int {
 	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), diffUsage) }
+	format := fs.String("format", "text", "")
 	text := fs.Bool("text", false, "")
 	positional, code, ok := parseWithPositional(fs, args, env)
 	if !ok {
 		return code
+	}
+	write := diffReport.writeText
+	switch *format {
+	case "text":
+	case "json":
+		write = diffReport.writeJSON
+	default:
+		return usageError(env.Stderr, fmt.Sprintf("--format %q: want text or json", *format))
 	}
 	if len(positional) != 2 {
 		return usageError(env.Stderr, "diff needs exactly two session ids")
@@ -73,7 +86,7 @@ func runDiff(ctx context.Context, env *Env, args []string) int {
 	}
 
 	r := newDiffReport(sides[0], sides[1], diff.Options{Text: *text})
-	if err := r.writeText(env.Stdout); err != nil {
+	if err := write(r, env.Stdout); err != nil {
 		env.Logger.Error("cannot write the diff", "error", err)
 		return ExitUsage
 	}
@@ -105,15 +118,16 @@ func (s diffSide) stopped() bool {
 // diffReport is what `retrace diff` reports. It is built once, so that each
 // output format only writes it.
 type diffReport struct {
-	a, b   diffSide
-	result diff.Result
+	a, b         diffSide
+	result       diff.Result
+	textCompared bool // --text
 }
 
 func newDiffReport(a, b diffSide, opts diff.Options) diffReport {
 	res := diff.Compare(a.trajectory, b.trajectory, opts)
 	a.diverged, a.divergedStep = res.DivergedA, stepOf(a.trajectory, res.DivergedA)
 	b.diverged, b.divergedStep = res.DivergedB, stepOf(b.trajectory, res.DivergedB)
-	return diffReport{a: a, b: b, result: res}
+	return diffReport{a: a, b: b, result: res, textCompared: opts.Text}
 }
 
 // stepOf returns the number of the step that holds divergence event e, or 0.

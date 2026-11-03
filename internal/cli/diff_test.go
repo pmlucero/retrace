@@ -94,26 +94,29 @@ func seedSwap(t *testing.T, dir, id string) {
 	)
 }
 
-// AC-20, AC-27: the text output of diff (spec §8.4), from seeded sessions so
-// that every line is checked against a golden file.
-func TestDiffText(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		seed   func(t *testing.T, dir string)
-		args   []string
-		code   int
-		golden string
-	}{
+// diffCase is a diff of seeded sessions, whose output in each format is
+// checked against a golden file: golden plus .txt or .json.
+type diffCase struct {
+	name   string
+	seed   func(t *testing.T, dir string)
+	args   []string
+	code   int
+	golden string
+}
+
+// diffCases are the cases of TestDiffText and TestDiffJSON.
+func diffCases() []diffCase {
+	return []diffCase{
 		{
 			name: "argument diff",
 			seed: func(t *testing.T, dir string) { seedCheckout(t, dir, 0); seedSwap(t, dir, "checkout.swap-model.1") },
-			args: []string{"checkout", "checkout.swap-model.1"}, code: ExitDiffFound, golden: "diverged.txt",
+			args: []string{"checkout", "checkout.swap-model.1"}, code: ExitDiffFound, golden: "diverged",
 		},
 		{
 			// AC-27: the warning comes first, and the exit code is unchanged.
 			name: "dropped events",
 			seed: func(t *testing.T, dir string) { seedCheckout(t, dir, 3); seedSwap(t, dir, "checkout.swap-model.1") },
-			args: []string{"checkout", "checkout.swap-model.1"}, code: ExitDiffFound, golden: "gaps.txt",
+			args: []string{"checkout", "checkout.swap-model.1"}, code: ExitDiffFound, golden: "gaps",
 		},
 		{
 			name: "identical, one never ended",
@@ -122,14 +125,14 @@ func TestDiffText(t *testing.T) {
 				seedSession(t, dir, cassette.Session{ID: "live", Mode: "exact", Status: "recording", CreatedAt: lsT0},
 					nil, checkoutEvents()...)
 			},
-			args: []string{"checkout", "live"}, code: ExitOK, golden: "identical.txt",
+			args: []string{"checkout", "live"}, code: ExitOK, golden: "identical",
 		},
 		{
 			// Spec §8.3 step 4: two replays that stopped at the same miss
 			// are identical, and both stops are reported.
 			name: "both stopped",
 			seed: func(t *testing.T, dir string) { seedSwap(t, dir, "a"); seedSwap(t, dir, "b") },
-			args: []string{"a", "b"}, code: ExitOK, golden: "both-stopped.txt",
+			args: []string{"a", "b"}, code: ExitOK, golden: "both-stopped",
 		},
 		{
 			// A replay that missed before any model response: no models,
@@ -141,12 +144,12 @@ func TestDiffText(t *testing.T) {
 					&cassette.SessionEnd{Status: "diverged", EndedAt: lsT0.Add(2 * time.Second)},
 					toolCall(1, "search_orders", `{"customer_id":"c_812"}`), missEvent(2, "anthropic"))
 			},
-			args: []string{"checkout", "early"}, code: ExitDiffFound, golden: "no-model.txt",
+			args: []string{"checkout", "early"}, code: ExitDiffFound, golden: "no-model",
 		},
 		{
 			name: "text compared",
 			seed: func(t *testing.T, dir string) { seedCheckout(t, dir, 0); seedSwap(t, dir, "checkout.swap-model.1") },
-			args: []string{"--text", "checkout", "checkout.swap-model.1"}, code: ExitDiffFound, golden: "text.txt",
+			args: []string{"--text", "checkout", "checkout.swap-model.1"}, code: ExitDiffFound, golden: "text",
 		},
 		{
 			name: "fewer steps",
@@ -155,7 +158,7 @@ func TestDiffText(t *testing.T) {
 				seedSession(t, dir, cassette.Session{ID: "short", Mode: "exact", Status: "recording", CreatedAt: lsT0},
 					&cassette.SessionEnd{Status: "completed", EndedAt: lsT0.Add(time.Second)}, checkoutEvents()[:4]...)
 			},
-			args: []string{"checkout", "short"}, code: ExitDiffFound, golden: "fewer-steps.txt",
+			args: []string{"checkout", "short"}, code: ExitDiffFound, golden: "fewer-steps",
 		},
 		{
 			name: "stop markers",
@@ -167,9 +170,15 @@ func TestDiffText(t *testing.T) {
 				seedSession(t, dir, cassette.Session{ID: "failed", Mode: "exact", Status: "recording", CreatedAt: lsT0},
 					&cassette.SessionEnd{Status: "completed", EndedAt: lsT0.Add(time.Minute)}, events...)
 			},
-			args: []string{"checkout", "failed"}, code: ExitDiffFound, golden: "stop.txt",
+			args: []string{"checkout", "failed"}, code: ExitDiffFound, golden: "stop",
 		},
-	} {
+	}
+}
+
+// AC-20, AC-27: the text output of diff (spec §8.4), from seeded sessions so
+// that every line is checked against a golden file.
+func TestDiffText(t *testing.T) {
+	for _, tc := range diffCases() {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			tc.seed(t, dir)
@@ -177,7 +186,7 @@ func TestDiffText(t *testing.T) {
 			if r.code != tc.code {
 				t.Fatalf("exit %d, want %d\n%s", r.code, tc.code, r.stderr)
 			}
-			checkGolden(t, "diff/"+tc.golden, r.stdout.String())
+			checkGolden(t, "diff/"+tc.golden+".txt", r.stdout.String())
 		})
 	}
 }
@@ -295,7 +304,8 @@ func TestDiffErrors(t *testing.T) {
 		{"one id", []string{"checkout"}, "exactly two session ids"},
 		{"three ids", []string{"checkout", "checkout", "checkout"}, "exactly two session ids"},
 		{"invalid id", []string{"checkout", "../x"}, "session id"},
-		{"unknown flag", []string{"checkout", "checkout", "--format", "json"}, "flag provided but not defined"},
+		{"unknown flag", []string{"checkout", "checkout", "--json"}, "flag provided but not defined"},
+		{"invalid format", []string{"checkout", "checkout", "--format", "yaml"}, `--format "yaml": want text or json`},
 		{"missing session", []string{"checkout", "nope"}, "no such session"},
 		{"no session row", []string{"empty", "checkout"}, "cannot read the session"},
 	} {
@@ -310,7 +320,7 @@ func TestDiffErrors(t *testing.T) {
 
 func TestDiffHelp(t *testing.T) {
 	r := runDiffCmd(t.TempDir(), "--help")
-	if r.code != ExitOK || !strings.Contains(r.stdout.String(), "Usage: retrace diff <id-a> <id-b> [--text]") {
+	if r.code != ExitOK || !strings.Contains(r.stdout.String(), "Usage: retrace diff <id-a> <id-b> [--format text|json] [--text]") {
 		t.Errorf("exit %d, stdout %q; want 0 and the usage", r.code, r.stdout)
 	}
 }

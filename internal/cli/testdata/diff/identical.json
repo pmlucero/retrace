@@ -1,0 +1,52 @@
+{
+  "format_version": 1,
+  "a": {
+    "id": "checkout",
+    "created_at": "2026-10-23T09:30:00Z",
+    "ended_at": "2026-10-23T09:30:38.2Z",
+    "mode": "record",
+    "parent_session_id": null,
+    "status": "completed",
+    "dropped_events": 0,
+    "steps": 3,
+    "tool_calls": 2,
+    "tokens_in": 3000,
+    "tokens_out": 300,
+    "cost_usd": 0.03,
+    "unpriced_responses": 0,
+    "models": [
+      "claude-sonnet-4-5"
+    ],
+    "duration_ms": 38200,
+    "divergence": null
+  },
+  "b": {
+    "id": "live",
+    "created_at": "2026-10-23T09:30:00Z",
+    "ended_at": null,
+    "mode": "exact",
+    "parent_session_id": null,
+    "status": "recording",
+    "dropped_events": 0,
+    "steps": 3,
+    "tool_calls": 2,
+    "tokens_in": 3000,
+    "tokens_out": 300,
+    "cost_usd": 0.03,
+    "unpriced_responses": 0,
+    "models": [
+      "claude-sonnet-4-5"
+    ],
+    "duration_ms": null,
+    "divergence": null
+  },
+  "identical": true,
+  "first_divergence": null,
+  "identical_steps": {
+    "first": 1,
+    "last": 3,
+    "tool_calls": 2
+  },
+  "text_compared": false,
+  "text_differences": []
+}

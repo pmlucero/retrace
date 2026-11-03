@@ -1,0 +1,75 @@
+{
+  "format_version": 1,
+  "a": {
+    "id": "checkout",
+    "created_at": "2026-10-23T09:30:00Z",
+    "ended_at": "2026-10-23T09:30:38.2Z",
+    "mode": "record",
+    "parent_session_id": null,
+    "status": "completed",
+    "dropped_events": 0,
+    "steps": 3,
+    "tool_calls": 2,
+    "tokens_in": 3000,
+    "tokens_out": 300,
+    "cost_usd": 0.03,
+    "unpriced_responses": 0,
+    "models": [
+      "claude-sonnet-4-5"
+    ],
+    "duration_ms": 38200,
+    "divergence": null
+  },
+  "b": {
+    "id": "short",
+    "created_at": "2026-10-23T09:30:00Z",
+    "ended_at": "2026-10-23T09:30:01Z",
+    "mode": "exact",
+    "parent_session_id": null,
+    "status": "completed",
+    "dropped_events": 0,
+    "steps": 1,
+    "tool_calls": 1,
+    "tokens_in": 1000,
+    "tokens_out": 100,
+    "cost_usd": 0.01,
+    "unpriced_responses": 0,
+    "models": [
+      "claude-sonnet-4-5"
+    ],
+    "duration_ms": 1000,
+    "divergence": null
+  },
+  "identical": false,
+  "first_divergence": {
+    "step": 2,
+    "kind": "model_response",
+    "field": null,
+    "a": {
+      "seq": 5,
+      "kind": "model_response",
+      "source": "model",
+      "target": "agent",
+      "tool": null,
+      "arguments": null,
+      "result": {
+        "stop_reason": "tool_use",
+        "text": "Found none."
+      },
+      "status": "ok"
+    },
+    "b": null,
+    "stop_a": null,
+    "stop_b": null,
+    "diff": [],
+    "diff_truncated": false,
+    "more_paths": false
+  },
+  "identical_steps": {
+    "first": 1,
+    "last": 1,
+    "tool_calls": 1
+  },
+  "text_compared": false,
+  "text_differences": []
+}
