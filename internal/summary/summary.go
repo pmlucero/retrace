@@ -18,20 +18,20 @@ type Totals struct {
 	TokensIn  int64 // sum of tokens_in over model_response events
 	TokensOut int64 // sum of tokens_out over model_response events
 	// CostUSD is the sum of the known cost_usd of model_response events. A
-	// null cost is never guessed (spec §7.5), so it adds nothing here and is
-	// counted in Unpriced instead.
-	CostUSD  float64
-	Unpriced int      // model_response events whose cost_usd is null
-	Models   []string // distinct model values, in order of first appearance
+	// null cost is never guessed (spec §7.5), so it adds nothing here.
+	CostUSD float64
+	// Unpriced counts the model_response events that have tokens but a null
+	// cost_usd. A response without tokens, such as an API error or a cassette
+	// miss, was not billed by tokens, so it is not unpriced either.
+	Unpriced int
+	// Priced counts the model_response events whose cost_usd is known. It
+	// tells a known sum of zero from no known sum at all.
+	Priced int
+	Models []string // distinct model values, in order of first appearance
 	// Duration is ended_at - created_at, and nil while the session has not
 	// ended.
 	Duration      *time.Duration
 	DroppedEvents int // from the session row (spec §7.7)
-}
-
-// Priced is the number of model_response events whose cost is known.
-func (t Totals) Priced() int {
-	return t.Steps - t.Unpriced
 }
 
 // Of computes the totals of session s from its events. Events of other
@@ -51,9 +51,11 @@ func Of(s cassette.Session, events []cassette.Event) Totals {
 			if e.TokensOut != nil {
 				t.TokensOut += *e.TokensOut
 			}
-			if e.CostUSD != nil {
+			switch {
+			case e.CostUSD != nil:
 				t.CostUSD += *e.CostUSD
-			} else {
+				t.Priced++
+			case positive(e.TokensIn) || positive(e.TokensOut):
 				t.Unpriced++
 			}
 			if e.Model != nil && !seen[*e.Model] {
@@ -71,14 +73,18 @@ func Of(s cassette.Session, events []cassette.Event) Totals {
 	return t
 }
 
+func positive(n *int64) bool {
+	return n != nil && *n > 0
+}
+
 // FormatCost renders the cost of t without a label: callers put "estimated"
 // in the column header (spec §7.5). It shows the known sum with two decimals,
 // "<$0.01" for a sum that would round to zero but is not, and the number of
 // unpriced responses after it: "$0.18", "$0.18 + 2 unpriced". When no response
 // is priced there is no known sum to show, so it is only "2 unpriced". A
-// session with no model_response costs "$0.00".
+// session with nothing priced or unpriced costs "$0.00".
 func FormatCost(t Totals) string {
-	if t.Unpriced > 0 && t.Priced() == 0 {
+	if t.Unpriced > 0 && t.Priced == 0 {
 		return fmt.Sprintf("%d unpriced", t.Unpriced)
 	}
 	sum := fmt.Sprintf("$%.2f", t.CostUSD)

@@ -36,7 +36,7 @@ func TestOf(t *testing.T) {
 			name:    "no duration while recording",
 			session: cassette.Session{Status: "recording", CreatedAt: created},
 			events:  []cassette.Event{response("m", 10, 2, ptr(0.01))},
-			want:    Totals{Steps: 1, TokensIn: 10, TokensOut: 2, CostUSD: 0.01, Models: []string{"m"}},
+			want:    Totals{Steps: 1, TokensIn: 10, TokensOut: 2, CostUSD: 0.01, Priced: 1, Models: []string{"m"}},
 		},
 		{
 			name:    "counts only model responses and tool calls",
@@ -53,7 +53,7 @@ func TestOf(t *testing.T) {
 				response("a", 2000, 50, ptr(0.5)),
 			},
 			want: Totals{
-				Steps: 2, ToolCalls: 2, TokensIn: 3000, TokensOut: 150, CostUSD: 0.75,
+				Steps: 2, ToolCalls: 2, TokensIn: 3000, TokensOut: 150, CostUSD: 0.75, Priced: 2,
 				Models: []string{"a"}, Duration: &dur, DroppedEvents: 3,
 			},
 		},
@@ -66,19 +66,31 @@ func TestOf(t *testing.T) {
 				response("a", 1, 1, ptr(0.0625)),
 				response("b", 1, 1, nil),
 			},
-			want: Totals{Steps: 4, TokensIn: 4, TokensOut: 4, CostUSD: 0.1875, Unpriced: 2, Models: []string{"a", "b"}},
+			want: Totals{Steps: 4, TokensIn: 4, TokensOut: 4, CostUSD: 0.1875, Unpriced: 2, Priced: 2, Models: []string{"a", "b"}},
+		},
+		{
+			name:    "responses without tokens are not unpriced",
+			session: cassette.Session{CreatedAt: created},
+			events: []cassette.Event{
+				{Kind: "model_response", Status: "error"},                                                    // API error: no usage
+				{Kind: "model_response", Status: "divergence", TokensIn: ptr(int64(0))},                      // cassette miss
+				{Kind: "model_response", Model: ptr("a"), TokensIn: ptr(int64(0)), TokensOut: ptr(int64(0))}, // zero usage
+				{Kind: "model_response", Model: ptr("a"), TokensIn: ptr(int64(5))},                           // input only
+				{Kind: "model_response", Model: ptr("a"), TokensOut: ptr(int64(7))},                          // output only
+			},
+			want: Totals{Steps: 5, TokensIn: 5, TokensOut: 7, Unpriced: 2, Models: []string{"a"}},
 		},
 		{
 			name:    "models in order of first appearance",
 			session: cassette.Session{CreatedAt: created},
 			events: []cassette.Event{
-				response("z", 0, 0, nil),
-				response("a", 0, 0, nil),
-				response("z", 0, 0, nil),
+				response("z", 1, 1, nil),
+				response("a", 1, 1, nil),
+				response("z", 1, 1, nil),
 				{Kind: "model_response"}, // error before a model was known
-				response("m", 0, 0, nil),
+				response("m", 1, 1, nil),
 			},
-			want: Totals{Steps: 5, Unpriced: 5, Models: []string{"z", "a", "m"}},
+			want: Totals{Steps: 5, TokensIn: 4, TokensOut: 4, Unpriced: 4, Models: []string{"z", "a", "m"}},
 		},
 		{
 			name:    "clock stepped back",
@@ -103,14 +115,16 @@ func TestFormatCost(t *testing.T) {
 		want string
 	}{
 		{"no responses", Totals{}, "$0.00"},
-		{"all priced", Totals{Steps: 3, CostUSD: 0.1849}, "$0.18"},
-		{"some unpriced", Totals{Steps: 5, CostUSD: 0.18, Unpriced: 2}, "$0.18 + 2 unpriced"},
+		{"all priced", Totals{Steps: 3, Priced: 3, CostUSD: 0.1849}, "$0.18"},
+		{"some unpriced", Totals{Steps: 5, Priced: 3, CostUSD: 0.18, Unpriced: 2}, "$0.18 + 2 unpriced"},
 		{"none priced", Totals{Steps: 2, Unpriced: 2}, "2 unpriced"},
-		{"priced at zero", Totals{Steps: 1}, "$0.00"},
-		{"below a cent", Totals{Steps: 1, CostUSD: 0.0031}, "<$0.01"},
-		{"below a cent, some unpriced", Totals{Steps: 2, CostUSD: 0.0031, Unpriced: 1}, "<$0.01 + 1 unpriced"},
-		{"rounds up to a cent", Totals{Steps: 1, CostUSD: 0.006}, "$0.01"},
-		{"large", Totals{Steps: 1, CostUSD: 1234.5}, "$1234.50"},
+		{"only responses without tokens", Totals{Steps: 2}, "$0.00"},
+		{"priced at zero", Totals{Steps: 1, Priced: 1}, "$0.00"},
+		{"priced at zero, some unpriced", Totals{Steps: 2, Priced: 1, Unpriced: 1}, "$0.00 + 1 unpriced"},
+		{"below a cent", Totals{Steps: 1, Priced: 1, CostUSD: 0.0031}, "<$0.01"},
+		{"below a cent, some unpriced", Totals{Steps: 2, Priced: 1, CostUSD: 0.0031, Unpriced: 1}, "<$0.01 + 1 unpriced"},
+		{"rounds up to a cent", Totals{Steps: 1, Priced: 1, CostUSD: 0.006}, "$0.01"},
+		{"large", Totals{Steps: 1, Priced: 1, CostUSD: 1234.5}, "$1234.50"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
