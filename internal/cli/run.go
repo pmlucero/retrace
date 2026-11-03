@@ -235,15 +235,12 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		log.Error("cannot read the session's MCP servers", "session", opts.source, "error", err)
 		return ExitError
 	}
-	queues, err := replayQueues(ctx, src, servers)
+	// swap-model forwards the LLM, so its recorded interactions are not
+	// queued: they are not expected to be served (spec §4.4).
+	queues, err := replayQueues(ctx, src, mode != "swap-model", servers)
 	if err != nil {
 		log.Error("cannot read the recorded interactions", "session", opts.source, "error", err)
 		return ExitError
-	}
-	if mode == "swap-model" {
-		// The LLM is forwarded, so its recorded interactions are not
-		// expected to be served (spec §4.4).
-		queues.llm = nil
 	}
 
 	// Listen before creating the cassette, so a busy port leaves nothing behind.
@@ -260,8 +257,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		modelOverride = &opts.model
 	}
 	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
-		ModelOverride: modelOverride,
-		Mode:          mode, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
+		Mode: mode, ModelOverride: modelOverride, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
 		Command: command, Cwd: cwd, OnMiss: strategy.Name(),
 		MCPServers: mcpServersCopy(srcSession.MCPServers), Redaction: srcSession.Redaction, RetraceVersion: Version(),
 		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
@@ -375,15 +371,14 @@ func mcpServersCopy(stored json.RawMessage) json.RawMessage {
 	return stored
 }
 
-// queueSet holds the queues of each replayed route.
+// queueSet holds the queues of each route replayed from the cassette.
 type queueSet struct {
-	llm *match.Queues
+	llm *match.Queues            // nil when the LLM is forwarded
 	mcp map[string]*match.Queues // by server name
 }
 
 // unconsumed returns the recorded interactions of every route that the
-// replay never served, in recorded order (spec §4.4). A nil llm is a
-// forwarded route, whose interactions are not counted.
+// replay never served, in recorded order (spec §4.4).
 func (q queueSet) unconsumed() []cassette.Interaction {
 	var all []cassette.Interaction
 	if q.llm != nil {
@@ -399,10 +394,10 @@ func (q queueSet) unconsumed() []cassette.Interaction {
 // replayQueues queues the recorded interactions of src by the fingerprint of
 // their stored request bodies, which are already redacted, so they match
 // incoming requests redacted with the same rules: one set of queues for the
-// LLM route and one per MCP server in servers. MCP requests that replay
+// LLM route, when llm is set, and one per MCP server in servers. MCP requests that replay
 // answers without matching are left out, so they are never reported as
 // unconsumed (spec §5 step 3, AC-32).
-func replayQueues(ctx context.Context, src *cassette.Cassette, servers []string) (queueSet, error) {
+func replayQueues(ctx context.Context, src *cassette.Cassette, llm bool, servers []string) (queueSet, error) {
 	ins, err := src.Interactions(ctx)
 	if err != nil {
 		return queueSet{}, fmt.Errorf("reading interactions: %w", err)
@@ -415,7 +410,7 @@ func replayQueues(ctx context.Context, src *cassette.Cassette, servers []string)
 	for _, in := range ins {
 		var route string
 		switch name, isMCP := strings.CutPrefix(in.Upstream, "mcp:"); {
-		case in.Channel == "llm":
+		case in.Channel == "llm" && llm:
 			route = ""
 		case in.Channel == "mcp" && isMCP && slices.Contains(servers, name):
 			route = name
@@ -441,7 +436,10 @@ func replayQueues(ctx context.Context, src *cassette.Cassette, servers []string)
 			return k.fp, ok && k.route == route
 		})
 	}
-	qs := queueSet{llm: queuesOf(""), mcp: make(map[string]*match.Queues, len(servers))}
+	qs := queueSet{mcp: make(map[string]*match.Queues, len(servers))}
+	if llm {
+		qs.llm = queuesOf("")
+	}
 	for _, name := range servers {
 		qs.mcp[name] = queuesOf(name)
 	}

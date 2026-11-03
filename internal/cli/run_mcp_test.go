@@ -10,10 +10,10 @@ import (
 	"github.com/pmlucero/retrace/internal/mcp/mcptest"
 )
 
-// recordMCPForReplay records session id with the MCP helper agent against
+// recordMCPForReplay records session s with the MCP helper agent against
 // the two servers of mcpAgentServers, one answering in JSON and one in SSE,
 // then shuts every upstream down. It returns what the agent saw.
-func recordMCPForReplay(t *testing.T, dir, id string) []mcpExchange {
+func recordMCPForReplay(t *testing.T, dir string) []mcpExchange {
 	t.Helper()
 	t.Setenv(agentModeEnv, "mcp")
 	up := fakeAnthropic(t)
@@ -22,7 +22,7 @@ func recordMCPForReplay(t *testing.T, dir, id string) []mcpExchange {
 		mcptest.New(t, mcptest.Config{Name: "weather", Strict: true, Mode: mcptest.SSE, LogEvents: 1,
 			Tools: []mcptest.Tool{lookupTool()}}),
 	}
-	args := []string{"--session", id, "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL,
+	args := []string{"--session", "s", "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL,
 		"--mcp", "orders=" + servers[0].URL, "--mcp", "weather=" + servers[1].URL}
 	r := runRecordCmd(t, dir, append(append(args, "--"), agentCommand()...)...)
 	if r.code != ExitOK {
@@ -71,7 +71,7 @@ func sameExchange(t *testing.T, recorded, replayed mcpExchange) {
 // answers, JSON and SSE byte for byte, with fresh session ids.
 func TestRunReplaysMCPOffline(t *testing.T) {
 	dir := t.TempDir()
-	recorded := recordMCPForReplay(t, dir, "s")
+	recorded := recordMCPForReplay(t, dir)
 	failOutboundDials(t)
 
 	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
@@ -114,7 +114,7 @@ func TestRunReplaysMCPOffline(t *testing.T) {
 // may arrive, and the two servers' sessions swapped too.
 func TestRunReplaysMCPInAnotherOrder(t *testing.T) {
 	dir := t.TempDir()
-	recorded := recordMCPForReplay(t, dir, "s")
+	recorded := recordMCPForReplay(t, dir)
 
 	t.Setenv(mcpReverseEnv, "1")
 	t.Setenv(mcpSwapEnv, "1")
@@ -146,7 +146,7 @@ func TestRunReplaysMCPInAnotherOrder(t *testing.T) {
 // the JSON-RPC error -32099 with its id, and the replay ends diverged.
 func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 	dir := t.TempDir()
-	recordMCPForReplay(t, dir, "s")
+	recordMCPForReplay(t, dir)
 
 	t.Setenv(mcpKeyEnv, "Z9")
 	t.Setenv(agentIgnoreTermEnv, "1") // so it reports every exchange

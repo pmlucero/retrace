@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -46,11 +47,18 @@ func newSwapUpstream(t *testing.T) *swapUpstream {
 	return u
 }
 
+// requested returns the models the upstream was asked for.
+func (u *swapUpstream) requested() []string {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return slices.Clone(u.models)
+}
+
 // AC-14: run --model forwards LLM requests with the model rewritten, serves
 // MCP from the cassette, and records both models (spec §4.2).
 func TestRunSwapModel(t *testing.T) {
 	dir := t.TempDir()
-	recorded := recordMCPForReplay(t, dir, "s") // its upstreams are closed now
+	recorded := recordMCPForReplay(t, dir) // its upstreams are closed now
 	up := newSwapUpstream(t)
 
 	r := runRunCmd(t, dir, "s", "--model", "claude-opus-5-5", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
@@ -65,8 +73,8 @@ func TestRunSwapModel(t *testing.T) {
 	for i := range recorded {
 		sameExchange(t, recorded[i], replayed[i])
 	}
-	if len(up.models) != 1 || up.models[0] != "claude-opus-5-5" {
-		t.Errorf("upstream was asked for %v, want [claude-opus-5-5]", up.models)
+	if models := up.requested(); len(models) != 1 || models[0] != "claude-opus-5-5" {
+		t.Errorf("upstream was asked for %v, want [claude-opus-5-5]", models)
 	}
 
 	src, _ := sessionOf(t, dir, "s")
@@ -128,7 +136,7 @@ func TestRunSwapModel(t *testing.T) {
 // interactions are not reported as unconsumed.
 func TestRunSwapModelDoesNotCountTheLLMAsUnconsumed(t *testing.T) {
 	dir := t.TempDir()
-	recordMCPForReplay(t, dir, "s")
+	recordMCPForReplay(t, dir)
 	up := newSwapUpstream(t)
 	r := runRunCmd(t, dir, "s", "--model", "m", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
