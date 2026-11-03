@@ -59,7 +59,8 @@ func Of(s cassette.Session, events []cassette.Event) Totals {
 			// billed: any billed response has both, and cache tokens only
 			// come with them, so checking the cache fields too would change
 			// nothing.
-			switch cost, ok := knownCost(e.CostUSD, t.CostUSD); {
+			cost, ok := knownCost(e.CostUSD, t.CostUSD)
+			switch {
 			case ok:
 				t.CostUSD = cost
 				t.Priced++
