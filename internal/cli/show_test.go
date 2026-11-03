@@ -111,6 +111,8 @@ func TestShowJSON(t *testing.T) {
 				t.Fatalf("line %q: %v", sc.Text(), err)
 			}
 			seqs = append(seqs, e.Seq)
+			// Decode started_at again as a string: showEvent parses it into a
+			// time.Time, which would hide the emitted form.
 			var raw struct {
 				StartedAt string `json:"started_at"`
 			}
