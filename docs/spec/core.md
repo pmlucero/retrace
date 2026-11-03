@@ -410,19 +410,21 @@ The cassette writer never delays forwarding ([ADR 0009](../adr/0009-append-only-
 
 ### 8.2 Trajectory
 
-A session's trajectory is its events with `kind ∈ {tool_use, tool_call, tool_result, divergence}` plus a terminal **stop** marker built from the last `model_response` (`stop_reason`), ordered by `seq`. These are grouped into **steps**: step *n* is the *n*-th `model_response` together with its `tool_use` events and the resulting `tool_call` and `tool_result` events.
+A session's trajectory is its events with `kind ∈ {tool_use, tool_call, tool_result, divergence}` plus a terminal **stop** marker built from the last `model_response` (`stop_reason`). These are grouped into **steps**: step *n* is the *n*-th `model_response` together with its `tool_use` events and the resulting `tool_call` and `tool_result` events.
 
-- Events are assigned to steps by time and causality, not by `seq` alone. `seq` would not be deterministic: an agent that acts on a streamed response as soon as it arrives can have its `tool_call` appended before that response's `model_response` (§7.4, Order), depending on timing that differs between a recording and its replay. Linking a `tool_call` to its `tool_use` is best-effort too (§7.4).
+- One order defines the steps: the order in which their LLM requests arrived, which is the order of the `model_response` events by `interaction_id` (§7.3: assigned when the request arrives). `seq` is not used for it, because it is not deterministic here. A `model_response` is appended when its response completes, so concurrent LLM requests can complete in a different order in a replay. An agent that acts on a streamed response as soon as it arrives can also have its `tool_call` appended before that response's `model_response` (§7.4, Order). Linking a `tool_call` to its `tool_use` is best-effort too (§7.4). Step *n* is the *n*-th `model_response` in this order, and the last one in this order gives the stop marker.
+- Each event is assigned to a step by causality:
   - A `tool_use` belongs to the step of its `model_response` (its `parent_seq`).
-  - A `tool_call` or `divergence` belongs to the step of the last `model_response` whose `started_at` is at or before its own `started_at`. A request cannot act on a response whose request was not sent yet.
-  - A `tool_result` belongs to the step of its `tool_call` (its `parent_seq`), or, without one, is placed by its `started_at` like a `tool_call`.
-  - Events before the first `model_response` form step `0`, which exists only when it holds an event. Steps are numbered by the order of their `model_response` events by `seq`.
-- The stop marker holds the last `model_response`'s `stop_reason`, or its `error` when its `status` is `error`. A session with no `model_response` has no stop marker.
+  - A `tool_call` belongs to the step of the last `model_response` whose `interaction_id` is lower than its own: a request cannot act on a response whose request had not arrived yet. Interaction ids are unique, so there is no tie, and no clock is involved.
+  - A `divergence` has no interaction. It belongs to the step of the last `model_response` whose `started_at` is at or before its own, and a tie gives the later step.
+  - A `tool_result` belongs to the step of its `tool_call` (its `parent_seq`), or, without one, is placed by its `interaction_id` like a `tool_call`.
+  - Events before the first `model_response` form step `0`, which exists only when it holds an event.
+- The stop marker holds the `stop_reason` of the last `model_response`, or its `error` when its `status` is `error`. A session with no `model_response` has no stop marker.
 - The `model_response` events themselves are not compared, except for their text under `--text` (§8.3). They define the steps and the totals.
 
 **Totals.** `diff` (§8.4), `ls` (§9.5) and `show` (§9.6) summarize a session from its events and its session row:
 
-- steps: the number of `model_response` events. Tool calls: the number of `tool_call` events.
+- steps: the number of `model_response` events. Step `0`, which has no `model_response`, is not counted. Tool calls: the number of `tool_call` events.
 - tokens: the sums of `tokens_in` and `tokens_out` over `model_response` events.
 - cost: the sum of the known `cost_usd`, with the number of `model_response` events that have tokens but a null cost. A null cost is never guessed (§7.5): the output shows the known sum and that some responses are unpriced, e.g. `$0.18 + 2 unpriced`. A response with no tokens, such as an API error or a cassette miss, was not billed by tokens and is not counted as unpriced.
 - models: the distinct `model` values of `model_response` events, in order of first appearance.
@@ -553,7 +555,7 @@ retrace ls [--json]
 Lists the cassettes in `--dir`, newest first, with these columns: `ID`, `CREATED`, `MODE`, `PARENT`, `STATUS`, `STEPS`, `TOKENS`, `COST (est.)`, `DURATION`.
 
 - The values are the totals of §8.2. `TOKENS` is `in/out`, abbreviated (e.g. `41.2k/3.9k`). `DURATION` is empty while a session has not ended.
-- A file in `--dir` that ends in `.cassette` but cannot be opened is skipped with a warning on stderr, and `ls` still exits `0`.
+- A file in `--dir` that ends in `.cassette` but cannot be opened or read (e.g. a newer schema, a corrupt database or a missing session row) is skipped with a warning on stderr, and `ls` still exits `0`.
 - `--json` emits one JSON array with an object per session, newest first, with the same information unabbreviated.
 
 When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+gaps` (e.g. `completed+gaps`), because its steps and totals come from an incomplete log. `--json` carries `dropped_events` for each session.
