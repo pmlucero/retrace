@@ -158,9 +158,15 @@ func writeLsTable(w io.Writer, sessions []listed) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	// tabwriter pads every cell but the last, so a row whose last cells
-	// are empty, such as one without a duration, would end in spaces.
-	for line := range strings.Lines(buf.String()) {
+	return writeTrimmed(w, buf.String())
+}
+
+// writeTrimmed writes the lines of a table built with tabwriter without
+// their trailing spaces: tabwriter pads every cell but the last, so a row
+// whose last cells are empty, such as one without a duration, would end in
+// spaces.
+func writeTrimmed(w io.Writer, table string) error {
+	for line := range strings.Lines(table) {
 		if _, err := io.WriteString(w, strings.TrimRight(line, " \n")+"\n"); err != nil {
 			return err
 		}
