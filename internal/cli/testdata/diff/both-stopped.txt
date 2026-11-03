@@ -1,0 +1,13 @@
+retrace diff a  b
+
+               A: claude-haiku-4-5            B: claude-haiku-4-5
+steps          2  (stopped: cassette miss)    2  (stopped: cassette miss)
+tool calls     2                              2
+tokens         2,000 in / 200 out             2,000 in / 200 out
+cost (est.)    $0.02                          $0.02
+duration       11.9s                          11.9s
+
+✓ trajectories identical (2 steps, 2 tool calls)
+
+  A stopped at step 2: cassette miss on mcp:shop
+  B stopped at step 2: cassette miss on mcp:shop

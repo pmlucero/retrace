@@ -1,0 +1,14 @@
+retrace diff checkout  early
+
+               A: claude-sonnet-4-5    B: (no model)
+steps          3                       0  (stopped: cassette miss)
+tool calls     2                       1
+tokens         3,000 in / 300 out      0 in / 0 out
+cost (est.)    $0.03                   $0.00
+duration       38.2s                   2.0s
+
+✗ first divergence at step 0, event tool_call
+    A  (none: no matching tool_call in step 0)
+    B  mcp:shop search_orders  {"customer_id":"c_812"}
+
+  B stopped at step 0: cassette miss on anthropic

@@ -1,0 +1,15 @@
+retrace diff checkout  checkout.swap-model.1
+
+               A: claude-sonnet-4-5    B: claude-haiku-4-5
+steps          3                       2  (stopped: cassette miss)
+tool calls     2                       2
+tokens         3,000 in / 300 out      2,000 in / 200 out
+cost (est.)    $0.03                   $0.02
+duration       38.2s                   11.9s
+
+✗ first divergence at step 1, event model_response (text)
+    A  model claude-sonnet-4-5
+    B  model claude-haiku-4-5
+       - $: "Looking." → "Let me look."
+
+  B stopped at step 2: cassette miss on mcp:shop
