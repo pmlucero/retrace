@@ -174,6 +174,9 @@ type lostInteraction struct {
 // NewWriter starts a Writer on c, whose session row must already exist. Ids
 // and seqs continue after the ones already in the cassette.
 func NewWriter(ctx context.Context, c *Cassette, opts WriterOptions) (*Writer, error) {
+	if c.readOnly {
+		return nil, fmt.Errorf("writing %s: %w", c.path, ErrReadOnly)
+	}
 	if !c.writable {
 		return nil, fmt.Errorf("writing %s: %w", c.path, ErrNewerSchema)
 	}

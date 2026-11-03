@@ -315,6 +315,49 @@ func TestOpenNewerSchemaIsReadOnly(t *testing.T) {
 	}
 }
 
+// A reader of a session still being recorded neither writes nor takes the
+// file out of WAL mode, which would checkpoint the whole log and block the
+// recorder's writes.
+func TestOpenForReadLeavesALiveRecordingAlone(t *testing.T) {
+	ctx := context.Background()
+	c, path := newCassette(t)
+	defer c.Close()
+	write(t, c, func(tx *Tx) error { return tx.InsertSession(ctx, testSession()) })
+	walSize := func() int64 {
+		t.Helper()
+		fi, err := os.Stat(path + "-wal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	before := walSize()
+	if before == 0 {
+		t.Fatal("the recording has an empty WAL; the test needs one with frames")
+	}
+
+	r, err := OpenForRead(ctx, path)
+	if err != nil {
+		t.Fatalf("OpenForRead: %v", err)
+	}
+	if _, err := r.Session(ctx); err != nil {
+		t.Errorf("reading: %v", err)
+	}
+	if err := r.Write(ctx, func(*Tx) error { return nil }); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("Write: err = %v, want ErrReadOnly", err)
+	}
+	if _, err := NewWriter(ctx, r, WriterOptions{}); !errors.Is(err, ErrReadOnly) {
+		t.Errorf("NewWriter: err = %v, want ErrReadOnly", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if after := walSize(); after != before {
+		t.Errorf("the WAL went from %d to %d bytes: the reader checkpointed it", before, after)
+	}
+	write(t, c, func(tx *Tx) error { _, err := tx.PutBlob(ctx, []byte("x")); return err })
+}
+
 func TestMigrateAppliesOnlyPendingMigrations(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "m.cassette")
