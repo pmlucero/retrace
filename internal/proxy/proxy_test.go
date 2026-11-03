@@ -226,7 +226,11 @@ func TestProxyForwardsARewrittenBody(t *testing.T) {
 		}
 	}
 
-	for _, in := range h.interactions() {
+	all := h.interactions()
+	if len(all) != 2 {
+		t.Fatalf("got %d interactions, want 2", len(all))
+	}
+	for _, in := range all {
 		if got := h.blob(in.RequestBlob); got != sent {
 			t.Errorf("%s: stored request %q, want the agent's %q", in.Path, got, sent)
 		}

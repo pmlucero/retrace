@@ -1,6 +1,10 @@
 package anthropic
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 
 	"github.com/pmlucero/retrace/internal/jsonvalue"
@@ -25,28 +29,59 @@ func ModelRewriter(model string) func(method, path string, body []byte) []byte {
 }
 
 // RewriteModel returns body with its top-level model member set to model,
-// and added at the end when there is none. Every member, duplicates
-// included, is set, so the API reads model whichever one it takes. The other
-// members keep their order and number text, as body redaction keeps them
-// (spec §3.5). A body that is not a JSON object, or is nested too deeply to
-// decode, is returned as it is, so the API answers it with its own error.
+// and added at the end when there is none. Every such member, duplicates
+// included, is set, so the API reads model whichever one it takes. The new
+// value is spliced into the original bytes, so everything else is forwarded
+// byte for byte (spec §4.2). A body that is not one JSON object is returned
+// as it is, so the API answers it with its own error.
 func RewriteModel(body []byte, model string) []byte {
-	v, err := jsonvalue.Decode(body)
-	if err != nil {
+	value := jsonvalue.Encode(model)
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
 		return body
 	}
-	obj, ok := v.(*jsonvalue.Object)
-	if !ok {
-		return body
-	}
-	found := false
-	for i := range obj.Members {
-		if obj.Members[i].Key == "model" {
-			obj.Members[i].Value, found = model, true
+	type span struct{ start, end int64 }
+	var models []span
+	members := 0
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return body
 		}
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return body
+		}
+		if key == "model" {
+			end := dec.InputOffset()
+			models = append(models, span{end - int64(len(raw)), end})
+		}
+		members++
 	}
-	if !found {
-		obj.Members = append(obj.Members, jsonvalue.Member{Key: "model", Value: model})
+	if _, err := dec.Token(); err != nil { // the closing brace
+		return body
 	}
-	return jsonvalue.Encode(obj)
+	closing := dec.InputOffset() - 1
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return body // more than one JSON value
+	}
+
+	var out bytes.Buffer
+	at := int64(0)
+	for _, m := range models {
+		out.Write(body[at:m.start])
+		out.Write(value)
+		at = m.end
+	}
+	if len(models) == 0 {
+		out.Write(body[:closing])
+		if members > 0 {
+			out.WriteByte(',')
+		}
+		out.WriteString(`"model":`)
+		out.Write(value)
+		at = closing
+	}
+	out.Write(body[at:])
+	return out.Bytes()
 }
