@@ -143,6 +143,8 @@ func TestHasMarker(t *testing.T) {
 		{"https://REDACTED:pw@h/mcp", false},
 		{"https://user@h/mcp", false},
 		{"https://h/mcp?k=[REDACTED:0a1b2c3d]", true},
+		{"https://h/mcp?k=0a1b2c3d]", false},
+		{"https://h/mcp?k=[REDACTED:0a1b2c3d", false},
 		{"https://h/mcp?k=%5BREDACTED:0A1B2C3D%5D", true},
 		{"https://h/mcp?a=1&k=[REDACTED:0a1b2c3d]", true},
 		{"https://h/mcp?k=[REDACTED:0a1b2c3]", false},

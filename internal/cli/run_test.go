@@ -335,6 +335,7 @@ func TestRunUsageErrors(t *testing.T) {
 		{"invalid upstream", []string{"s", "--model", "m", "--anthropic-upstream", "api.anthropic.com"}, "not an http or https URL"},
 		{"mcp without live tools", []string{"s", "--mcp", "orders=http://127.0.0.1:1"}, "only used with --tools live"},
 		{"invalid mcp", []string{"s", "--tools", "live", "--mcp", "orders"}, "want name=url"},
+		{"duplicate mcp", []string{"s", "--tools", "live", "--mcp", "a=http://127.0.0.1:1", "--mcp", "a=http://127.0.0.1:2"}, "registered twice"},
 		{"model and live tools", []string{"s", "--model", "m", "--tools", "live"}, "use record instead"},
 		{"unknown tools", []string{"s", "--tools", "warm"}, "want frozen or live"},
 		{"reserved strategy", []string{"s", "--on-miss", "nearest-match"}, "not implemented in this version"},

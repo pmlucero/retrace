@@ -17,13 +17,18 @@ type liveServer struct {
 
 // liveMCPServers returns where a live-tools replay forwards each MCP server
 // of the source session (spec §4.3): its --mcp URL in overrides, or else the
-// url stored in the source's mcp_servers, which must be valid JSON. The
+// url stored in the source's mcp_servers, which must be valid JSON with
+// valid, distinct names. The
 // error, if any, is a usage error (spec §9.3): an override names a server
 // the source does not have, or a stored URL that cannot be used has no
 // override. A stored URL cannot be used when it holds a redaction marker, so
 // it is not the URL that was recorded, or when it is not an http or https
 // URL: the cassette is untrusted input.
 func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]liveServer, error) {
+	// Each name becomes a route: check them as for any replay.
+	if _, err := mcpServerNames(stored); err != nil {
+		return nil, err
+	}
 	var recorded []mcpServer
 	if len(stored) > 0 {
 		if err := json.Unmarshal(stored, &recorded); err != nil {

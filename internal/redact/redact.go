@@ -193,6 +193,9 @@ func HasMarker(u *url.URL) bool {
 
 func isMarker(v string) bool {
 	hexDigits, ok := strings.CutPrefix(v, "[REDACTED:")
+	if !ok {
+		return false
+	}
 	if hexDigits, ok = strings.CutSuffix(hexDigits, "]"); !ok || len(hexDigits) != 8 {
 		return false
 	}

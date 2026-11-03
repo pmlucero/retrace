@@ -14,7 +14,7 @@ func TestLiveMCPServers(t *testing.T) {
 		`{"name":"search","url":"https://search.example.com/mcp?key=[REDACTED:0a1b2c3d]"},` +
 		`{"name":"bad","url":"ftp://files.example.com"}]`
 	all := []mcpServer{
-		{Name: "crm", URL: "https://u:p@crm.example.com/mcp"},
+		{Name: "crm", URL: "https://u:p@crm.example.com/mcp"}, //nolint:gosec // G101: a fake credential the test looks for
 		{Name: "search", URL: "https://search.example.com/mcp?key=sk-1"},
 		{Name: "bad", URL: "http://127.0.0.1:9002/mcp"},
 	}
@@ -39,6 +39,9 @@ func TestLiveMCPServers(t *testing.T) {
 		{name: "unknown name", stored: stored, overrides: []mcpServer{{Name: "billing", URL: "http://127.0.0.1:1"}},
 			wantErr: `no MCP server named "billing"`},
 		{name: "invalid JSON", stored: `{`, wantErr: "parsing mcp_servers"},
+		{name: "invalid name", stored: `[{"name":"../x","url":"http://127.0.0.1:1"}]`, wantErr: "invalid MCP server name"},
+		{name: "name twice", stored: `[{"name":"a","url":"http://127.0.0.1:1"},{"name":"a","url":"http://127.0.0.1:2"}]`,
+			wantErr: "listed twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := liveMCPServers([]byte(tc.stored), tc.overrides)
@@ -65,7 +68,7 @@ func TestLiveMCPServers(t *testing.T) {
 // spec §9.3: the stored URL is the one used, redacted.
 func TestLiveMCPServersJSON(t *testing.T) {
 	servers, err := liveMCPServers([]byte(`[{"name":"crm","url":"https://REDACTED@crm.example.com/mcp"}]`),
-		[]mcpServer{{Name: "crm", URL: "https://u:p@crm2.example.com/mcp?api_key=sk-1"}})
+		[]mcpServer{{Name: "crm", URL: "https://u:p@crm2.example.com/mcp?api_key=sk-1"}}) //nolint:gosec // G101: a fake credential the test looks for
 	if err != nil {
 		t.Fatal(err)
 	}
