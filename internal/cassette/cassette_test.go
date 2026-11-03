@@ -189,6 +189,39 @@ func TestCreateRefusesExistingFile(t *testing.T) {
 	}
 }
 
+// #56: a Create that fails after making the file removes it again.
+func TestCreateRemovesTheFileWhenItFails(t *testing.T) {
+	dir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the file is made, then the first query fails
+	if _, err := Create(ctx, filepath.Join(dir, "s.cassette")); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Create: err = %v, want context.Canceled", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("a failed Create left %v", entries)
+	}
+}
+
+func TestRemoveDeletesTheCassetteAndItsJournal(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.cassette")
+	other := filepath.Join(dir, "t.cassette")
+	for _, p := range []string{path, path + "-wal", path + "-shm", other} {
+		if err := os.WriteFile(p, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 || entries[0].Name() != "t.cassette" {
+		t.Errorf("dir holds %v, want only t.cassette", entries)
+	}
+	if err := Remove(path); err != nil {
+		t.Errorf("Remove of a missing cassette: %v, want nil", err)
+	}
+}
+
 func TestPutBlobDeduplicatesContent(t *testing.T) {
 	ctx := context.Background()
 	c, _ := newCassette(t)
