@@ -27,4 +27,4 @@ SEQ  TIME   SOURCE → TARGET   KIND            TOOL           ARGUMENTS        
 4    +4.0s  mcp:shop → agent  tool_result     search_orders                                                                 ok
 …                                                            1 event missing (seq 5)
 6    +6.0s  model → agent     model_response                                                                                ok
-…                                                            2 events missing (seq 7–8)
+…                                                            2 events missing after seq 6

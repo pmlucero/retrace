@@ -127,6 +127,104 @@ func TestShowArguments(t *testing.T) {
 	}
 }
 
+// SECURITY.md: text from an untrusted cassette cannot drive the terminal or
+// break the table.
+func TestPrintable(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"search_orders", "search_orders"},
+		{"héllo → wörld", "héllo → wörld"},
+		{"\x1b]0;title\x07", `\x1b]0;title\a`},
+		{"a\tb\r\nc", `a\tb\r\nc`},
+		{"\u202egnp.exe", `\u202egnp.exe`},
+		{"\xff", "\uFFFD"},
+	} {
+		if got := printable(tc.in); got != tc.want {
+			t.Errorf("printable(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// A tool name with control characters is escaped in the timeline, and the
+// columns stay one line per event.
+func TestShowEscapesUntrustedText(t *testing.T) {
+	dir := t.TempDir()
+	seedSession(t, dir,
+		cassette.Session{ID: "s", Mode: "record", Status: "recording", CreatedAt: lsT0, Cwd: "/w\x1b[2J"},
+		nil, toolCall(1, "evil\x1b[31m\ttool\n", `{}`))
+	r := runShowCmd(dir, "s")
+	if r.code != ExitOK {
+		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
+	}
+	out := r.stdout.String()
+	if strings.ContainsRune(out, '\x1b') || strings.Contains(out, "\t") {
+		t.Errorf("output holds raw control characters:\n%q", out)
+	}
+	for _, want := range []string{`evil\x1b[31m\ttool\n`, `/w\x1b[2J`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("output lacks %s:\n%s", want, out)
+		}
+	}
+}
+
+// AC-27, spec §7.6: after a reindex of a diverged session the seqs are
+// contiguous while dropped_events is kept, so the count has no gap to mark.
+// show says how many are missing without making up their seqs. While a
+// session is recording the count is 0, and a gap in seq is still marked.
+func TestShowGapsWithoutSeqs(t *testing.T) {
+	utcDisplay(t)
+	for _, tc := range []struct {
+		name    string
+		end     *cassette.SessionEnd
+		seqs    []int64
+		want    []string
+		wantNot []string
+	}{
+		{
+			name:    "reindexed diverged session",
+			end:     &cassette.SessionEnd{Status: "diverged", EndedAt: lsT0.Add(time.Minute), DroppedEvents: 2},
+			seqs:    []int64{1, 2, 3},
+			want:    []string{"2 events were not written", "2 events missing after seq 3"},
+			wantNot: []string{"seq 4"},
+		},
+		{
+			name:    "no event written",
+			end:     &cassette.SessionEnd{Status: "failed", EndedAt: lsT0.Add(time.Minute), DroppedEvents: 2},
+			want:    []string{"2 events missing\n"},
+			wantNot: []string{"after seq"},
+		},
+		{
+			name:    "recording with a gap",
+			seqs:    []int64{1, 3},
+			want:    []string{"1 event missing (seq 2)"},
+			wantNot: []string{"warning", "after seq"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			var events []cassette.Event
+			for _, seq := range tc.seqs {
+				events = append(events, toolCall(seq, "t", `{}`))
+			}
+			seedSession(t, dir, cassette.Session{ID: "s", Mode: "exact", Status: "recording", CreatedAt: lsT0}, tc.end, events...)
+			r := runShowCmd(dir, "s")
+			if r.code != ExitOK {
+				t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
+			}
+			out := r.stdout.String()
+			for _, w := range tc.want {
+				if !strings.Contains(out, w) {
+					t.Errorf("output lacks %q:\n%s", w, out)
+				}
+			}
+			for _, w := range tc.wantNot {
+				if strings.Contains(out, w) {
+					t.Errorf("output has %q:\n%s", w, out)
+				}
+			}
+		})
+	}
+}
+
 func TestJSONOrString(t *testing.T) {
 	for _, tc := range []struct{ raw, want string }{
 		{"", "null"},

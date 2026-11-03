@@ -14,6 +14,7 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/pmlucero/retrace/internal/cassette"
@@ -82,7 +83,7 @@ func writeShowText(w io.Writer, s cassette.Session, events []cassette.Event) err
 	t := summary.Of(s, events)
 	var buf bytes.Buffer
 	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
-	row := func(name, value string) { fmt.Fprintf(tw, "%s\t%s\n", name, value) }
+	row := func(name, value string) { fmt.Fprintf(tw, "%s\t%s\n", name, printable(value)) }
 
 	row("session", s.ID)
 	row("mode", s.Mode)
@@ -133,16 +134,13 @@ func writeShowText(w io.Writer, s cassette.Session, events []cassette.Event) err
 	tw = tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "SEQ\tTIME\tSOURCE → TARGET\tKIND\tTOOL\tARGUMENTS\tSTATUS")
 	next, missing := int64(1), s.DroppedEvents
-	gap := func(from, to int64) {
-		// The marker sits in the ARGUMENTS column, so the columns stay
-		// aligned across it.
-		n := to - from + 1
-		missing -= int(n)
-		fmt.Fprintf(tw, "…\t\t\t\t\t%s missing (%s)\t\n", plural(n, "event"), seqRange(from, to))
-	}
 	for _, e := range events {
 		if e.Seq > next {
-			gap(next, e.Seq-1)
+			// The marker sits in the ARGUMENTS column, so the columns stay
+			// aligned across it.
+			n := e.Seq - next
+			missing -= int(n)
+			fmt.Fprintf(tw, "…\t\t\t\t\t%s missing (%s)\t\n", plural(n, "event"), seqRange(next, e.Seq-1))
 		}
 		next = e.Seq + 1
 		var tool string
@@ -150,17 +148,49 @@ func writeShowText(w io.Writer, s cassette.Session, events []cassette.Event) err
 			tool = *e.Tool
 		}
 		fmt.Fprintf(tw, "%d\t+%s\t%s → %s\t%s\t%s\t%s\t%s\n",
-			e.Seq, summary.FormatDuration(e.StartedAt.Sub(s.CreatedAt)), e.Source, e.Target, e.Kind,
-			tool, showArguments(e.Arguments), e.Status)
+			e.Seq, summary.FormatDuration(e.StartedAt.Sub(s.CreatedAt)), printable(e.Source), printable(e.Target),
+			printable(e.Kind), printable(tool), showArguments(e.Arguments), printable(e.Status))
 	}
 	if missing > 0 {
-		// Events dropped after the last one written left no seq behind.
-		gap(next, next+int64(missing)-1)
+		// The count has events that left no gap in seq: dropped after the
+		// last event written, or recovered by a reindex that renumbered the
+		// log (spec §7.6). Their seqs are unknown, so none are named.
+		where := ""
+		if next > 1 {
+			where = fmt.Sprintf(" after seq %d", next-1)
+		}
+		fmt.Fprintf(tw, "…\t\t\t\t\t%s missing%s\t\n", plural(int64(missing), "event"), where)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
 	return writeTrimmed(w, buf.String())
+}
+
+// printable makes text from an untrusted cassette (SECURITY.md) safe to print
+// in a table: invalid UTF-8 becomes U+FFFD, and control characters and
+// bidirectional formatting characters are escaped in Go syntax ("\x1b",
+// "\n", "\u202e"), so they can neither drive the terminal nor break the
+// columns.
+func printable(s string) string {
+	s = strings.ToValidUTF8(s, "\uFFFD")
+	if !strings.ContainsFunc(s, unsafeRune) {
+		return s
+	}
+	var b strings.Builder
+	for _, r := range s {
+		if unsafeRune(r) {
+			q := strconv.QuoteRuneToASCII(r)
+			b.WriteString(q[1 : len(q)-1])
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func unsafeRune(r rune) bool {
+	return unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r)
 }
 
 // parseWithPositional parses a command's flags around its positional
@@ -182,7 +212,8 @@ func parseWithPositional(fs *flag.FlagSet, args []string, env *Env) (positional 
 
 // showArguments renders arguments as compact JSON cut after
 // showArgumentRunes runes (spec §9.6). Stored bytes that are not JSON, which
-// a valid cassette never holds, are shown as they are, cut the same way.
+// a valid cassette never holds, are shown through printable, cut the same
+// way. JSON needs no escaping: its strings keep their escape sequences.
 func showArguments(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
