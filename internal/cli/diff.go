@@ -159,7 +159,7 @@ func (r diffReport) writeText(w io.Writer) error {
 		fmt.Fprintf(&buf, "✓ trajectories identical (%s, %s)\n",
 			plural(int64(r.a.totals.Steps), "step"), plural(int64(res.Identical.ToolCalls), "tool call"))
 	} else {
-		r.writePoint(&buf, *res.Point)
+		writePoint(&buf, *res.Point)
 		if span := res.Identical; span.Last >= span.First {
 			notes = append(notes, fmt.Sprintf("%s identical (%s)", stepSpan(span), plural(int64(span.ToolCalls), "tool call")))
 		}
@@ -244,16 +244,19 @@ func duration(t summary.Totals) string {
 
 // writePoint writes the divergence point: what each side has there, and the
 // diff of what differs (spec §8.3 step 3).
-func (r diffReport) writePoint(w io.Writer, p diff.Point) {
+func writePoint(w io.Writer, p diff.Point) {
+	if p.Kind == diff.KindStop {
+		// Every step was equal, so the stop marker is after the last one,
+		// not in it: the steps line that follows counts that step too.
+		fmt.Fprintf(w, "✗ first divergence after step %d, at the stop marker\n", p.Step)
+		fmt.Fprintf(w, "    A  %s\n    B  %s\n", stopText(p.StopA), stopText(p.StopB))
+		return
+	}
 	kind := p.Kind
 	if p.Field == diff.FieldText {
 		kind += " (text)"
 	}
 	fmt.Fprintf(w, "✗ first divergence at step %d, event %s\n", p.Step, kind)
-	if p.Kind == diff.KindStop {
-		fmt.Fprintf(w, "    A  %s\n    B  %s\n", stopText(p.StopA), stopText(p.StopB))
-		return
-	}
 	fmt.Fprintf(w, "    A  %s\n    B  %s\n", pointEvent(p, p.A, "B"), pointEvent(p, p.B, "A"))
 	for _, e := range p.Diff.Entries {
 		fmt.Fprintf(w, "       - %s: %s → %s\n", printable(e.Path), diffValue(e.Expected), diffValue(e.Received))

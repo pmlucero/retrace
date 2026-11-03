@@ -7,7 +7,7 @@ tokens         3,000 in / 300 out      3,000 in / 300 out
 cost (est.)    $0.03                   $0.03
 duration       38.2s                   1m00s
 
-✗ first divergence at step 3, event stop
+✗ first divergence after step 3, at the stop marker
     A  stop: end_turn
     B  stop: error: overloaded_error: Overloaded
 
