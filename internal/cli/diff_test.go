@@ -306,7 +306,7 @@ func TestDiffHelp(t *testing.T) {
 // that has none (spec §8.3 step 3).
 func TestDiffPointEvent(t *testing.T) {
 	call := toolCall(3, "search_orders", `{ "id": 1 }`)
-	result := toolResult(4, 3, "search_orders", `{"orders": []}`)
+	result := toolResult(4, 3, "list_orders", `{"orders": []}`)
 	result.Status = "error"
 	noTool := toolUse(2, 1, "x", `not json`)
 	noTool.Tool = nil
@@ -320,7 +320,7 @@ func TestDiffPointEvent(t *testing.T) {
 		want string
 	}{
 		{"tool_call", diff.Point{Kind: "tool_call"}, &call, `mcp:shop search_orders  {"id":1}`},
-		{"tool_result", diff.Point{Kind: "tool_result"}, &result, `mcp:shop search_orders  {"orders":[]}  error`},
+		{"tool_result", diff.Point{Kind: "tool_result"}, &result, `mcp:shop list_orders  {"orders":[]}  error`},
 		{"no tool, not JSON", diff.Point{Kind: "tool_use"}, &noTool, `(no tool)  not json`},
 		{"divergence", diff.Point{Kind: "divergence"}, &miss, "cassette miss on anthropic"},
 		{"unreadable divergence", diff.Point{Kind: "divergence"}, &cassette.Event{Kind: "divergence", Result: json.RawMessage(`[]`)}, "cassette miss"},
