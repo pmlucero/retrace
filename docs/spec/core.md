@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.22
+- Version: 0.23
 - Last updated: 2026-11-03
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -426,7 +426,7 @@ A session's trajectory is its events with `kind ∈ {tool_use, tool_call, tool_r
 
 - steps: the number of `model_response` events. Step `0`, which has no `model_response`, is not counted. Tool calls: the number of `tool_call` events.
 - tokens: the sums of `tokens_in` and `tokens_out` over `model_response` events.
-- cost: the sum of the known `cost_usd`, with the number of `model_response` events that have tokens but a null cost. A null cost is never guessed (§7.5): the output shows the known sum and that some responses are unpriced, e.g. `$0.18 + 2 unpriced`. A response with no tokens, such as an API error or a cassette miss, was not billed by tokens and is not counted as unpriced.
+- cost: the sum of the known `cost_usd`, with the number of `model_response` events that have tokens but a null cost. A null cost is never guessed (§7.5): the output shows the known sum and that some responses are unpriced, e.g. `$0.18 + 2 unpriced`. A response with no tokens, such as an API error or a cassette miss, was not billed by tokens and is not counted as unpriced. A stored `cost_usd` that is less than zero or not a finite number, which a valid cassette never holds, counts as null. So does a cost that would make the sum not finite, adding in `seq` order, so that the known sum is always a finite number.
 - models: the distinct `model` values of `model_response` events, in order of first appearance.
 - duration: `ended_at − created_at`, absent while the session has not ended.
 
@@ -466,7 +466,7 @@ The model names and values above are illustrative.
 - Each argument-level diff entry gives its path and `expected → received`, formatted as in the divergence report (§6.4): compact JSON values, `(missing)` for a side without the path, and values longer than 80 characters cut with `…`.
 - When text differs in steps that are not compared, a line says so, e.g. `text differs in steps 2, 5 (not compared; use --text)`.
 
-`--format json` emits a stable JSON document with the same information, for CI and for the future UI. It has a top-level `format_version` (`1`), and its JSON Schema is committed in the repository as `docs/schema/diff.v1.json`. A change that is not backward compatible increments `format_version` and adds a new schema file. Text differences are listed in `text_differences`, as step numbers. It is always present, and empty under `--text`, where text is part of the comparison.
+`--format json` emits a stable JSON document with the same information, for CI and for the future UI. It has a top-level `format_version` (`1`), and its JSON Schema is committed in the repository as `docs/schema/diff.v1.json`. A change that is not backward compatible increments `format_version` and adds a new schema file. Adding a member to an object is backward compatible and keeps the version, so consumers MUST ignore members they do not know. A compatible addition updates `docs/schema/diff.v1.json` in place, and the added member is not `required`, so documents from earlier releases with the same `format_version` stay valid. Removing or renaming a member, changing its type or its meaning, and adding a value to an enumerated member (such as an event kind) are not backward compatible. Text differences are listed in `text_differences`, as step numbers. It is always present, and empty under `--text`, where text is part of the comparison.
 
 When either session has `dropped_events > 0` (§7.7), the text output starts with a warning that names the session and the count, and says that the divergence point may be caused by missing events. The JSON document carries `dropped_events` for each session. The exit code is unchanged.
 
@@ -568,7 +568,7 @@ retrace show <id> [--json] [--raw <interaction-id>]
 
 - The default output is the session summary (metadata and totals, §8.2) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status. The relative time counts from the session's `created_at`. Arguments are compact JSON, cut after 60 characters with `…`.
 - When `dropped_events > 0` (§7.7), the summary warns that the event log is incomplete and gives the count, and the timeline shows a marker line where `seq` values are missing, with how many events are missing there. `--json` emits only the events that exist; consumers find gaps from `seq`.
-- `--json`: emits events as JSONL, one event per line, as a stable format. Each line is an object with one member per column of the `events` table (§7.4), named as the column, with `null` for a null value. `arguments` and `result` are the stored JSON values. A stored value that is not valid JSON, which a valid cassette never holds, is emitted as a JSON string, with invalid UTF-8 replaced by U+FFFD. `started_at` is RFC 3339, in UTC for a valid cassette (§7.1), with the trailing zeros of the fraction left out (`2026-10-23T09:30:02Z`, `2026-10-23T09:30:02.5Z`), unlike the stored form of §7.1. Consumers parse it as RFC 3339 and do not assume six fractional digits.
+- `--json`: emits events as JSONL, one event per line, as a stable format. Each line is an object with one member per column of the `events` table (§7.4), named as the column, with `null` for a null value. `arguments` and `result` are the stored JSON values. A stored value that is not valid JSON, which a valid cassette never holds, is emitted as a JSON string, with invalid UTF-8 replaced by U+FFFD. A stored number that is not finite, such as a `cost_usd` of `+Inf`, is emitted as `null`, so that one bad value does not stop the stream either. `started_at` is RFC 3339, in UTC for a valid cassette (§7.1), with the trailing zeros of the fraction left out (`2026-10-23T09:30:02Z`, `2026-10-23T09:30:02.5Z`), unlike the stored form of §7.1. Consumers parse it as RFC 3339 and do not assume six fractional digits.
 - `--raw`: dumps one interaction (headers, bodies, SSE chunks with offsets), as stored, after redaction. A body or chunk that is not valid UTF-8 is shown as `<n bytes, not UTF-8>`. `--raw` with `--json` is a usage error.
 
 ### 9.7 Exit codes
