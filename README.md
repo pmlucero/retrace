@@ -6,7 +6,7 @@
 
 **Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.**
 
-> **Status: MVP in progress.** The design (phase 0) is approved. Built from source, retrace can already record and replay sessions of agents that talk to the LLM and to MCP servers. There is no release yet. See [Project status](#project-status).
+> **Status: MVP in progress.** The design (phase 0) is approved. Built from source, retrace can already record sessions of agents that talk to the LLM and to MCP servers, and replay them in all three modes. There is no release yet. See [Project status](#project-status).
 
 ## What is retrace
 
@@ -53,7 +53,7 @@ When a replay hits something that was never recorded, retrace stops by default (
 
 ## CLI at a glance
 
-> `record` and `run` (exact mode) work today. `--model`, `diff`, `ls` and `show` come in later milestones. The authoritative definition is in [the spec](docs/spec/core.md#9-cli).
+> `record` and `run` work today, in all three replay modes. `diff`, `ls` and `show` come in the next milestone. The authoritative definition is in [the spec](docs/spec/core.md#9-cli).
 
 ```sh
 # Record a session (the agent reads ANTHROPIC_BASE_URL and RETRACE_MCP_*_URL)
@@ -65,6 +65,9 @@ retrace run checkout
 
 # Same tool results, different model
 retrace run checkout --model <other-model> --tools frozen
+
+# Same model decisions, real tools
+retrace run checkout --tools live --mcp orders=http://localhost:9001/mcp
 
 # Where did the trajectories diverge?
 retrace diff checkout checkout.swap-model.1
@@ -85,7 +88,13 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 | MVP | Record (LLM + MCP), exact replay, swap-model with `strict`, terminal diff, demo agent with two MCP servers | **In progress** |
 | Later | Web UI (sequence view, tool topology, model diff), more divergence strategies, more providers and transports | Planned |
 
-Inside the MVP, milestones M0–M4 are done. Built from source, retrace can record an agent that talks to the LLM and to MCP servers over Streamable HTTP with `retrace record`, and replay that session offline with `retrace run <id>` (exact mode): recorded LLM and MCP answers are served from the cassette, and a request that was never recorded stops the replay as a divergence. Swap-model and diff come next, in the order of the [MVP plan](docs/plan/mvp.md).
+Inside the MVP, milestones M0–M5 are done. Built from source, retrace can record an agent that talks to the LLM and to MCP servers over Streamable HTTP with `retrace record`, and replay that session with `retrace run <id>` in any of the three modes:
+
+- `exact` serves every LLM and MCP answer from the cassette, offline.
+- `swap-model` (`--model`) forwards LLM requests with the model rewritten and serves MCP from the cassette.
+- `live-tools` (`--tools live`) forwards MCP to the real servers and serves the LLM from the cassette.
+
+A request that was never recorded stops the replay under `strict`. The agent gets `SIGTERM`, then `SIGKILL` after `--grace`, and retrace prints a divergence report with the first miss (and its JSON-path diff, when there is one), then exits `3`. `diff`, `ls` and `show` come next, in the order of the [MVP plan](docs/plan/mvp.md).
 
 ## Documentation
 
