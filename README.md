@@ -98,7 +98,7 @@ Inside the MVP, milestones M0–M6 are done. Built from source, retrace can reco
 
 A request that was never recorded stops the replay under `strict`. The agent gets `SIGTERM`, then `SIGKILL` after `--grace`, and retrace prints a divergence report with the first miss (and its JSON-path diff, when there is one), then exits `3`.
 
-Sessions can then be inspected and compared from the terminal. The examples below are real output, trimmed, taken from the golden files of the CLI tests, so each one comes from a different set of test sessions. `retrace ls` lists the cassettes, newest first, with their totals (`--json` for the same data unabbreviated):
+Sessions can then be inspected and compared from the terminal. The examples below are real output, trimmed, taken from the golden files of the CLI tests. The two examples come from different test fixtures, so their numbers do not match even where the session ids do. `retrace ls` lists the cassettes, newest first, with their totals (`--json` for the same data unabbreviated):
 
 ```text
 ID                     CREATED              MODE        PARENT    STATUS          STEPS  TOKENS      COST (est.)  DURATION
