@@ -68,22 +68,7 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 	var anthropic string
 	fs := flag.NewFlagSet("record", flag.ContinueOnError)
 	fs.StringVar(&opts.session, "session", "", "session id (generated if omitted)")
-	fs.Func("mcp", "register an MCP server as `name=url` (repeatable)", func(v string) error {
-		name, raw, ok := strings.Cut(v, "=")
-		if !ok || !mcpNamePattern.MatchString(name) {
-			return fmt.Errorf("want name=url, with a name of letters, digits, '_' or '-'")
-		}
-		if _, err := absoluteHTTPURL(raw); err != nil {
-			return err
-		}
-		for _, s := range opts.mcp {
-			if s.Name == name {
-				return fmt.Errorf("MCP server %q registered twice", name)
-			}
-		}
-		opts.mcp = append(opts.mcp, mcpServer{Name: name, URL: raw})
-		return nil
-	})
+	fs.Func("mcp", "register an MCP server as `name=url` (repeatable)", mcpFlag(&opts.mcp))
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
 	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL")
@@ -134,6 +119,26 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 		return opts, usageError(env.Stderr, err.Error()), false
 	}
 	return opts, 0, true
+}
+
+// mcpFlag parses one name=url value of --mcp into servers (spec §9.2).
+func mcpFlag(servers *[]mcpServer) func(string) error {
+	return func(v string) error {
+		name, raw, ok := strings.Cut(v, "=")
+		if !ok || !mcpNamePattern.MatchString(name) {
+			return fmt.Errorf("want name=url, with a name of letters, digits, '_' or '-'")
+		}
+		if _, err := absoluteHTTPURL(raw); err != nil {
+			return err
+		}
+		for _, s := range *servers {
+			if s.Name == name {
+				return fmt.Errorf("MCP server %q registered twice", name)
+			}
+		}
+		*servers = append(*servers, mcpServer{Name: name, URL: raw})
+		return nil
+	}
 }
 
 func absoluteHTTPURL(raw string) (*url.URL, error) {

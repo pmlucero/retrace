@@ -23,12 +23,14 @@ import (
 var mcpAgentServers = []string{"orders", "weather"}
 
 // What the run tests change in the MCP helper agent: the key it looks up
-// first (default A1), the order of its servers, and the order of its two
-// tool calls to each server.
+// first (default A1), the order of its servers, the order of its two tool
+// calls to each server, and whether it sends the LLM a follow-up request
+// with the first tool result.
 const (
-	mcpKeyEnv     = "RETRACE_TEST_MCP_KEY"
-	mcpReverseEnv = "RETRACE_TEST_MCP_REVERSE"
-	mcpSwapEnv    = "RETRACE_TEST_MCP_SWAP"
+	mcpKeyEnv      = "RETRACE_TEST_MCP_KEY"
+	mcpReverseEnv  = "RETRACE_TEST_MCP_REVERSE"
+	mcpSwapEnv     = "RETRACE_TEST_MCP_SWAP"
+	mcpFollowUpEnv = "RETRACE_TEST_MCP_FOLLOW_UP"
 )
 
 // mcpExchange is one HTTP exchange of the MCP helper agent, as it saw it.
@@ -86,6 +88,23 @@ func runMCPAgent() {
 		}
 		send(http.MethodGet, "")
 		send(http.MethodDelete, "")
+	}
+	if os.Getenv(mcpFollowUpEnv) != "" {
+		// What a real agent does with a tool result: the next request
+		// carries it, so a changed result changes that request (AC-18).
+		content, _ := json.Marshal(seen[3].Body)                                    // the first tool call
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, //nolint:gosec // G704: the proxy retrace injected
+			os.Getenv("ANTHROPIC_BASE_URL")+"/v1/messages",
+			strings.NewReader(`{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":`+string(content)+`}]}`))
+		req.Header.Set("X-Api-Key", agentAPIKey)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: see above
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "agent request failed:", err)
+			os.Exit(99)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
 	}
 	_ = json.NewEncoder(os.Stdout).Encode(seen)
 	os.Exit(0)

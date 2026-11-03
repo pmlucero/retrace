@@ -47,10 +47,12 @@ Runs the agent of session <id> again, by default with its recorded command
 and working directory, and answers its requests from the cassette. The
 replay is recorded as a new session.
 
-Without --model it is an exact replay. With --model it is a swap-model
-replay: LLM requests are forwarded to --anthropic-upstream with their model
-set to --model, and MCP is answered from the cassette. --tools live is not
-implemented yet.
+Without --model or --tools live it is an exact replay. With --model it is a
+swap-model replay: LLM requests are forwarded to --anthropic-upstream with
+their model set to --model, and MCP is answered from the cassette. With
+--tools live it is a live-tools replay: MCP requests are forwarded to the
+recorded servers, or to the --mcp URLs, and the LLM is answered from the
+cassette.
 
 Flags:
 `
@@ -65,14 +67,18 @@ type runOptions struct {
 	realtime     bool
 	listen       string
 	listenUnsafe bool
-	command      []string // nil: the recorded one
-	anthropic    *url.URL // the LLM upstream of swap-model
+	command      []string    // nil: the recorded one
+	anthropic    *url.URL    // the LLM upstream of swap-model
+	mcp          []mcpServer // the --mcp overrides of live-tools
 }
 
 // mode returns the replay mode the flags select (spec §9.3).
 func (o runOptions) mode() string {
-	if o.model != "" {
+	switch {
+	case o.model != "":
 		return "swap-model"
+	case o.tools == "live":
+		return "live-tools"
 	}
 	return "exact"
 }
@@ -85,7 +91,8 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.StringVar(&opts.as, "as", "", "id of the new session (default <id>.<mode>.<n>)")
 	fs.StringVar(&opts.model, "model", "", "replay with this model, forwarding LLM requests (swap-model)")
-	fs.StringVar(&opts.tools, "tools", "frozen", "frozen, or live (live-tools; not implemented yet)")
+	fs.StringVar(&opts.tools, "tools", "frozen", "frozen, or live to forward MCP to the real servers (live-tools)")
+	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&opts.mcp))
 	fs.StringVar(&opts.onMiss, "on-miss", "strict", "divergence strategy")
 	fs.DurationVar(&opts.grace, "grace", 5*time.Second, "how long the agent has to exit after SIGTERM on a cassette miss")
 	fs.BoolVar(&opts.realtime, "realtime", false, "replay SSE chunks with their recorded timing")
@@ -142,8 +149,8 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 		return opts, usageError(env.Stderr, "--model: want a model name"), false
 	case set["anthropic-upstream"] && opts.mode() != "swap-model":
 		return opts, usageError(env.Stderr, "--anthropic-upstream is only used with --model: the LLM is answered from the cassette"), false
-	case opts.tools == "live":
-		return opts, usageError(env.Stderr, "--tools live (live-tools) is not implemented in this version"), false
+	case len(opts.mcp) > 0 && opts.mode() != "live-tools":
+		return opts, usageError(env.Stderr, "--mcp is only used with --tools live: MCP is answered from the cassette"), false
 	case reservedStrategies[opts.onMiss]:
 		return opts, usageError(env.Stderr, fmt.Sprintf("--on-miss %s is not implemented in this version", opts.onMiss)), false
 	case opts.onMiss != "strict":
@@ -171,8 +178,7 @@ func indexOf(args []string, s string) int {
 	return -1
 }
 
-// runRun implements `retrace run` in exact and swap-model modes (spec §4.1,
-// §4.2, §4.4, §9.3).
+// runRun implements `retrace run` (spec §4, §9.3).
 func runRun(ctx context.Context, env *Env, args []string) int {
 	opts, code, ok := parseRunFlags(env, args)
 	if !ok {
@@ -235,9 +241,17 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		log.Error("cannot read the session's MCP servers", "session", opts.source, "error", err)
 		return ExitError
 	}
-	// swap-model forwards the LLM, so its recorded interactions are not
-	// queued: they are not expected to be served (spec §4.4).
-	queues, err := replayQueues(ctx, src, mode != "swap-model", servers)
+	// A forwarded channel is not queued: its recorded interactions are not
+	// expected to be served (spec §4.4).
+	var live []liveServer
+	replayed := servers
+	if mode == "live-tools" {
+		if live, err = liveMCPServers(srcSession.MCPServers, opts.mcp); err != nil {
+			return usageError(env.Stderr, err.Error()) // before the new session exists (spec §9.3)
+		}
+		replayed = nil
+	}
+	queues, err := replayQueues(ctx, src, mode != "swap-model", replayed)
 	if err != nil {
 		log.Error("cannot read the recorded interactions", "session", opts.source, "error", err)
 		return ExitError
@@ -256,10 +270,16 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	if mode == "swap-model" {
 		modelOverride = &opts.model
 	}
+	mcpServers := mcpServersCopy(srcSession.MCPServers)
+	var finish func(context.Context, *cassette.Cassette) error
+	if mode == "live-tools" {
+		// Completed from the replay's own exchanges, as in record (spec §9.3).
+		mcpServers, finish = liveMCPServersJSON(live, rules), storeMCPServerInfo
+	}
 	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
 		Mode: mode, ModelOverride: modelOverride, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
 		Command: command, Cwd: cwd, OnMiss: strategy.Name(),
-		MCPServers: mcpServersCopy(srcSession.MCPServers), Redaction: srcSession.Redaction, RetraceVersion: Version(),
+		MCPServers: mcpServers, Redaction: srcSession.Redaction, RetraceVersion: Version(),
 		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 	})
 	if err != nil {
@@ -277,8 +297,9 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 
 	// In exact mode every channel answers from the cassette and nothing is
 	// forwarded upstream (spec §4.1). swap-model forwards the LLM with the
-	// model rewritten (spec §4.2). A miss on a channel served from the
-	// cassette ends the replay (spec §6.2).
+	// model rewritten (spec §4.2), and live-tools forwards MCP unchanged
+	// (spec §4.3). A miss on a channel served from the cassette ends the
+	// replay (spec §6.2).
 	divergence := replay.NewDivergence()
 	replayOpts := replay.Options{Realtime: opts.realtime}
 	mux := http.NewServeMux()
@@ -293,7 +314,19 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 			Divergence: divergence, Strategy: strategy, Logger: log, Options: replayOpts,
 		})))
 	}
-	for _, name := range servers {
+	if mode == "live-tools" {
+		routes := make([]proxy.Route, len(live))
+		for i, sv := range live {
+			routes[i] = proxy.Route{Prefix: "/mcp/" + sv.name, Channel: "mcp", Upstream: "mcp:" + sv.name,
+				Target: sv.target, Provenance: "live"}
+		}
+		forward := proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log})
+		for _, rt := range routes {
+			mux.Handle(rt.Prefix, forward)
+			mux.Handle(rt.Prefix+"/", forward)
+		}
+	}
+	for _, name := range replayed {
 		prefix := "/mcp/" + name
 		h := http.StripPrefix(prefix, replay.NewMCPHandler(replay.MCPConfig{
 			Server: name, Source: src, Queues: queues.mcp[name], Redact: rules,
@@ -317,6 +350,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		cwd:      cwd,
 		diverged: divergence.Done(),
 		grace:    opts.grace,
+		finish:   finish,
 	})
 	if err != nil {
 		return ExitError
