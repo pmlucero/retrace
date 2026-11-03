@@ -110,7 +110,7 @@ func TestBuildSteps(t *testing.T) {
 			},
 		},
 		{
-			// The race of §8.2 and §7.4 (Order): the agent acts on the
+			// AC-19. The race of §8.2 and §7.4 (Order): the agent acts on the
 			// streamed response of request 2 before its model_response is
 			// appended, so the tool_call (request 3) has the lower seq. An
 			// identical replay may append them the other way round; by
@@ -126,7 +126,20 @@ func TestBuildSteps(t *testing.T) {
 			},
 		},
 		{
-			// Requests 1 and 2 run concurrently and complete in reverse
+			// AC-19. The same session as above, with the tool_call appended
+			// after the model_response: the same steps.
+			name: "tool_call appended after its model_response",
+			events: []cassette.Event{
+				iid(resp(1, ""), 1), iid(resp(2, ""), 2), iid(ev(3, "tool_use", 2), 2),
+				iid(ev(4, "tool_call", 0), 3), iid(ev(5, "tool_result", 4), 3),
+			},
+			want: []shape{
+				{N: 1, Response: 1},
+				{N: 2, Response: 2, ToolUses: []int64{3}, ToolCalls: []int64{4}, ToolResults: []int64{5}},
+			},
+		},
+		{
+			// AC-19. Requests 1 and 2 run concurrently and complete in reverse
 			// order, so their model_response seqs are swapped. Steps follow
 			// the requests, not the completions.
 			name: "concurrent requests that complete in reverse order",
