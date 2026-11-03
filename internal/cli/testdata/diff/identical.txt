@@ -1,0 +1,10 @@
+retrace diff checkout  live
+
+               A: claude-sonnet-4-5    B: claude-sonnet-4-5
+steps          3                       3
+tool calls     2                       2
+tokens         3,000 in / 300 out      3,000 in / 300 out
+cost (est.)    $0.03                   $0.03
+duration       38.2s                   never ended
+
+✓ trajectories identical (3 steps, 2 tool calls)

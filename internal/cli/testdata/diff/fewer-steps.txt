@@ -1,0 +1,14 @@
+retrace diff checkout  short
+
+               A: claude-sonnet-4-5    B: claude-sonnet-4-5
+steps          3                       1
+tool calls     2                       1
+tokens         3,000 in / 300 out      1,000 in / 100 out
+cost (est.)    $0.03                   $0.01
+duration       38.2s                   1.0s
+
+✗ first divergence at step 2, event model_response
+    A  model claude-sonnet-4-5
+    B  (none: only A has a step 2)
+
+  step 1 identical (1 tool call)
