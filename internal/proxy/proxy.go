@@ -29,6 +29,14 @@ type Route struct {
 	Channel  string   // llm or mcp (spec §7.3)
 	Upstream string   // anthropic or mcp:<name>
 	Target   *url.URL // where requests under Prefix are forwarded
+
+	// Provenance is stored with each interaction (spec §7.3). Empty selects
+	// recorded; a replay that forwards a route uses live (spec §4.2).
+	Provenance string
+	// Rewrite, if set, returns the body to forward for a request with method
+	// and path, relative to Prefix and without the query. The cassette
+	// stores the body as the agent sent it (spec §4.2).
+	Rewrite func(method, path string, body []byte) []byte
 }
 
 // Config configures a Proxy.
@@ -115,7 +123,10 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	in := cassette.Interaction{
 		Channel: rt.Channel, Upstream: rt.Upstream, HTTPMethod: r.Method, Path: path,
-		RequestHeaders: p.headersJSON(r.Header), StartedAt: start, Provenance: "recorded",
+		RequestHeaders: p.headersJSON(r.Header), StartedAt: start, Provenance: rt.Provenance,
+	}
+	if in.Provenance == "" {
+		in.Provenance = "recorded"
 	}
 	ex := &exchange{p: p, start: start}
 	var blobs [][]byte
@@ -133,6 +144,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	out := r.Clone(context.WithValue(r.Context(), exchangeKey{}, ex))
 	out.URL.Path, out.URL.RawPath = rest, ""
+	if rt.Rewrite != nil {
+		if fwd := rt.Rewrite(r.Method, rest, body); !bytes.Equal(fwd, body) {
+			out.Body = io.NopCloser(bytes.NewReader(fwd))
+			out.ContentLength = int64(len(fwd))
+			out.Header.Del("Content-Length")
+		}
+	}
 	rt.rp.ServeHTTP(w, out)
 }
 
