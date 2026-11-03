@@ -554,7 +554,8 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 		return nil, "", fmt.Errorf("creating %s: %w", dir, err)
 	}
 	for range 100 {
-		c, err := cassette.Create(ctx, cassette.Path(dir, id))
+		s.ID = id
+		c, err := createSessionCassette(ctx, cassette.Path(dir, id), s)
 		if errors.Is(err, cassette.ErrExists) && !explicit {
 			prefix := strings.TrimRightFunc(id, func(r rune) bool { return r >= '0' && r <= '9' })
 			n, _ := strconv.Atoi(strings.TrimPrefix(id, prefix))
@@ -573,11 +574,6 @@ func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s 
 		}
 		if err != nil {
 			return nil, "", fmt.Errorf("creating session %s: %w", id, err)
-		}
-		s.ID = id
-		if err := c.Write(ctx, func(tx *cassette.Tx) error { return tx.InsertSession(ctx, s) }); err != nil {
-			_ = c.Close()
-			return nil, "", fmt.Errorf("writing session %s: %w", id, err)
 		}
 		return c, id, nil
 	}

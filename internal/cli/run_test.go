@@ -294,6 +294,20 @@ func TestRunBusyPortLeavesNothingBehind(t *testing.T) {
 	}
 }
 
+// #56: when the replay's session row cannot be written, run exits 1 and
+// leaves no replay cassette, so the default id is not used up.
+func TestRunFailedSessionInsertLeavesNothingBehind(t *testing.T) {
+	dir := t.TempDir()
+	recordForReplay(t, dir, "s", 1)
+
+	failSessionInsert(t)
+	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	if r.code != ExitError || !strings.Contains(r.stderr.String(), errInsertFailed.Error()) {
+		t.Errorf("exit %d, stderr %q; want %d and the insert's error", r.code, r.stderr, ExitError)
+	}
+	assertDirHolds(t, dir, "s.cassette")
+}
+
 // spec §9.7: a --dir that cannot be listed is a runtime error, not a usage one.
 func TestRunUnreadableDirIsARuntimeError(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "file")

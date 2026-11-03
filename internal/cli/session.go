@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -15,6 +16,28 @@ import (
 // finishTimeout bounds each step of ending a session: waiting for in-flight
 // interactions, then writing what is queued (spec §3.1).
 const finishTimeout = 10 * time.Second
+
+// insertSession writes a new cassette's session row. It is a variable so that
+// tests can make the insert fail.
+var insertSession = (*cassette.Tx).InsertSession
+
+// createSessionCassette creates the cassette at path with session row s. If
+// the row cannot be written, it closes and removes the file, so a failed start
+// leaves no cassette without a session and the id stays free (#56). Errors
+// from cassette.Create are wrapped, so callers can test for
+// cassette.ErrExists.
+func createSessionCassette(ctx context.Context, path string, s cassette.Session) (*cassette.Cassette, error) {
+	c, err := cassette.Create(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Write(ctx, func(tx *cassette.Tx) error { return insertSession(tx, ctx, s) }); err != nil {
+		// Create made this file (it refuses an existing one), so removing it
+		// cannot touch another session's cassette.
+		return nil, errors.Join(fmt.Errorf("writing session %s: %w", s.ID, err), c.Close(), cassette.Remove(path))
+	}
+	return c, nil
+}
 
 // sessionConfig is what runSession needs to run one agent session against a
 // local proxy, for recording or for replay.
