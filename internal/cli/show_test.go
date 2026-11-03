@@ -29,9 +29,16 @@ func toolResult(seq, parent int64, tool, result string) cassette.Event {
 	}
 }
 
-// seedShowSession writes a replay with metadata, a long argument, and gaps
-// in its seqs: one before the first event, one in the middle, and one at
-// the end that left no seq behind.
+// later returns e with its started_at moved forward by d, to give it a
+// sub-second time.
+func later(e cassette.Event, d time.Duration) cassette.Event {
+	e.StartedAt = e.StartedAt.Add(d)
+	return e
+}
+
+// seedShowSession writes a replay with metadata, a long argument, gaps in
+// its seqs (one before the first event, one in the middle, and one at the
+// end that left no seq behind) and two events with a sub-second started_at.
 func seedShowSession(t *testing.T, dir string, dropped int) {
 	t.Helper()
 	parent, model, exit := "checkout", "claude-haiku-9", 0
@@ -44,8 +51,8 @@ func seedShowSession(t *testing.T, dir string, dropped int) {
 			Labels: map[string]string{"team": "core", "env": "ci"}, RetraceVersion: "v0.1.0-dev",
 		},
 		&cassette.SessionEnd{Status: "completed", EndedAt: lsT0.Add(75 * time.Second), AgentExitCode: &exit, DroppedEvents: dropped},
-		response(2, "claude-haiku-9", 1_200, 80, cost(0.002)),
-		toolCall(3, "search_orders", long),
+		later(response(2, "claude-haiku-9", 1_200, 80, cost(0.002)), 500*time.Millisecond),
+		later(toolCall(3, "search_orders", long), 123456*time.Microsecond),
 		toolResult(4, 3, "search_orders", `{"orders":[]}`),
 		response(6, "claude-haiku-9", 1_500, 90, nil),
 	)
@@ -96,6 +103,7 @@ func TestShowJSON(t *testing.T) {
 		checkGolden(t, "show/events.jsonl", r.stdout.String())
 
 		var seqs []int64
+		var times []string
 		sc := bufio.NewScanner(strings.NewReader(r.stdout.String()))
 		for sc.Scan() {
 			var e showEvent
@@ -103,9 +111,29 @@ func TestShowJSON(t *testing.T) {
 				t.Fatalf("line %q: %v", sc.Text(), err)
 			}
 			seqs = append(seqs, e.Seq)
+			// Decode started_at again as a string: showEvent parses it into a
+			// time.Time, which would hide the emitted form.
+			var raw struct {
+				StartedAt string `json:"started_at"`
+			}
+			if err := json.Unmarshal(sc.Bytes(), &raw); err != nil {
+				t.Fatalf("line %q: %v", sc.Text(), err)
+			}
+			times = append(times, raw.StartedAt)
 		}
 		if want := []int64{2, 3, 4, 6}; !slices.Equal(seqs, want) {
 			t.Errorf("seqs = %v, want %v", seqs, want)
+		}
+		// AC-22, spec §9.6: started_at is RFC 3339 in UTC with the trailing
+		// zeros of the fraction left out, unlike the stored form of §7.1.
+		wantTimes := []string{
+			"2026-10-23T09:30:02.5Z",
+			"2026-10-23T09:30:03.123456Z",
+			"2026-10-23T09:30:04Z",
+			"2026-10-23T09:30:06Z",
+		}
+		if !slices.Equal(times, wantTimes) {
+			t.Errorf("started_at = %q, want %q", times, wantTimes)
 		}
 	}
 }

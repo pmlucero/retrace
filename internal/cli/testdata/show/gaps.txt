@@ -22,8 +22,8 @@ warning: the event log is incomplete: 4 events were not written, so the totals m
 
 SEQ  TIME   SOURCE → TARGET   KIND            TOOL           ARGUMENTS                                                      STATUS
 …                                                            1 event missing (seq 1)
-2    +2.0s  model → agent     model_response                                                                                ok
-3    +3.0s  agent → mcp:shop  tool_call       search_orders  {"query":"éééééééééééééééééééééééééééééééééééééééééééééééééé…  ok
+2    +2.5s  model → agent     model_response                                                                                ok
+3    +3.1s  agent → mcp:shop  tool_call       search_orders  {"query":"éééééééééééééééééééééééééééééééééééééééééééééééééé…  ok
 4    +4.0s  mcp:shop → agent  tool_result     search_orders                                                                 ok
 …                                                            1 event missing (seq 5)
 6    +6.0s  model → agent     model_response                                                                                ok
