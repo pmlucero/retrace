@@ -53,13 +53,14 @@ func (c *Cassette) Session(ctx context.Context) (Session, error) {
 	return s, nil
 }
 
+// interactionColumns are the columns that scanInteraction reads, in order.
+const interactionColumns = `id, channel, upstream, http_method, path, status_code, request_headers,
+	response_headers, request_blob, response_blob, streamed, fingerprint, canonical_blob, started_at,
+	ttfb_ms, duration_ms, provenance, source_interaction_id, error`
+
 // Interactions returns all interactions in arrival order.
 func (c *Cassette) Interactions(ctx context.Context) ([]Interaction, error) {
-	rows, err := c.db.QueryContext(ctx, `
-		SELECT id, channel, upstream, http_method, path, status_code, request_headers, response_headers,
-			request_blob, response_blob, streamed, fingerprint, canonical_blob, started_at, ttfb_ms,
-			duration_ms, provenance, source_interaction_id, error
-		FROM interactions ORDER BY id`)
+	rows, err := c.db.QueryContext(ctx, `SELECT `+interactionColumns+` FROM interactions ORDER BY id`)
 	if err != nil {
 		return nil, fmt.Errorf("reading interactions of %s: %w", c.path, err)
 	}
@@ -67,35 +68,58 @@ func (c *Cassette) Interactions(ctx context.Context) ([]Interaction, error) {
 
 	var out []Interaction
 	for rows.Next() {
-		var (
-			in                                                  Interaction
-			statusCode, ttfb, duration, sourceID                sql.NullInt64
-			requestHeaders, startedAt                           string
-			responseHeaders, reqBlob, respBlob, fp, canon, ierr sql.NullString
-		)
-		if err := rows.Scan(&in.ID, &in.Channel, &in.Upstream, &in.HTTPMethod, &in.Path, &statusCode,
-			&requestHeaders, &responseHeaders, &reqBlob, &respBlob, &in.Streamed, &fp, &canon, &startedAt,
-			&ttfb, &duration, &in.Provenance, &sourceID, &ierr); err != nil {
+		in, err := scanInteraction(rows)
+		if err != nil {
 			return nil, fmt.Errorf("reading interactions of %s: %w", c.path, err)
 		}
-		if in.StartedAt, err = parseTime(startedAt); err != nil {
-			return nil, fmt.Errorf("reading interaction %d of %s: started_at: %w", in.ID, c.path, err)
-		}
-		in.StatusCode = intPtr(statusCode)
-		in.RequestHeaders = json.RawMessage(requestHeaders)
-		if responseHeaders.Valid {
-			in.ResponseHeaders = json.RawMessage(responseHeaders.String)
-		}
-		in.RequestBlob, in.ResponseBlob = stringPtr(reqBlob), stringPtr(respBlob)
-		in.Fingerprint, in.CanonicalBlob, in.Error = stringPtr(fp), stringPtr(canon), stringPtr(ierr)
-		in.TTFBMillis, in.DurationMillis = int64Ptr(ttfb), int64Ptr(duration)
-		in.SourceInteractionID = int64Ptr(sourceID)
 		out = append(out, in)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("reading interactions of %s: %w", c.path, err)
 	}
 	return out, nil
+}
+
+// Interaction returns the interaction with the given id, or ErrNotFound.
+func (c *Cassette) Interaction(ctx context.Context, id int64) (Interaction, error) {
+	row := c.db.QueryRowContext(ctx, `SELECT `+interactionColumns+` FROM interactions WHERE id = ?`, id)
+	in, err := scanInteraction(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = ErrNotFound
+	}
+	if err != nil {
+		return Interaction{}, fmt.Errorf("reading interaction %d of %s: %w", id, c.path, err)
+	}
+	return in, nil
+}
+
+// scanInteraction reads one row of interactionColumns.
+func scanInteraction(row interface{ Scan(...any) error }) (Interaction, error) {
+	var (
+		in                                                  Interaction
+		statusCode, ttfb, duration, sourceID                sql.NullInt64
+		requestHeaders, startedAt                           string
+		responseHeaders, reqBlob, respBlob, fp, canon, ierr sql.NullString
+	)
+	if err := row.Scan(&in.ID, &in.Channel, &in.Upstream, &in.HTTPMethod, &in.Path, &statusCode,
+		&requestHeaders, &responseHeaders, &reqBlob, &respBlob, &in.Streamed, &fp, &canon, &startedAt,
+		&ttfb, &duration, &in.Provenance, &sourceID, &ierr); err != nil {
+		return Interaction{}, err
+	}
+	var err error
+	if in.StartedAt, err = parseTime(startedAt); err != nil {
+		return Interaction{}, fmt.Errorf("interaction %d: started_at: %w", in.ID, err)
+	}
+	in.StatusCode = intPtr(statusCode)
+	in.RequestHeaders = json.RawMessage(requestHeaders)
+	if responseHeaders.Valid {
+		in.ResponseHeaders = json.RawMessage(responseHeaders.String)
+	}
+	in.RequestBlob, in.ResponseBlob = stringPtr(reqBlob), stringPtr(respBlob)
+	in.Fingerprint, in.CanonicalBlob, in.Error = stringPtr(fp), stringPtr(canon), stringPtr(ierr)
+	in.TTFBMillis, in.DurationMillis = int64Ptr(ttfb), int64Ptr(duration)
+	in.SourceInteractionID = int64Ptr(sourceID)
+	return in, nil
 }
 
 // Chunks returns the SSE chunks of one interaction, in order.
