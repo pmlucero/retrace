@@ -14,7 +14,8 @@ import (
 const diffFormatVersion = 1
 
 // diffDocument is the document of `diff --format json`. Its schema is
-// docs/schema/diff.v1.json, so a field added here goes there too.
+// docs/schema/diff.v1.json, so a field added here goes there too: the
+// schema is open for consumers, but TestDiffJSON rejects undeclared members.
 type diffDocument struct {
 	FormatVersion   int             `json:"format_version"`
 	A               diffSessionJSON `json:"a"`
@@ -44,7 +45,9 @@ type diffStopJSON struct {
 }
 
 // diffPointJSON is the divergence point (spec §8.3 step 3). Its diff values
-// are the JSON values themselves, not the 80-character text form.
+// are JSON values, not the 80-character text form of the text output. A
+// value whose compact JSON is over divergence.MaxValueBytes is still the
+// string "[retrace: <n> bytes elided]", and DiffTruncated is set (spec §6.4).
 type diffPointJSON struct {
 	Step          int             `json:"step"`
 	Kind          string          `json:"kind"`
@@ -95,7 +98,7 @@ type diffSpanJSON struct {
 }
 
 // writeJSON writes the JSON output (spec §8.4): the same information as
-// writeText, unabbreviated.
+// writeText, with the totals unabbreviated.
 func (r diffReport) writeJSON(w io.Writer) error {
 	res := r.result
 	doc := diffDocument{
@@ -108,6 +111,8 @@ func (r diffReport) writeJSON(w io.Writer) error {
 		TextDifferences: res.TextDifferences,
 	}
 	if doc.TextDifferences == nil {
+		// Compare never returns nil, but spec §8.4 requires an array, and
+		// a nil slice would encode as null.
 		doc.TextDifferences = []int{}
 	}
 	if span := res.Identical; span.Last >= span.First {

@@ -173,6 +173,11 @@ func decodeJSON(t *testing.T, s string) any {
 // that docs/schema/diff.v1.json uses. It is a test helper, not a general
 // validator: loadDiffSchema fails on any keyword it does not implement, so
 // the schema cannot grow a keyword that this test would silently ignore.
+//
+// It is stricter than the schema in one way: it rejects an object member
+// that the schema does not declare. The published schema is open, so that
+// adding a member stays backward compatible for consumers, but a member
+// added to the output must still be added to the schema.
 type jsonSchema struct {
 	root map[string]any
 }
@@ -181,7 +186,7 @@ type jsonSchema struct {
 // ($schema, $id, title, description) have no effect on validation.
 var schemaKeywords = map[string]bool{
 	"$schema": true, "$id": true, "title": true, "description": true, "$defs": true, "$ref": true,
-	"type": true, "properties": true, "required": true, "additionalProperties": true,
+	"type": true, "properties": true, "required": true,
 	"items": true, "enum": true, "const": true, "minimum": true, "oneOf": true,
 }
 
@@ -211,9 +216,6 @@ func checkKeywords(at string, s map[string]any) error {
 	for _, k := range slices.Sorted(maps.Keys(s)) {
 		if !schemaKeywords[k] {
 			return fmt.Errorf("%s: keyword %q is not supported by the test validator; extend it", at, k)
-		}
-		if k == "additionalProperties" && s[k] != false {
-			return fmt.Errorf("%s: only additionalProperties false is supported", at)
 		}
 	}
 	var subs []string
@@ -318,13 +320,13 @@ func (js jsonSchema) checkObject(at string, s map[string]any, obj map[string]any
 			}
 		}
 	}
+	if props == nil {
+		return nil // any object, such as stored arguments
+	}
 	for _, name := range slices.Sorted(maps.Keys(obj)) {
 		sub, ok := props[name].(map[string]any)
 		if !ok {
-			if s["additionalProperties"] == false {
-				return fmt.Errorf("%s: member %q is not allowed", at, name)
-			}
-			continue
+			return fmt.Errorf("%s: member %q is not declared in the schema", at, name)
 		}
 		if err := js.check(at+"."+name, sub, obj[name]); err != nil {
 			return err

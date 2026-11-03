@@ -2,9 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/pmlucero/retrace/main/docs/schema/diff.v1.json",
   "title": "retrace diff --format json, format_version 1",
-  "description": "The document that `retrace diff --format json` writes (spec §8.4). Values read from a cassette, such as statuses, kinds and token sums, are not constrained further than their type: a cassette is untrusted input, and the document reports what it holds.",
+  "description": "The document that `retrace diff --format json` writes (spec §8.4). Values read from a cassette, such as statuses, kinds and token sums, are not constrained further than their type: a cassette is untrusted input, and the document reports what it holds. Objects are open: a member added in a later version without a new format_version is backward compatible, so consumers ignore members they do not know.",
   "type": "object",
-  "additionalProperties": false,
   "required": ["format_version", "a", "b", "identical", "first_divergence", "identical_steps", "text_compared", "text_differences"],
   "properties": {
     "format_version": {
@@ -38,7 +37,6 @@
     "session": {
       "description": "A session and its totals (spec §8.2), with the same members as an entry of `retrace ls --json`, plus its strict stop.",
       "type": "object",
-      "additionalProperties": false,
       "required": [
         "id", "created_at", "ended_at", "mode", "parent_session_id", "status", "dropped_events",
         "steps", "tool_calls", "tokens_in", "tokens_out", "cost_usd", "unpriced_responses", "models",
@@ -89,7 +87,6 @@
     },
     "stop": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["step", "seq", "channel", "upstream"],
       "properties": {
         "step": { "type": "integer", "minimum": 0 },
@@ -107,7 +104,6 @@
     "point": {
       "description": "The divergence point (spec §8.3 step 3).",
       "type": "object",
-      "additionalProperties": false,
       "required": ["step", "kind", "field", "a", "b", "stop_a", "stop_b", "diff", "diff_truncated", "more_paths"],
       "properties": {
         "step": {
@@ -145,7 +141,7 @@
           "items": { "$ref": "#/$defs/entry" }
         },
         "diff_truncated": {
-          "description": "True when paths were left out of diff or a value was elided (spec §6.4).",
+          "description": "True when paths were left out of diff or a value was elided as \"[retrace: <n> bytes elided]\" (spec §6.4).",
           "type": "boolean"
         },
         "more_paths": {
@@ -157,7 +153,6 @@
     "event": {
       "description": "The members of an event that action identity compares (spec §8.3 step 1), and its seq. arguments and result are the stored JSON, or a string when the stored value is not JSON.",
       "type": "object",
-      "additionalProperties": false,
       "required": ["seq", "kind", "source", "target", "tool", "arguments", "result", "status"],
       "properties": {
         "seq": { "type": "integer" },
@@ -173,7 +168,6 @@
     "marker": {
       "description": "A stop marker (spec §8.2): the stop_reason of the last model response, or its error when its status is error.",
       "type": "object",
-      "additionalProperties": false,
       "required": ["failed", "stop_reason", "error"],
       "properties": {
         "failed": { "description": "True when the response's status is error.", "type": "boolean" },
@@ -182,9 +176,8 @@
       }
     },
     "entry": {
-      "description": "One path that differs. A side without the path has no member: expected for A, received for B.",
+      "description": "One path that differs. A side without the path has no member: expected for A, received for B. A value whose compact JSON is longer than 1024 bytes is replaced by the string \"[retrace: <n> bytes elided]\", and diff_truncated is set (spec §6.4).",
       "type": "object",
-      "additionalProperties": false,
       "required": ["path"],
       "properties": {
         "path": { "type": "string" },
@@ -194,7 +187,6 @@
     },
     "span": {
       "type": "object",
-      "additionalProperties": false,
       "required": ["first", "last", "tool_calls"],
       "properties": {
         "first": { "type": "integer", "minimum": 0 },
