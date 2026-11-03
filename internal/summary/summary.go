@@ -19,7 +19,8 @@ type Totals struct {
 	TokensIn  int64 // sum of tokens_in over model_response events
 	TokensOut int64 // sum of tokens_out over model_response events
 	// CostUSD is the sum of the known cost_usd of model_response events. A
-	// null cost is never guessed (spec §7.5), so it adds nothing here.
+	// null cost is never guessed (spec §7.5), so it adds nothing here. It is
+	// always a finite number (spec §8.2).
 	CostUSD float64
 	// Unpriced counts the model_response events that have tokens but a null
 	// cost_usd. A response without tokens, such as an API error or a cassette
@@ -35,8 +36,10 @@ type Totals struct {
 	DroppedEvents int // from the session row (spec §7.7)
 }
 
-// Of computes the totals of session s from its events. Events of other
-// sessions must not be passed: Of does not check.
+// Of computes the totals of session s from its events, which must be in seq
+// order, as the cassette reads them: a cost that would make the sum not
+// finite counts as null, so the order decides which one does (spec §8.2).
+// Events of other sessions must not be passed: Of does not check either.
 func Of(s cassette.Session, events []cassette.Event) Totals {
 	t := Totals{DroppedEvents: s.DroppedEvents}
 	seen := map[string]bool{}
@@ -56,9 +59,9 @@ func Of(s cassette.Session, events []cassette.Event) Totals {
 			// billed: any billed response has both, and cache tokens only
 			// come with them, so checking the cache fields too would change
 			// nothing.
-			switch {
-			case e.CostUSD != nil:
-				t.CostUSD += *e.CostUSD
+			switch cost, ok := knownCost(e.CostUSD, t.CostUSD); {
+			case ok:
+				t.CostUSD = cost
 				t.Priced++
 			case positive(e.TokensIn) || positive(e.TokensOut):
 				t.Unpriced++
@@ -76,6 +79,20 @@ func Of(s cassette.Session, events []cassette.Event) Totals {
 		t.Duration = &d
 	}
 	return t
+}
+
+// knownCost returns sum plus cost, and false when cost counts as null: when it
+// is null, less than zero or not finite, which a valid cassette never holds,
+// or when it would make the sum not finite (spec §8.2). The sum then stays a
+// number that every output, JSON included, can show.
+func knownCost(cost *float64, sum float64) (float64, bool) {
+	if cost == nil || *cost < 0 || math.IsInf(*cost, 0) || math.IsNaN(*cost) {
+		return sum, false
+	}
+	if next := sum + *cost; !math.IsInf(next, 0) {
+		return next, true
+	}
+	return sum, false
 }
 
 func positive(n *int64) bool {
