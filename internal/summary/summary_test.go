@@ -1,6 +1,7 @@
 package summary
 
 import (
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -76,9 +77,10 @@ func TestOf(t *testing.T) {
 				{Kind: "model_response", Status: "divergence", TokensIn: ptr(int64(0))},                      // cassette miss
 				{Kind: "model_response", Model: ptr("a"), TokensIn: ptr(int64(0)), TokensOut: ptr(int64(0))}, // zero usage
 				{Kind: "model_response", Model: ptr("a"), TokensIn: ptr(int64(5))},                           // input only
-				{Kind: "model_response", Model: ptr("a"), TokensOut: ptr(int64(7))},                          // output only
+				{Kind: "model_response", Model: ptr("a"), TokensOut: ptr(int64(7))},
+				{Kind: "model_response", Model: ptr("a"), CostUSD: ptr(0.5)}, // a known cost counts even without tokens                          // output only
 			},
-			want: Totals{Steps: 5, TokensIn: 5, TokensOut: 7, Unpriced: 2, Models: []string{"a"}},
+			want: Totals{Steps: 6, TokensIn: 5, TokensOut: 7, CostUSD: 0.5, Unpriced: 2, Priced: 1, Models: []string{"a"}},
 		},
 		{
 			name:    "models in order of first appearance",
@@ -151,11 +153,35 @@ func TestFormatTokens(t *testing.T) {
 		{999_950, "1.0M"},
 		{1_234_567, "1.2M"},
 		{25_000_000_000, "25000.0M"},
+		{-950, "-950"},
 		{-41230, "-41.2k"},
+		{math.MinInt64, "-9223372036854.8M"},
 	}
 	for _, tt := range tests {
 		if got := FormatTokens(tt.n); got != tt.want {
 			t.Errorf("FormatTokens(%d) = %q, want %q", tt.n, got, tt.want)
+		}
+	}
+}
+
+func TestFormatCount(t *testing.T) {
+	tests := []struct {
+		n    int64
+		want string
+	}{
+		{0, "0"},
+		{999, "999"},
+		{1000, "1,000"},
+		{3902, "3,902"},
+		{41230, "41,230"},
+		{1_234_567, "1,234,567"},
+		{-41230, "-41,230"},
+		{-999, "-999"},
+		{math.MinInt64, "-9,223,372,036,854,775,808"},
+	}
+	for _, tt := range tests {
+		if got := FormatCount(tt.n); got != tt.want {
+			t.Errorf("FormatCount(%d) = %q, want %q", tt.n, got, tt.want)
 		}
 	}
 }
@@ -177,6 +203,7 @@ func TestFormatDuration(t *testing.T) {
 		{59*time.Minute + 59*time.Second + 600*time.Millisecond, "1h00m00s"},
 		{time.Hour + 2*time.Minute + 3*time.Second, "1h02m03s"},
 		{-1500 * time.Millisecond, "-1.5s"},
+		{math.MinInt64, "-2562047h47m16s"}, // Round saturates at the maximum duration
 	}
 	for _, tt := range tests {
 		if got := FormatDuration(tt.d); got != tt.want {

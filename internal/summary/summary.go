@@ -5,6 +5,7 @@ package summary
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 
@@ -51,6 +52,10 @@ func Of(s cassette.Session, events []cassette.Event) Totals {
 			if e.TokensOut != nil {
 				t.TokensOut += *e.TokensOut
 			}
+			// Only input and output tokens decide whether a response was
+			// billed: any billed response has both, and cache tokens only
+			// come with them, so checking the cache fields too would change
+			// nothing.
 			switch {
 			case e.CostUSD != nil:
 				t.CostUSD += *e.CostUSD
@@ -97,21 +102,25 @@ func FormatCost(t Totals) string {
 	return sum
 }
 
-// FormatTokens abbreviates a token count for narrow columns: as is below
+// FormatTokens abbreviates a token count for the narrow columns of ls
+// (spec §9.5). Outputs with room for the exact count, such as diff (spec
+// §8.4), use FormatCount. It shows the count as is below
 // 1,000, else rounded to one decimal with a k or M suffix ("950", "41.2k",
 // "1.2M"). A value that rounds up to the next unit uses it, so 999,960 is
 // "1.0M", not "1000.0k".
 func FormatTokens(n int64) string {
-	if n < 0 {
-		return "-" + FormatTokens(-n)
+	if n > -1000 && n < 1000 {
+		return strconv.FormatInt(n, 10)
 	}
-	if n < 1000 {
-		return fmt.Sprintf("%d", n)
+	// Working on the magnitude as a float avoids negating math.MinInt64.
+	sign, f := "", float64(n)
+	if f < 0 {
+		sign, f = "-", -f
 	}
-	if k := math.Round(float64(n)/100) / 10; k < 1000 {
-		return fmt.Sprintf("%.1fk", k)
+	if k := math.Round(f/100) / 10; k < 1000 {
+		return fmt.Sprintf("%s%.1fk", sign, k)
 	}
-	return fmt.Sprintf("%.1fM", math.Round(float64(n)/100_000)/10)
+	return fmt.Sprintf("%s%.1fM", sign, math.Round(f/100_000)/10)
 }
 
 // FormatDuration renders d compactly: seconds with one decimal below a minute
@@ -120,7 +129,8 @@ func FormatTokens(n int64) string {
 // rounded first, so 59.96s is "1m00s", not "60.0s".
 func FormatDuration(d time.Duration) string {
 	if d < 0 {
-		return "-" + FormatDuration(-d)
+		// Abs saturates instead of overflowing on the minimum duration.
+		return "-" + FormatDuration(d.Abs())
 	}
 	if r := d.Round(100 * time.Millisecond); r < time.Minute {
 		return fmt.Sprintf("%.1fs", r.Seconds())
@@ -134,5 +144,24 @@ func FormatDuration(d time.Duration) string {
 		fmt.Fprintf(&b, "%dm", m)
 	}
 	fmt.Fprintf(&b, "%02ds", s)
+	return b.String()
+}
+
+// FormatCount renders n in full with comma thousands separators ("41,230"),
+// for outputs that show exact token counts, such as diff (spec §8.4).
+func FormatCount(n int64) string {
+	digits := strconv.FormatInt(n, 10)
+	var b strings.Builder
+	if n < 0 {
+		// Formatting before taking the sign off avoids negating math.MinInt64.
+		b.WriteByte('-')
+		digits = digits[1:]
+	}
+	for i, d := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			b.WriteByte(',')
+		}
+		b.WriteRune(d)
+	}
 	return b.String()
 }
