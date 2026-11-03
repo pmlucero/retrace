@@ -1,0 +1,30 @@
+session         checkout.swap-model.1
+mode            swap-model
+parent          checkout
+status          completed
+created         2026-10-23 09:30:00
+ended           2026-10-23 09:31:15
+command         python agent.py --fast
+cwd             /work
+exit code       0
+model override  claude-haiku-9
+mcp servers     shop
+labels          env=ci, team=core
+recorded by     retrace v0.1.0-dev
+steps           2
+tool calls      1
+tokens          2,700 in / 170 out
+cost (est.)     <$0.01 + 1 unpriced
+models          claude-haiku-9
+duration        1m15s
+
+warning: the event log is incomplete: 4 events were not written, so the totals may be low
+
+SEQ  TIME   SOURCE → TARGET   KIND            TOOL           ARGUMENTS                                                      STATUS
+…                                                            1 event missing (seq 1)
+2    +2.0s  model → agent     model_response                                                                                ok
+3    +3.0s  agent → mcp:shop  tool_call       search_orders  {"query":"éééééééééééééééééééééééééééééééééééééééééééééééééé…  ok
+4    +4.0s  mcp:shop → agent  tool_result     search_orders                                                                 ok
+…                                                            1 event missing (seq 5)
+6    +6.0s  model → agent     model_response                                                                                ok
+…                                                            2 events missing after seq 6

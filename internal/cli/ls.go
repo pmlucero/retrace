@@ -149,7 +149,8 @@ func writeLsTable(w io.Writer, sessions []listed) error {
 			duration = summary.FormatDuration(*t.Duration)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s/%s\t%s\t%s\n",
-			s.ID, s.CreatedAt.In(displayLocation).Format(createdLayout), s.Mode, parent, status, t.Steps,
+			printable(s.ID), s.CreatedAt.In(displayLocation).Format(createdLayout), printable(s.Mode),
+			printable(parent), printable(status), t.Steps,
 			summary.FormatTokens(t.TokensIn), summary.FormatTokens(t.TokensOut), summary.FormatCost(t), duration)
 	}
 	if err := tw.Flush(); err != nil {
