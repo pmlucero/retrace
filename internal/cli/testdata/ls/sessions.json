@@ -1,0 +1,76 @@
+[
+  {
+    "id": "live",
+    "created_at": "2026-10-23T12:30:00Z",
+    "ended_at": null,
+    "mode": "record",
+    "parent_session_id": null,
+    "status": "recording",
+    "dropped_events": 0,
+    "steps": 0,
+    "tool_calls": 0,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "cost_usd": 0,
+    "unpriced_responses": 0,
+    "models": [],
+    "duration_ms": null
+  },
+  {
+    "id": "checkout.swap-model.1",
+    "created_at": "2026-10-23T11:30:00Z",
+    "ended_at": "2026-10-23T11:31:01Z",
+    "mode": "swap-model",
+    "parent_session_id": "checkout",
+    "status": "diverged",
+    "dropped_events": 0,
+    "steps": 1,
+    "tool_calls": 0,
+    "tokens_in": 999,
+    "tokens_out": 42,
+    "cost_usd": 0,
+    "unpriced_responses": 1,
+    "models": [
+      "claude-haiku-9"
+    ],
+    "duration_ms": 61000
+  },
+  {
+    "id": "checkout.exact.1",
+    "created_at": "2026-10-23T10:30:00Z",
+    "ended_at": "2026-10-23T10:30:02Z",
+    "mode": "exact",
+    "parent_session_id": "checkout",
+    "status": "completed",
+    "dropped_events": 2,
+    "steps": 1,
+    "tool_calls": 0,
+    "tokens_in": 20000,
+    "tokens_out": 1500,
+    "cost_usd": 0.1,
+    "unpriced_responses": 0,
+    "models": [
+      "claude-sonnet-4-5"
+    ],
+    "duration_ms": 2000
+  },
+  {
+    "id": "checkout",
+    "created_at": "2026-10-23T09:30:00Z",
+    "ended_at": "2026-10-23T09:30:38.2Z",
+    "mode": "record",
+    "parent_session_id": null,
+    "status": "completed",
+    "dropped_events": 0,
+    "steps": 2,
+    "tool_calls": 1,
+    "tokens_in": 41230,
+    "tokens_out": 3902,
+    "cost_usd": 0.18,
+    "unpriced_responses": 0,
+    "models": [
+      "claude-sonnet-4-5"
+    ],
+    "duration_ms": 38200
+  }
+]
