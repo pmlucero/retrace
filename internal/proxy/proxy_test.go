@@ -47,6 +47,9 @@ type harnessOptions struct {
 	rules     *redact.Rules
 	deriver   cassette.Deriver
 	transport http.RoundTripper
+	// provenance and rewrite configure the LLM route.
+	provenance string
+	rewrite    func(method, path string, body []byte) []byte
 }
 
 func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harness {
@@ -79,7 +82,8 @@ func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harn
 		t.Fatal(err)
 	}
 	p := New(Config{
-		Routes:       []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target}},
+		Routes: []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target,
+			Provenance: o.provenance, Rewrite: o.rewrite}},
 		Writer:       w,
 		Redact:       o.rules,
 		Transport:    o.transport,
@@ -184,6 +188,55 @@ func TestProxyRecordsAJSONExchange(t *testing.T) {
 	}
 	if got := headerValue(t, in.ResponseHeaders, "Request-Id"); got != "req_1" {
 		t.Errorf("stored Request-Id = %q", got)
+	}
+}
+
+// AC-14: a route can forward a rewritten body while the cassette stores the
+// body the agent sent (spec §4.2).
+func TestProxyForwardsARewrittenBody(t *testing.T) {
+	var got []byte
+	var gotLength int64
+	var gotPath string
+	h := newHarnessOpts(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		gotLength, gotPath = r.ContentLength, r.URL.RequestURI()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}), harnessOptions{provenance: "live", rewrite: func(method, path string, body []byte) []byte {
+		if method != http.MethodPost || path != "/v1/messages" {
+			return body
+		}
+		return []byte(`{"model":"a-much-longer-model-name"}`)
+	}})
+
+	const sent = `{"model":"m"}`
+	for _, path := range []string{"/v1/messages?beta=true", "/v1/models"} {
+		resp, err := post(h.server.URL+"/llm/anthropic"+path, sent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		want := sent
+		if path == "/v1/messages?beta=true" {
+			want = `{"model":"a-much-longer-model-name"}`
+		}
+		if string(got) != want || gotLength != int64(len(want)) || gotPath != path {
+			t.Errorf("%s: upstream got %s %q (Content-Length %d), want %q", path, gotPath, got, gotLength, want)
+		}
+	}
+
+	all := h.interactions()
+	if len(all) != 2 {
+		t.Fatalf("got %d interactions, want 2", len(all))
+	}
+	for _, in := range all {
+		if got := h.blob(in.RequestBlob); got != sent {
+			t.Errorf("%s: stored request %q, want the agent's %q", in.Path, got, sent)
+		}
+		if in.Provenance != "live" {
+			t.Errorf("%s: provenance %q, want live", in.Path, in.Provenance)
+		}
 	}
 }
 
