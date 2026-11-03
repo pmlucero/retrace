@@ -193,24 +193,29 @@ type lsEntry struct {
 	DurationMillis    *int64     `json:"duration_ms"`
 }
 
+// newLsEntry is session s with its totals t. diff --format json describes
+// each session with it too, so both documents name the totals alike.
+func newLsEntry(s cassette.Session, t summary.Totals) lsEntry {
+	e := lsEntry{
+		ID: s.ID, CreatedAt: s.CreatedAt, EndedAt: s.EndedAt, Mode: s.Mode,
+		ParentSessionID: s.ParentSessionID, Status: s.Status, DroppedEvents: s.DroppedEvents,
+		Steps: t.Steps, ToolCalls: t.ToolCalls, TokensIn: t.TokensIn, TokensOut: t.TokensOut,
+		CostUSD: t.CostUSD, UnpricedResponses: t.Unpriced, Models: t.Models,
+	}
+	if e.Models == nil {
+		e.Models = []string{}
+	}
+	if t.Duration != nil {
+		ms := t.Duration.Milliseconds()
+		e.DurationMillis = &ms
+	}
+	return e
+}
+
 func writeLsJSON(w io.Writer, sessions []listed) error {
 	entries := make([]lsEntry, 0, len(sessions))
 	for _, l := range sessions {
-		s, t := l.session, l.totals
-		e := lsEntry{
-			ID: s.ID, CreatedAt: s.CreatedAt, EndedAt: s.EndedAt, Mode: s.Mode,
-			ParentSessionID: s.ParentSessionID, Status: s.Status, DroppedEvents: s.DroppedEvents,
-			Steps: t.Steps, ToolCalls: t.ToolCalls, TokensIn: t.TokensIn, TokensOut: t.TokensOut,
-			CostUSD: t.CostUSD, UnpricedResponses: t.Unpriced, Models: t.Models,
-		}
-		if e.Models == nil {
-			e.Models = []string{}
-		}
-		if t.Duration != nil {
-			ms := t.Duration.Milliseconds()
-			e.DurationMillis = &ms
-		}
-		entries = append(entries, e)
+		entries = append(entries, newLsEntry(l.session, l.totals))
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
