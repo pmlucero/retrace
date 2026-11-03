@@ -94,7 +94,7 @@ Inside the MVP, milestones M0–M5 are done. Built from source, retrace can reco
 - `swap-model` (`--model`) forwards LLM requests with the model rewritten and serves MCP from the cassette.
 - `live-tools` (`--tools live`) forwards MCP to the real servers and serves the LLM from the cassette.
 
-A request that was never recorded stops the replay under `strict`. The agent gets `SIGTERM`, then `SIGKILL` after `--grace`, and retrace prints a divergence report with the first miss and its JSON-path diff, then exits `3`. `diff`, `ls` and `show` come next, in the order of the [MVP plan](docs/plan/mvp.md).
+A request that was never recorded stops the replay under `strict`. The agent gets `SIGTERM`, then `SIGKILL` after `--grace`, and retrace prints a divergence report with the first miss (and its JSON-path diff, when there is one), then exits `3`. `diff`, `ls` and `show` come next, in the order of the [MVP plan](docs/plan/mvp.md).
 
 ## Documentation
 
