@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://raw.githubusercontent.com/pmlucero/retrace/main/docs/schema/diff.v1.json",
   "title": "retrace diff --format json, format_version 1",
-  "description": "The document that `retrace diff --format json` writes (spec §8.4). Values read from a cassette, such as statuses, kinds and token sums, are not constrained further than their type: a cassette is untrusted input, and the document reports what it holds. Objects are open: a member added in a later version without a new format_version is backward compatible, so consumers ignore members they do not know.",
+  "description": "The document that `retrace diff --format json` writes (spec §8.4). Values read from a cassette, such as statuses, kinds and token sums, are not constrained further than their type: a cassette is untrusted input, and the document reports what it holds. Objects are open.",
   "type": "object",
   "required": ["format_version", "a", "b", "identical", "first_divergence", "identical_steps", "text_compared", "text_differences"],
   "properties": {
