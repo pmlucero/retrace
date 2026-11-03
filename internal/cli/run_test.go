@@ -318,7 +318,7 @@ func TestRunMissingSource(t *testing.T) {
 	}
 }
 
-// AC-16, AC-17 for the flags; swap-model and live-tools come in M5.
+// AC-16, AC-17 for the flags; live-tools comes later in M5.
 func TestRunUsageErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -330,7 +330,9 @@ func TestRunUsageErrors(t *testing.T) {
 		{"invalid id", []string{"../x"}, "invalid session id"},
 		{"invalid --as", []string{"s", "--as", ".x"}, "invalid session id"},
 		{"empty command", []string{"s", "--"}, "no agent command"},
-		{"swap-model", []string{"s", "--model", "m"}, "not implemented in this version"},
+		{"empty model", []string{"s", "--model", ""}, "--model: want a model name"},
+		{"upstream without model", []string{"s", "--anthropic-upstream", "http://127.0.0.1:1"}, "only used with --model"},
+		{"invalid upstream", []string{"s", "--model", "m", "--anthropic-upstream", "api.anthropic.com"}, "not an http or https URL"},
 		{"live-tools", []string{"s", "--tools", "live"}, "not implemented in this version"},
 		{"model and live tools", []string{"s", "--model", "m", "--tools", "live"}, "use record instead"},
 		{"unknown tools", []string{"s", "--tools", "warm"}, "want frozen or live"},
