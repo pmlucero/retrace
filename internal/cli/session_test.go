@@ -155,7 +155,8 @@ func TestCreateSessionCassetteKeepsAnExistingFile(t *testing.T) {
 	if _, err := createSessionCassette(context.Background(), path, cassette.Session{ID: "s"}); !errors.Is(err, cassette.ErrExists) {
 		t.Fatalf("err = %v, want ErrExists", err)
 	}
-	if data, _ := os.ReadFile(path); string(data) != "another session" {
+	data, _ := os.ReadFile(path) //nolint:gosec // G304: the file this test created
+	if string(data) != "another session" {
 		t.Errorf("existing file now holds %q", data)
 	}
 }

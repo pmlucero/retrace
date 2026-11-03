@@ -84,7 +84,9 @@ func Create(ctx context.Context, path string) (*Cassette, error) {
 func Remove(path string) error {
 	var errs []error
 	for _, p := range []string{path, path + "-wal", path + "-shm"} {
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// The caller chooses the path, as in Create: session ids are validated
+		// where they enter from the user.
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: see above
 			errs = append(errs, fmt.Errorf("removing %s: %w", p, err))
 		}
 	}
