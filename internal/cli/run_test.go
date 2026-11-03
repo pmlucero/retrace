@@ -198,6 +198,18 @@ func TestRunEndsDivergedOnACassetteMiss(t *testing.T) {
 	if !strings.Contains(r.stderr.String(), "never replayed") || !strings.Contains(r.stderr.String(), "count=1") {
 		t.Errorf("stderr lacks the unconsumed warning:\n%s", r.stderr)
 	}
+	// AC-15: the divergence report (spec §6.4).
+	for _, want := range []string{
+		"retrace: replay rome diverged from s\n",
+		"first miss: anthropic POST /v1/messages\n",
+		`"Weather in Rome?"`,
+		"misses: 1\n",
+		"compare: retrace diff s rome\n",
+	} {
+		if !strings.Contains(r.stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, r.stderr)
+		}
+	}
 }
 
 // spec §4.4: unconsumed interactions are a warning, not an error.

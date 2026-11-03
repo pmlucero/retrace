@@ -1,0 +1,6 @@
+retrace: replay s.exact.1 diverged from s
+  first miss: mcp:fs
+    no diff: the request could not be redacted
+  misses: 1
+  warning: 3 events were not written; the event log is incomplete
+  compare: retrace diff s s.exact.1

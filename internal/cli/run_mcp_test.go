@@ -186,6 +186,18 @@ func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 	if strings.Join(upstreams, ",") != "mcp:orders,mcp:weather" {
 		t.Errorf("divergences on %v, want one per server's changed call", upstreams)
 	}
+	// AC-15: the divergence report shows the first miss (spec §6.4).
+	for _, want := range []string{
+		"retrace: replay z9 diverged from s\n",
+		"first miss: mcp:orders tools/call lookup\n",
+		`$.params.arguments.key: "A1" → "Z9"` + "\n",
+		"misses: 2\n",
+		"compare: retrace diff s z9\n",
+	} {
+		if !strings.Contains(r.stderr.String(), want) {
+			t.Errorf("stderr lacks %q:\n%s", want, r.stderr)
+		}
+	}
 }
 
 // The source's mcp_servers is untrusted input: each name becomes a route and
