@@ -69,6 +69,9 @@ func (c *Cassette) Interactions(ctx context.Context) ([]Interaction, error) {
 	var out []Interaction
 	for rows.Next() {
 		in, err := scanInteraction(rows)
+		if err != nil && in.ID != 0 {
+			return nil, fmt.Errorf("reading interaction %d of %s: %w", in.ID, c.path, err)
+		}
 		if err != nil {
 			return nil, fmt.Errorf("reading interactions of %s: %w", c.path, err)
 		}
@@ -93,7 +96,9 @@ func (c *Cassette) Interaction(ctx context.Context, id int64) (Interaction, erro
 	return in, nil
 }
 
-// scanInteraction reads one row of interactionColumns.
+// scanInteraction reads one row of interactionColumns. When the row was read
+// but a column could not be parsed, the returned Interaction still has its
+// ID, so the caller can name it in the error.
 func scanInteraction(row interface{ Scan(...any) error }) (Interaction, error) {
 	var (
 		in                                                  Interaction
@@ -108,7 +113,7 @@ func scanInteraction(row interface{ Scan(...any) error }) (Interaction, error) {
 	}
 	var err error
 	if in.StartedAt, err = parseTime(startedAt); err != nil {
-		return Interaction{}, fmt.Errorf("interaction %d: started_at: %w", in.ID, err)
+		return Interaction{ID: in.ID}, fmt.Errorf("started_at: %w", err)
 	}
 	in.StatusCode = intPtr(statusCode)
 	in.RequestHeaders = json.RawMessage(requestHeaders)

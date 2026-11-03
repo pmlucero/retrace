@@ -67,12 +67,11 @@ func readRawInteraction(ctx context.Context, path string, id int64, env *Env) (r
 	// completes, after its chunks are written, so an in-flight or
 	// interrupted stream has chunks but is not marked (spec §7.3).
 	if in.ResponseBlob == nil {
-		raw.chunks, err = c.Chunks(ctx, id)
+		if raw.chunks, err = c.Chunks(ctx, id); err != nil {
+			return rawInteraction{}, err
+		}
 	}
-	if err == nil {
-		raw.response, err = readBody(ctx, c, in.ResponseBlob)
-	}
-	if err != nil {
+	if raw.response, err = readBody(ctx, c, in.ResponseBlob); err != nil {
 		return rawInteraction{}, err
 	}
 	return raw, nil
