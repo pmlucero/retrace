@@ -152,6 +152,14 @@ func TestRoundTripSurvivesCloseAndReopen(t *testing.T) {
 		t.Errorf("interactions:\n got %+v\nwant %+v", gotInteractions, []Interaction{wantInteraction})
 	}
 
+	gotOne, err := r.Interaction(ctx, 1)
+	if err != nil || !reflect.DeepEqual(gotOne, wantInteraction) {
+		t.Errorf("Interaction(1):\n got %+v, %v\nwant %+v", gotOne, err, wantInteraction)
+	}
+	if _, err := r.Interaction(ctx, 2); !errors.Is(err, ErrNotFound) {
+		t.Errorf("Interaction(2): err = %v, want ErrNotFound", err)
+	}
+
 	gotChunks, err := r.Chunks(ctx, 1)
 	if err != nil {
 		t.Fatalf("Chunks: %v", err)

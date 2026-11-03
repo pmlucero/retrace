@@ -1,0 +1,30 @@
+id           2
+channel      llm
+upstream     anthropic
+request      POST /v1/messages
+status_code  200
+started_at   2026-10-23 09:30:02
+ttfb_ms      40
+duration_ms  900
+provenance   recorded
+
+--- request headers ---
+(none)
+
+--- request body ---
+{"stream":true}
+
+--- response headers ---
+Content-Type: text/event-stream
+
+--- response chunks ---
++40ms
+event: message_start
+data: {}
+
++300ms
+<10 bytes, not UTF-8>
++900ms
+event: message_stop
+data: {}
+
