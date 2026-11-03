@@ -1,7 +1,7 @@
 package cli
 
 import (
-	"bytes"
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -62,9 +62,14 @@ func readRawInteraction(ctx context.Context, path string, id int64, env *Env) (r
 	if raw.request, err = readBody(ctx, c, in.RequestBlob); err != nil {
 		return rawInteraction{}, err
 	}
-	if in.Streamed {
+	// Chunks are read whenever there is no response blob, not only when the
+	// interaction is marked streamed: streamed is set when the interaction
+	// completes, after its chunks are written, so an in-flight or
+	// interrupted stream has chunks but is not marked (spec §7.3).
+	if in.ResponseBlob == nil {
 		raw.chunks, err = c.Chunks(ctx, id)
-	} else {
+	}
+	if err == nil {
 		raw.response, err = readBody(ctx, c, in.ResponseBlob)
 	}
 	if err != nil {
@@ -89,10 +94,11 @@ func readBody(ctx context.Context, c *cassette.Cassette, key *string) (rawBody, 
 // writeShowRaw dumps one interaction (spec §9.6): its metadata, its headers,
 // and its bodies or SSE chunks as stored. Text is escaped with printable, or
 // printableText for bodies, because the cassette is untrusted (SECURITY.md).
+// The output is written as it is built, so a long stream is not held twice.
 func writeShowRaw(w io.Writer, raw rawInteraction) error {
 	in := raw.in
-	var buf bytes.Buffer
-	tw := tabwriter.NewWriter(&buf, 0, 0, 2, ' ', 0)
+	buf := bufio.NewWriter(w) // keeps the first write error for Flush
+	tw := tabwriter.NewWriter(buf, 0, 0, 2, ' ', 0)
 	row := func(name, value string) { fmt.Fprintf(tw, "%s\t%s\n", name, printable(value)) }
 	optInt := func(name string, v *int64) {
 		if v != nil {
@@ -123,45 +129,48 @@ func writeShowRaw(w io.Writer, raw rawInteraction) error {
 		return err
 	}
 
-	section := func(title string) { fmt.Fprintf(&buf, "\n--- %s ---\n", title) }
+	section := func(title string) { fmt.Fprintf(buf, "\n--- %s ---\n", title) }
 	section("request headers")
-	writeHeaders(&buf, in.RequestHeaders)
+	writeHeaders(buf, in.RequestHeaders)
 	section("request body")
-	writeBody(&buf, raw.request)
+	writeBody(buf, raw.request)
 	section("response headers")
-	writeHeaders(&buf, in.ResponseHeaders)
-	if !in.Streamed {
-		section("response body")
-		writeBody(&buf, raw.response)
-	} else {
+	writeHeaders(buf, in.ResponseHeaders)
+	if in.Streamed || len(raw.chunks) > 0 {
 		section("response chunks")
 		if len(raw.chunks) == 0 {
-			buf.WriteString("(none)\n")
+			fmt.Fprint(buf, "(none)\n")
 		}
 		for _, ch := range raw.chunks {
-			fmt.Fprintf(&buf, "+%dms\n", ch.OffsetMillis)
-			writeText(&buf, ch.Data)
+			fmt.Fprintf(buf, "+%dms\n", ch.OffsetMillis)
+			writeText(buf, ch.Data)
 		}
+	} else {
+		section("response body")
+		writeBody(buf, raw.response)
 	}
-	_, err := w.Write(buf.Bytes())
-	return err
+	if in.Incomplete() {
+		// Spec §7.3: what is shown above may not be the whole response.
+		fmt.Fprintf(buf, "\n(%s)\n", cassette.RecordingIncomplete)
+	}
+	return buf.Flush()
 }
 
 // writeHeaders writes stored headers, already redacted (ADR 0008), one
 // "name: value" line per value, sorted by name. Headers that are not the
 // JSON object the proxy stores are written as they are.
-func writeHeaders(buf *bytes.Buffer, stored json.RawMessage) {
+func writeHeaders(buf io.Writer, stored json.RawMessage) {
 	if len(stored) == 0 {
-		buf.WriteString("(none)\n")
+		fmt.Fprint(buf, "(none)\n")
 		return
 	}
 	var h map[string][]string
 	if err := json.Unmarshal(stored, &h); err != nil {
-		buf.WriteString(printable(string(stored)) + "\n")
+		fmt.Fprint(buf, printable(string(stored))+"\n")
 		return
 	}
 	if len(h) == 0 {
-		buf.WriteString("(none)\n")
+		fmt.Fprint(buf, "(none)\n")
 		return
 	}
 	for _, name := range slices.Sorted(maps.Keys(h)) {
@@ -171,14 +180,14 @@ func writeHeaders(buf *bytes.Buffer, stored json.RawMessage) {
 	}
 }
 
-func writeBody(buf *bytes.Buffer, b rawBody) {
+func writeBody(buf io.Writer, b rawBody) {
 	switch {
 	case b.absent:
-		buf.WriteString("(none)\n")
+		fmt.Fprint(buf, "(none)\n")
 	case b.missing != "":
 		fmt.Fprintf(buf, "(none: blob %s is not in the cassette)\n", printable(b.missing))
 	case len(b.data) == 0:
-		buf.WriteString("(empty)\n")
+		fmt.Fprint(buf, "(empty)\n")
 	default:
 		writeText(buf, b.data)
 	}
@@ -187,14 +196,14 @@ func writeBody(buf *bytes.Buffer, b rawBody) {
 // writeText writes a body or chunk as stored, ending in a newline. Bytes
 // that are not valid UTF-8 are not written (spec §9.6), and valid text goes
 // through printableText.
-func writeText(buf *bytes.Buffer, data []byte) {
+func writeText(buf io.Writer, data []byte) {
 	if !utf8.Valid(data) {
 		fmt.Fprintf(buf, "<%d bytes, not UTF-8>\n", len(data))
 		return
 	}
 	text := printableText(string(data))
-	buf.WriteString(text)
+	fmt.Fprint(buf, text)
 	if !strings.HasSuffix(text, "\n") {
-		buf.WriteString("\n")
+		fmt.Fprint(buf, "\n")
 	}
 }

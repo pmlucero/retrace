@@ -122,6 +122,18 @@ func rawSeeds() []rawSeed {
 				StartedAt: lsT0.Add(4 * time.Second), Provenance: "recorded",
 			},
 		},
+		{
+			// Stopped mid-stream: its chunks are written, but it was never
+			// completed, so it is not marked streamed (spec §7.3).
+			in: cassette.Interaction{
+				ID: 5, Channel: "llm", Upstream: "anthropic", HTTPMethod: "POST", Path: "/v1/messages",
+				StartedAt: lsT0.Add(5 * time.Second), Provenance: "recorded",
+			},
+			request: []byte(`{"stream":true}`),
+			chunks: []cassette.Chunk{
+				{Index: 0, OffsetMillis: 35, Data: []byte("event: message_start\ndata: {}\n\n")},
+			},
+		},
 	}
 }
 
@@ -139,6 +151,7 @@ func TestShowRaw(t *testing.T) {
 		{"2", "show/raw-streamed.txt"},
 		{"3", "show/raw-untrusted.txt"},
 		{"4", "show/raw-in-flight.txt"},
+		{"5", "show/raw-interrupted.txt"},
 	} {
 		t.Run(tc.golden, func(t *testing.T) {
 			for _, args := range [][]string{{"s", "--raw", tc.id}, {"--raw=" + tc.id, "s"}} {
@@ -192,6 +205,28 @@ func TestWriteBody(t *testing.T) {
 			writeBody(&buf, tc.body)
 			if buf.String() != tc.want {
 				t.Errorf("writeBody = %q, want %q", buf.String(), tc.want)
+			}
+		})
+	}
+}
+
+// Stored headers that are not the object the proxy writes are shown as they
+// are, still escaped.
+func TestWriteHeaders(t *testing.T) {
+	for _, tc := range []struct{ name, stored, want string }{
+		{"absent", "", "(none)\n"},
+		{"empty", "{}", "(none)\n"},
+		{"sorted, one line per value", `{"b":["2","3"],"a":["1"]}`, "a: 1\nb: 2\nb: 3\n"},
+		{"escaped", `{"x\u001b":["\u202ey"]}`, `x\x1b: \u202ey` + "\n"},
+		{"values not lists", `{"a":"b"}`, `{"a":"b"}` + "\n"},
+		{"not an object", "[]", "[]\n"},
+		{"not JSON", "\x1b[2J", `\x1b[2J` + "\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			writeHeaders(&buf, json.RawMessage(tc.stored))
+			if buf.String() != tc.want {
+				t.Errorf("writeHeaders(%q) = %q, want %q", tc.stored, buf.String(), tc.want)
 			}
 		})
 	}
