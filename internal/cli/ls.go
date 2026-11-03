@@ -110,14 +110,11 @@ func listSessions(ctx context.Context, env *Env) ([]listed, error) {
 
 // readSession reads the session row and the events of the cassette at path.
 func readSession(ctx context.Context, path string, env *Env) (cassette.Session, []cassette.Event, error) {
-	c, err := cassette.Open(ctx, path)
+	c, err := cassette.OpenForRead(ctx, path)
 	if err != nil {
 		return cassette.Session{}, nil, err
 	}
 	defer func() {
-		// A cassette that is still being recorded is in WAL mode, and Close
-		// cannot take it out of it while the recorder holds it open. What
-		// was read is still valid, and the recorder is unaffected.
 		if err := c.Close(); err != nil {
 			env.Logger.Debug("closing a cassette after reading it", "file", path, "error", err)
 		}

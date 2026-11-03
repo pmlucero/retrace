@@ -220,11 +220,14 @@ func TestLsSkipsUnreadableCassettes(t *testing.T) {
 }
 
 // A session that is still being recorded is listed while its recorder holds
-// the cassette open, and the recorder can keep writing.
+// the cassette open, and ls leaves its WAL alone: checkpointing it would block
+// the recorder's writes (cassette.OpenForRead). This checks what ls does to
+// the file, not the recorder's latency under contention.
 func TestLsWhileRecording(t *testing.T) {
 	dir := t.TempDir()
 	ctx := context.Background()
-	c, err := cassette.Create(ctx, cassette.Path(dir, "live"))
+	path := cassette.Path(dir, "live")
+	c, err := cassette.Create(ctx, path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -235,10 +238,22 @@ func TestLsWhileRecording(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	walSize := func() int64 {
+		t.Helper()
+		fi, err := os.Stat(path + "-wal")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return fi.Size()
+	}
+	before := walSize()
 
 	r := runLsCmd(dir, "--json")
 	if r.code != ExitOK || !strings.Contains(r.stdout.String(), `"id": "live"`) {
 		t.Fatalf("exit code %d, stdout:\n%s\nstderr:\n%s", r.code, r.stdout, r.stderr)
+	}
+	if after := walSize(); after != before {
+		t.Errorf("the WAL went from %d to %d bytes: ls checkpointed the live recording", before, after)
 	}
 	if err := c.Write(ctx, func(tx *cassette.Tx) error { return tx.AppendEvent(ctx, toolCall(1, "t", `{}`)) }); err != nil {
 		t.Errorf("the recorder cannot write after ls: %v", err)
