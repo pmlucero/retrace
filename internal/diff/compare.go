@@ -69,6 +69,12 @@ type Result struct {
 	// Identical is the run of steps before the divergence point, which are
 	// equal on both sides, or every step when there is no divergence point.
 	Identical Span
+	// DivergedA and DivergedB are the first divergence event of each side
+	// in step order, or nil (spec §8.3 step 4). They are reported even when
+	// both sides stopped at the same step and Point is nil: two divergence
+	// events have the same action identity, since their details are in
+	// their result, which the identity leaves out.
+	DivergedA, DivergedB *cassette.Event
 	// TextDifferences lists, in order, the steps whose texts differ when
 	// text is not compared (spec §8.3 step 2). It is never nil, and empty
 	// under Options.Text.
@@ -83,7 +89,7 @@ type Result struct {
 // identity: kind, source, target, tool and canonical arguments, plus the
 // canonical result and the status for a tool_result.
 func Compare(a, b Trajectory, opts Options) Result {
-	res := Result{TextDifferences: []int{}}
+	res := Result{TextDifferences: []int{}, DivergedA: firstDivergence(a), DivergedB: firstDivergence(b)}
 	last := max(lastN(a), lastN(b))
 	first := 1
 	if hasStep0(a) || hasStep0(b) {
@@ -112,6 +118,17 @@ func Compare(a, b Trajectory, opts Options) Result {
 		res.Point = &Point{Step: last, Kind: KindStop, StopA: a.Stop, StopB: b.Stop}
 	}
 	return res
+}
+
+// firstDivergence returns the first divergence event of t in step order, or
+// nil.
+func firstDivergence(t Trajectory) *cassette.Event {
+	for _, s := range t.Steps {
+		if len(s.Divergences) > 0 {
+			return &s.Divergences[0]
+		}
+	}
+	return nil
 }
 
 // lastN is the number of the last step of t, or 0 when it has none.
@@ -173,12 +190,16 @@ func compareSteps(n int, a, b Step, opts Options) *Point {
 
 // compareLists compares two lists of events of one kind pairwise. A set
 // (sorted) is first ordered by its full identity, so that the order the
-// events were appended in does not matter (spec §8.3 step 1).
+// events were appended in does not matter (spec §8.3 step 1), and the
+// members it shares with the other side are set aside: what is left pairs a
+// member one side lacks with nil, or with the other side's first unmatched
+// member, never with an unrelated member that happens to share its index.
 func compareLists(n int, kind string, as, bs []cassette.Event, sorted bool) *Point {
 	ia, ib := identities(as), identities(bs)
 	if sorted {
 		slices.SortStableFunc(ia, compareIdentities)
 		slices.SortStableFunc(ib, compareIdentities)
+		ia, ib = unmatched(ia, ib)
 	}
 	for i := range max(len(ia), len(ib)) {
 		switch {
@@ -192,6 +213,26 @@ func compareLists(n int, kind string, as, bs []cassette.Event, sorted bool) *Poi
 		}
 	}
 	return nil
+}
+
+// unmatched returns the members of two sorted sets that have no equal
+// member on the other side, in order. Equal members are those that sort
+// together: their full identities are the same.
+func unmatched(a, b []identity) (onlyA, onlyB []identity) {
+	i, j := 0, 0
+	for i < len(a) && j < len(b) {
+		switch c := compareIdentities(a[i], b[j]); {
+		case c == 0:
+			i, j = i+1, j+1
+		case c < 0:
+			onlyA = append(onlyA, a[i])
+			i++
+		default:
+			onlyB = append(onlyB, b[j])
+			j++
+		}
+	}
+	return append(onlyA, a[i:]...), append(onlyB, b[j:]...)
 }
 
 // identity is the action identity of an event (spec §8.3 step 1).
@@ -255,6 +296,11 @@ func compareEvents(n int, kind string, x, y identity) *Point {
 		return nil
 	}
 	p := &Point{Step: n, Kind: kind, A: x.event, B: y.event}
+	if x.source != y.source || x.target != y.target || compareTools(x.tool, y.tool) != 0 {
+		// A path diff between two different tools, or the same tool on two
+		// servers, is not the argument-level diff of spec §8.3 step 3.
+		return p
+	}
 	switch {
 	case !bytes.Equal(x.args, y.args):
 		p.Field, p.Diff = FieldArguments, divergence.Compare(x.args, y.args)

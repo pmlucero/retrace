@@ -54,6 +54,18 @@ func (s *session) call(server, tool, args, result string) *session {
 	return s
 }
 
+// callNoTool appends a tool_call whose tool is absent, as the deriver gives
+// for params that are not an object (spec §7.4), or empty when empty is set.
+func (s *session) callNoTool(empty bool) *session {
+	c := ev(s.next(), "tool_call", 0)
+	c.Source, c.Target = "agent", "mcp:s"
+	if empty {
+		c.Tool = new(string)
+	}
+	s.events = append(s.events, c)
+	return s
+}
+
 // diverge appends a divergence event.
 func (s *session) diverge() *session {
 	e := ev(s.next(), "divergence", 0)
@@ -208,6 +220,53 @@ func TestCompare(t *testing.T) {
 			textDiffs: []int{},
 		},
 		{
+			name:      "A calls a tool that B does not: the shared call is set aside",
+			a:         (&session{}).respond("tool_use", "").call("s", "a", `{}`, `{}`).call("s", "b", `{"x":1}`, `{}`),
+			b:         (&session{}).respond("tool_use", "").call("s", "b", `{"x":1}`, `{}`),
+			want:      &pointShape{Step: 1, Kind: "tool_call", ASeq: 2},
+			identical: Span{First: 1, Last: 0},
+			textDiffs: []int{},
+		},
+		{
+			name:      "unmatched calls of the same tool are paired with an argument diff",
+			a:         (&session{}).respond("tool_use", "").call("s", "a", `{}`, `{}`).call("s", "b", `{"x":1}`, `{}`),
+			b:         (&session{}).respond("tool_use", "").call("s", "b", `{"x":2}`, `{}`).call("s", "a", `{}`, `{}`),
+			want:      &pointShape{Step: 1, Kind: "tool_call", ASeq: 4, BSeq: 2, Field: "arguments", Paths: []string{`$.x: 1 → 2`}},
+			identical: Span{First: 1, Last: 0},
+			textDiffs: []int{},
+		},
+		{
+			name:      "different tools get no argument diff",
+			a:         (&session{}).respond("tool_use", "").use("a", `{"x":1}`),
+			b:         (&session{}).respond("tool_use", "").use("b", `{"x":2}`),
+			want:      &pointShape{Step: 1, Kind: "tool_use", ASeq: 2, BSeq: 2},
+			identical: Span{First: 1, Last: 0},
+			textDiffs: []int{},
+		},
+		{
+			name:      "two absent tools are equal",
+			a:         (&session{}).respond("tool_use", "").callNoTool(false),
+			b:         (&session{}).respond("tool_use", "").callNoTool(false),
+			identical: Span{First: 1, Last: 1, ToolCalls: 1},
+			textDiffs: []int{},
+		},
+		{
+			name:      "an absent tool and an empty one differ",
+			a:         (&session{}).respond("tool_use", "").callNoTool(false),
+			b:         (&session{}).respond("tool_use", "").callNoTool(true),
+			want:      &pointShape{Step: 1, Kind: "tool_call", ASeq: 2, BSeq: 2},
+			identical: Span{First: 1, Last: 0},
+			textDiffs: []int{},
+		},
+		{
+			name:      "an empty tool and an absent one differ",
+			a:         (&session{}).respond("tool_use", "").callNoTool(true),
+			b:         (&session{}).respond("tool_use", "").callNoTool(false),
+			want:      &pointShape{Step: 1, Kind: "tool_call", ASeq: 2, BSeq: 2},
+			identical: Span{First: 1, Last: 0},
+			textDiffs: []int{},
+		},
+		{
 			name:      "a tool_result differs in its result",
 			a:         (&session{}).respond("tool_use", "").call("s", "a", `{}`, `{"r":1}`),
 			b:         (&session{}).respond("tool_use", "").call("s", "a", `{}`, `{"r":2}`),
@@ -300,6 +359,25 @@ func TestCompare(t *testing.T) {
 				t.Errorf("text differences = %v, want %v", got.TextDifferences, tt.textDiffs)
 			}
 		})
+	}
+}
+
+// Spec §8.3 step 4: a divergence event is reported even when both sides
+// stopped at the same step, where the two compare equal.
+func TestCompareReportsDivergences(t *testing.T) {
+	a := (&session{}).respond("tool_use", "").call("s", "a", `{}`, `{}`).diverge()
+	b := (&session{}).respond("tool_use", "").call("s", "a", `{}`, `{}`).diverge()
+	got := Compare(a.trajectory(), b.trajectory(), Options{})
+	if got.Point != nil {
+		t.Errorf("point = %+v, want none", got.Point)
+	}
+	if got.DivergedA == nil || got.DivergedA.Seq != 4 || got.DivergedB == nil || got.DivergedB.Seq != 4 {
+		t.Errorf("diverged = %+v, %+v; want seq 4 on both sides", got.DivergedA, got.DivergedB)
+	}
+
+	got = Compare(a.trajectory(), checkout(`"open"`).trajectory(), Options{})
+	if got.DivergedA == nil || got.DivergedB != nil {
+		t.Errorf("diverged = %+v, %+v; want only A", got.DivergedA, got.DivergedB)
 	}
 }
 
