@@ -12,6 +12,7 @@ import (
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/diff"
+	"github.com/pmlucero/retrace/internal/divergence"
 )
 
 func runDiffCmd(dir string, args ...string) recordRun {
@@ -129,6 +130,18 @@ func TestDiffText(t *testing.T) {
 			name: "both stopped",
 			seed: func(t *testing.T, dir string) { seedSwap(t, dir, "a"); seedSwap(t, dir, "b") },
 			args: []string{"a", "b"}, code: ExitOK, golden: "both-stopped.txt",
+		},
+		{
+			// A replay that missed before any model response: no models,
+			// and its events are in step 0.
+			name: "no model response",
+			seed: func(t *testing.T, dir string) {
+				seedCheckout(t, dir, 0)
+				seedSession(t, dir, cassette.Session{ID: "early", Mode: "exact", Status: "recording", CreatedAt: lsT0},
+					&cassette.SessionEnd{Status: "diverged", EndedAt: lsT0.Add(2 * time.Second)},
+					toolCall(1, "search_orders", `{"customer_id":"c_812"}`), missEvent(2, "anthropic"))
+			},
+			args: []string{"checkout", "early"}, code: ExitDiffFound, golden: "no-model.txt",
 		},
 		{
 			name: "text compared",
@@ -332,6 +345,20 @@ func TestDiffPointEvent(t *testing.T) {
 				t.Errorf("pointEvent = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// spec §6.4, §8.4: a cut diff ends with a line that says more paths differ.
+func TestDiffPointSaysMorePathsDiffer(t *testing.T) {
+	a := toolUse(2, 1, "search_orders", `{"a":1}`)
+	b := toolUse(2, 1, "search_orders", `{"a":2}`)
+	var out strings.Builder
+	writePoint(&out, diff.Point{
+		Step: 1, Kind: "tool_use", A: &a, B: &b, Field: diff.FieldArguments,
+		Diff: divergence.Diff{Entries: []divergence.Entry{{Path: "$.a", Expected: []byte("1"), Received: []byte("2")}}, Truncated: true, MorePaths: true},
+	})
+	if got := out.String(); !strings.HasSuffix(got, "       - $.a: 1 → 2\n       … more paths differ\n") {
+		t.Errorf("point:\n%s\nwant it to end with the entry and the more-paths line", got)
 	}
 }
 
