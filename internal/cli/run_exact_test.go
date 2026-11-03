@@ -171,7 +171,7 @@ func TestRunRealtimeKeepsTheRecordedOffsets(t *testing.T) {
 	// read the headers (spec §3.3) and truncates them to whole milliseconds,
 	// so under load it can record a little less than the upstream slept.
 	if paused := srcChunks[1].OffsetMillis; paused < pause.Milliseconds()/2 {
-		t.Fatalf("second chunk recorded at %d ms, want about the upstream's %v pause", paused, pause)
+		t.Fatalf("second chunk recorded at %d ms, want at least half the upstream's %v pause", paused, pause)
 	}
 	for i, ch := range chunks {
 		src := srcChunks[i]
