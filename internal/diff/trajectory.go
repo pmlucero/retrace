@@ -10,10 +10,8 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 )
 
-// Step is one step of a trajectory (spec §8.2): the n-th model_response and
-// the events that belong to it. Events are placed by causality and time, not
-// by seq alone, because an agent that acts on a streamed response at once can
-// have its tool_call appended before the response's model_response.
+// Step is one step of a trajectory (spec §8.2): the n-th model_response, in
+// the order its LLM request arrived, and the events that belong to it.
 type Step struct {
 	N           int             // 0 for events before the first model_response
 	Response    *cassette.Event // nil for step 0
@@ -48,19 +46,28 @@ type Trajectory struct {
 // any order, and events is not modified. Kinds other than model_response,
 // tool_use, tool_call, tool_result and divergence are ignored.
 //
+// Steps follow the model_response events by interaction_id, the order their
+// requests arrived in, not by seq, which depends on when responses complete.
 // A tool_use goes to the step of its model_response, a tool_result to the
-// step of its tool_call, and a tool_call or divergence to the step of the
-// last model_response that started at or before it. The cassette is
-// untrusted input, so a tool_use or tool_result whose parent_seq is missing
-// or does not name an event of the right kind is placed by its started_at.
+// step of its tool_call, a tool_call to the step of the last model_response
+// with a lower interaction_id, and a divergence to the step of the last
+// model_response that started at or before it.
+//
+// The cassette is untrusted input, so Build tolerates what a valid one never
+// holds. A model_response without an interaction_id comes after those with
+// one, in seq order. A tool_use or tool_result whose parent_seq is missing or
+// names an event of another kind is placed by its interaction_id: a tool_use
+// with the model_response of the same interaction, a tool_result like a
+// tool_call. An event that lacks the interaction_id it would be placed by,
+// and a tool_use whose interaction has no model_response, are placed by
+// their started_at like a divergence.
 func Build(events []cassette.Event) Trajectory {
 	sorted := slices.Clone(events)
 	// Stable, so events sharing a seq, which a valid cassette never has,
 	// still give the same trajectory on every run.
 	slices.SortStableFunc(sorted, func(a, b cassette.Event) int { return cmp.Compare(a.Seq, b.Seq) })
 
-	// steps[0] is step 0, and steps[n] holds the n-th model_response by seq.
-	steps := []Step{{N: 0}}
+	var responses []*cassette.Event
 	bySeq := map[int64]*cassette.Event{}
 	for i := range sorted {
 		e := &sorted[i]
@@ -68,36 +75,46 @@ func Build(events []cassette.Event) Trajectory {
 			bySeq[e.Seq] = e
 		}
 		if e.Kind == "model_response" {
-			steps = append(steps, Step{N: len(steps), Response: e})
+			responses = append(responses, e)
 		}
 	}
-	stepOf := make(map[*cassette.Event]int, len(steps)-1)
-	for _, s := range steps[1:] {
-		stepOf[s.Response] = s.N
-	}
-	byTime := newTimeIndex(steps[1:])
+	// Stable over seq order, so responses without an interaction_id, or
+	// sharing one, keep their seq order.
+	slices.SortStableFunc(responses, func(a, b *cassette.Event) int {
+		switch {
+		case a.InteractionID == nil && b.InteractionID == nil:
+			return 0
+		case a.InteractionID == nil:
+			return 1
+		case b.InteractionID == nil:
+			return -1
+		}
+		return cmp.Compare(*a.InteractionID, *b.InteractionID)
+	})
 
-	var last *cassette.Event
+	// steps[0] is step 0, and steps[n] holds the n-th response.
+	steps := make([]Step, 1, len(responses)+1)
+	for _, r := range responses {
+		steps = append(steps, Step{N: len(steps), Response: r})
+	}
+	p := newPlacer(steps[1:])
+
 	for i := range sorted {
 		e := &sorted[i]
-		if e.Kind == "model_response" {
-			last = e
-			continue
-		}
-		if !stepKinds[e.Kind] {
-			continue
-		}
-		cur := &steps[place(e, bySeq, stepOf, byTime)]
+		var list *[]cassette.Event
 		switch e.Kind {
 		case "tool_use":
-			cur.ToolUses = append(cur.ToolUses, *e)
+			list = &steps[p.toolUse(e, bySeq)].ToolUses
 		case "tool_call":
-			cur.ToolCalls = append(cur.ToolCalls, *e)
+			list = &steps[p.byInteraction(e)].ToolCalls
 		case "tool_result":
-			cur.ToolResults = append(cur.ToolResults, *e)
+			list = &steps[p.toolResult(e, bySeq)].ToolResults
 		case "divergence":
-			cur.Divergences = append(cur.Divergences, *e)
+			list = &steps[p.byTime(e.StartedAt)].Divergences
+		default:
+			continue
 		}
+		*list = append(*list, *e)
 	}
 
 	var t Trajectory
@@ -106,62 +123,96 @@ func Build(events []cassette.Event) Trajectory {
 	} else if len(steps) > 1 {
 		t.Steps = steps[1:]
 	}
-	if last != nil {
-		t.Stop = stopOf(*last)
+	if len(responses) > 0 {
+		t.Stop = stopOf(*responses[len(responses)-1])
 	}
 	return t
 }
 
-// stepKinds are the kinds a step holds besides its model_response.
-var stepKinds = map[string]bool{"tool_use": true, "tool_call": true, "tool_result": true, "divergence": true}
-
-// place returns the step of e (spec §8.2). It follows at most one
-// parent_seq, so a cycle in untrusted parent_seq values cannot loop.
-func place(e *cassette.Event, bySeq map[int64]*cassette.Event, stepOf map[*cassette.Event]int, byTime timeIndex) int {
-	var parent *cassette.Event
-	if e.ParentSeq != nil {
-		parent = bySeq[*e.ParentSeq]
-	}
-	switch {
-	case e.Kind == "tool_use" && parent != nil && parent.Kind == "model_response":
-		return stepOf[parent]
-	case e.Kind == "tool_result" && parent != nil && parent.Kind == "tool_call":
-		// The tool_call is itself placed by its started_at.
-		return byTime.step(parent.StartedAt)
-	}
-	return byTime.step(e.StartedAt)
+// placer finds the step of an event (spec §8.2). Each method follows at most
+// one parent_seq, so a cycle in untrusted parent_seq values cannot loop.
+type placer struct {
+	stepOf map[*cassette.Event]int // model_response to its step
+	// ids are the interaction ids of the responses that have one, ascending.
+	// Those responses come first in step order, so ids[i] is that of step i+1.
+	ids []int64
+	// starts are the responses' start times, ascending, and maxN[i] is the
+	// highest step among those that started at or before starts[i].
+	starts []time.Time
+	maxN   []int
 }
 
-// timeIndex finds the step of the last model_response that started at or
-// before a given time. "Last" is by seq, which numbers the steps: concurrent
-// requests can make started_at and seq disagree, so the step is the highest
-// one among the responses that started in time, not the one that started
-// latest.
-type timeIndex struct {
-	starts []time.Time // response start times, ascending
-	maxN   []int       // maxN[i] is the highest step among starts[:i+1]
-}
-
-func newTimeIndex(responses []Step) timeIndex {
-	rs := slices.Clone(responses)
-	slices.SortStableFunc(rs, func(a, b Step) int { return a.Response.StartedAt.Compare(b.Response.StartedAt) })
-	var x timeIndex
-	for _, s := range rs {
-		n := s.N
-		if len(x.maxN) > 0 {
-			n = max(n, x.maxN[len(x.maxN)-1])
+func newPlacer(steps []Step) placer {
+	p := placer{stepOf: make(map[*cassette.Event]int, len(steps))}
+	for _, s := range steps {
+		p.stepOf[s.Response] = s.N
+		if s.Response.InteractionID != nil {
+			p.ids = append(p.ids, *s.Response.InteractionID)
 		}
-		x.starts = append(x.starts, s.Response.StartedAt)
-		x.maxN = append(x.maxN, n)
 	}
-	return x
+	// The order of steps is not the order of start times when the cassette
+	// is inconsistent, so the time index keeps the highest step per prefix.
+	byStart := slices.Clone(steps)
+	slices.SortStableFunc(byStart, func(a, b Step) int { return a.Response.StartedAt.Compare(b.Response.StartedAt) })
+	for _, s := range byStart {
+		n := s.N
+		if len(p.maxN) > 0 {
+			n = max(n, p.maxN[len(p.maxN)-1])
+		}
+		p.starts = append(p.starts, s.Response.StartedAt)
+		p.maxN = append(p.maxN, n)
+	}
+	return p
 }
 
-// step returns the step of an event that started at t, or 0 when no
-// model_response started at or before it.
-func (x timeIndex) step(t time.Time) int {
+// parent returns the event that e's parent_seq names when it has kind, or nil.
+func parent(e *cassette.Event, kind string, bySeq map[int64]*cassette.Event) *cassette.Event {
+	if e.ParentSeq == nil {
+		return nil
+	}
+	if pe := bySeq[*e.ParentSeq]; pe != nil && pe.Kind == kind {
+		return pe
+	}
+	return nil
+}
+
+// toolUse places a tool_use with its model_response.
+func (p placer) toolUse(e *cassette.Event, bySeq map[int64]*cassette.Event) int {
+	if r := parent(e, "model_response", bySeq); r != nil {
+		return p.stepOf[r]
+	}
+	if e.InteractionID != nil {
+		// A tool_use comes from the same interaction as its model_response.
+		if i, found := slices.BinarySearch(p.ids, *e.InteractionID); found {
+			return i + 1
+		}
+	}
+	return p.byTime(e.StartedAt)
+}
+
+// toolResult places a tool_result with its tool_call.
+func (p placer) toolResult(e *cassette.Event, bySeq map[int64]*cassette.Event) int {
+	if c := parent(e, "tool_call", bySeq); c != nil {
+		return p.byInteraction(c)
+	}
+	return p.byInteraction(e)
+}
+
+// byInteraction returns the step of the last model_response whose
+// interaction_id is lower than e's, or 0 when there is none.
+func (p placer) byInteraction(e *cassette.Event) int {
+	if e.InteractionID == nil {
+		return p.byTime(e.StartedAt)
+	}
+	i, _ := slices.BinarySearch(p.ids, *e.InteractionID)
+	return i // the number of lower ids, which is the step of the last of them
+}
+
+// byTime returns the step of the last model_response that started at or
+// before t, the later step on a tie, or 0 when there is none.
+func (p placer) byTime(t time.Time) int {
 	// i is the number of responses that started at or before t.
-	i, _ := slices.BinarySearchFunc(x.starts, t, func(s, t time.Time) int {
+	i, _ := slices.BinarySearchFunc(p.starts, t, func(s, t time.Time) int {
 		if s.After(t) {
 			return 1
 		}
@@ -170,7 +221,7 @@ func (x timeIndex) step(t time.Time) int {
 	if i == 0 {
 		return 0
 	}
-	return x.maxN[i-1]
+	return p.maxN[i-1]
 }
 
 // stopOf builds the stop marker from the last model_response.

@@ -12,10 +12,14 @@ import (
 var t0 = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
 
 // ev builds an event of kind at seq. parent is the parent_seq, or 0 for none.
-// It starts seq seconds after t0, so that time follows seq unless a test
-// says otherwise with at.
+// Its interaction_id is seq and it starts seq seconds after t0, so that both
+// follow seq unless a test says otherwise with iid, noIID or at. A divergence
+// has no interaction, as in a real cassette.
 func ev(seq int64, kind string, parent int64) cassette.Event {
 	e := cassette.Event{Seq: seq, Kind: kind, Status: "ok", StartedAt: t0.Add(time.Duration(seq) * time.Second)}
+	if kind != "divergence" {
+		e.InteractionID = &seq
+	}
 	if parent != 0 {
 		e.ParentSeq = &parent
 	}
@@ -25,6 +29,18 @@ func ev(seq int64, kind string, parent int64) cassette.Event {
 // at returns e starting secs seconds after t0.
 func at(e cassette.Event, secs int) cassette.Event {
 	e.StartedAt = t0.Add(time.Duration(secs) * time.Second)
+	return e
+}
+
+// iid returns e with interaction_id id.
+func iid(e cassette.Event, id int64) cassette.Event {
+	e.InteractionID = &id
+	return e
+}
+
+// noIID returns e without an interaction_id.
+func noIID(e cassette.Event) cassette.Event {
+	e.InteractionID = nil
 	return e
 }
 
@@ -94,56 +110,74 @@ func TestBuildSteps(t *testing.T) {
 			},
 		},
 		{
-			// §7.4: linking is best-effort, so an unlinked tool_call is
-			// placed by its started_at, and so is a tool_result without a
-			// tool_call.
-			name: "placement by time without parent_seq",
-			events: []cassette.Event{
-				resp(1, ""), ev(2, "tool_use", 1), ev(3, "tool_use", 1),
-				ev(4, "tool_call", 0), ev(5, "tool_result", 0), ev(6, "tool_call", 0), ev(7, "tool_result", 0),
-				resp(8, ""), ev(9, "tool_call", 0),
-			},
-			want: []shape{
-				{N: 1, Response: 1, ToolUses: []int64{2, 3}, ToolCalls: []int64{4, 6}, ToolResults: []int64{5, 7}},
-				{N: 2, Response: 8, ToolCalls: []int64{9}},
-			},
-		},
-		{
-			// The race of §8.2: the agent acts on a streamed response before
-			// its model_response is appended, so the tool_call has the lower
-			// seq but started after the response did. An identical replay
-			// may append them the other way round; both land in step 2.
+			// The race of §8.2 and §7.4 (Order): the agent acts on the
+			// streamed response of request 2 before its model_response is
+			// appended, so the tool_call (request 3) has the lower seq. An
+			// identical replay may append them the other way round; by
+			// interaction_id both land in step 2.
 			name: "tool_call appended before its model_response",
 			events: []cassette.Event{
-				at(resp(1, ""), 1), at(ev(2, "tool_call", 0), 3), at(ev(3, "tool_result", 2), 4),
-				at(resp(4, ""), 2), at(ev(5, "tool_use", 4), 5),
+				iid(resp(1, ""), 1), iid(ev(2, "tool_call", 0), 3), iid(resp(3, ""), 2),
+				iid(ev(4, "tool_use", 3), 2), iid(ev(5, "tool_result", 2), 3),
 			},
 			want: []shape{
 				{N: 1, Response: 1},
-				{N: 2, Response: 4, ToolUses: []int64{5}, ToolCalls: []int64{2}, ToolResults: []int64{3}},
+				{N: 2, Response: 3, ToolUses: []int64{4}, ToolCalls: []int64{2}, ToolResults: []int64{5}},
 			},
 		},
 		{
-			name: "tool_call at the same time as a response belongs to it",
+			// Requests 1 and 2 run concurrently and complete in reverse
+			// order, so their model_response seqs are swapped. Steps follow
+			// the requests, not the completions.
+			name: "concurrent requests that complete in reverse order",
 			events: []cassette.Event{
-				at(resp(1, ""), 1), at(ev(2, "tool_call", 0), 5), at(resp(3, ""), 5),
+				iid(resp(1, ""), 2), iid(ev(2, "tool_use", 1), 2),
+				iid(resp(3, ""), 1), iid(ev(4, "tool_use", 3), 1),
+				iid(ev(5, "tool_call", 0), 3),
 			},
-			want: []shape{{N: 1, Response: 1}, {N: 2, Response: 3, ToolCalls: []int64{2}}},
+			want: []shape{
+				{N: 1, Response: 3, ToolUses: []int64{4}},
+				{N: 2, Response: 1, ToolUses: []int64{2}, ToolCalls: []int64{5}},
+			},
 		},
 		{
-			// A tool_use follows its parent, wherever its started_at is.
+			// §7.4: linking is best-effort. Without parent_seq, a tool_call
+			// and a tool_result are placed by interaction_id, and a tool_use
+			// goes with the model_response of its interaction.
+			name: "placement without parent_seq",
+			events: []cassette.Event{
+				resp(1, ""), iid(ev(2, "tool_use", 0), 1), iid(ev(3, "tool_use", 0), 1),
+				ev(4, "tool_call", 0), iid(ev(5, "tool_result", 0), 4),
+				resp(6, ""), ev(7, "tool_call", 0),
+			},
+			want: []shape{
+				{N: 1, Response: 1, ToolUses: []int64{2, 3}, ToolCalls: []int64{4}, ToolResults: []int64{5}},
+				{N: 2, Response: 6, ToolCalls: []int64{7}},
+			},
+		},
+		{
+			// No clock is involved for a tool_call: a started_at before the
+			// response's does not move it.
+			name: "tool_call placed by interaction_id, not time",
+			events: []cassette.Event{
+				at(resp(1, ""), 5), at(ev(2, "tool_call", 0), 1),
+			},
+			want: []shape{{N: 1, Response: 1, ToolCalls: []int64{2}}},
+		},
+		{
+			// A tool_use follows its parent, whatever its interaction_id.
 			name: "tool_use goes to the step of its model_response",
 			events: []cassette.Event{
-				at(resp(1, ""), 1), at(resp(2, ""), 2), at(ev(3, "tool_use", 1), 9),
+				resp(1, ""), resp(2, ""), iid(ev(3, "tool_use", 1), 2),
 			},
 			want: []shape{{N: 1, Response: 1, ToolUses: []int64{3}}, {N: 2, Response: 2}},
 		},
 		{
-			// A slow tool answers after the next request started: the result
-			// still belongs to the step of its call.
+			// The tool_result follows its tool_call, also when its own
+			// interaction_id would place it in a later step.
 			name: "tool_result goes to the step of its tool_call",
 			events: []cassette.Event{
-				resp(1, ""), ev(2, "tool_call", 0), resp(3, ""), at(ev(4, "tool_result", 2), 9),
+				resp(1, ""), ev(2, "tool_call", 0), resp(3, ""), iid(ev(4, "tool_result", 2), 9),
 			},
 			want: []shape{
 				{N: 1, Response: 1, ToolCalls: []int64{2}, ToolResults: []int64{4}},
@@ -152,16 +186,32 @@ func TestBuildSteps(t *testing.T) {
 		},
 		{
 			// The cassette is untrusted: a parent_seq that names no event,
-			// or an event of the wrong kind, falls back to started_at.
+			// or an event of another kind, falls back to interaction_id.
 			name: "dangling or mistyped parent_seq",
 			events: []cassette.Event{
-				at(resp(1, ""), 1), at(resp(2, ""), 5),
-				at(ev(3, "tool_use", 99), 2), at(ev(4, "tool_use", 3), 6),
-				at(ev(5, "tool_result", 99), 2), at(ev(6, "tool_result", 1), 6),
+				resp(1, ""), resp(2, ""),
+				iid(ev(3, "tool_use", 99), 1), iid(ev(4, "tool_use", 3), 2),
+				iid(ev(5, "tool_result", 99), 2), iid(ev(6, "tool_result", 1), 3),
 			},
 			want: []shape{
 				{N: 1, Response: 1, ToolUses: []int64{3}, ToolResults: []int64{5}},
 				{N: 2, Response: 2, ToolUses: []int64{4}, ToolResults: []int64{6}},
+			},
+		},
+		{
+			// Without the interaction_id it would be placed by, an event is
+			// placed by its started_at, and a model_response without one
+			// comes after those with one.
+			name: "missing interaction_id",
+			events: []cassette.Event{
+				noIID(at(resp(1, ""), 1)), at(resp(2, ""), 2),
+				noIID(at(ev(3, "tool_call", 0), 3)), noIID(at(ev(4, "tool_result", 0), 0)),
+				noIID(at(ev(5, "tool_use", 0), 3)), iid(at(ev(6, "tool_use", 0), 0), 42),
+			},
+			want: []shape{
+				{N: 0, ToolResults: []int64{4}, ToolUses: []int64{6}},
+				{N: 1, Response: 2},
+				{N: 2, Response: 1, ToolUses: []int64{5}, ToolCalls: []int64{3}},
 			},
 		},
 		{
@@ -173,21 +223,6 @@ func TestBuildSteps(t *testing.T) {
 			want: []shape{{N: 1, Response: 1, ToolUses: []int64{4}, ToolCalls: []int64{2}, ToolResults: []int64{3}}},
 		},
 		{
-			// Concurrent requests: step 2 started before step 1. An event
-			// goes to the highest step among the responses that started at
-			// or before it.
-			name: "responses whose start times disagree with seq",
-			events: []cassette.Event{
-				at(resp(1, ""), 5), at(resp(2, ""), 3),
-				at(ev(3, "tool_call", 0), 2), at(ev(4, "tool_call", 0), 4), at(ev(5, "tool_call", 0), 6),
-			},
-			want: []shape{
-				{N: 0, ToolCalls: []int64{3}},
-				{N: 1, Response: 1},
-				{N: 2, Response: 2, ToolCalls: []int64{4, 5}},
-			},
-		},
-		{
 			name: "divergence placed by time",
 			events: []cassette.Event{
 				at(resp(1, ""), 1), at(ev(2, "divergence", 0), 3), at(resp(3, ""), 2),
@@ -195,11 +230,40 @@ func TestBuildSteps(t *testing.T) {
 			want: []shape{{N: 1, Response: 1}, {N: 2, Response: 3, Diverge: []int64{2}}},
 		},
 		{
-			name: "duplicate seq",
+			// §8.2: a tie gives the later step, both with the step's own
+			// response and between two responses that started together.
+			name: "divergence tie gives the later step",
 			events: []cassette.Event{
-				resp(1, ""), ev(1, "tool_use", 1), ev(2, "tool_call", 0),
+				at(resp(1, ""), 1), at(resp(2, ""), 5), at(resp(3, ""), 5), at(ev(4, "divergence", 0), 5),
 			},
-			want: []shape{{N: 1, Response: 1, ToolUses: []int64{1}, ToolCalls: []int64{2}}},
+			want: []shape{{N: 1, Response: 1}, {N: 2, Response: 2}, {N: 3, Response: 3, Diverge: []int64{4}}},
+		},
+		{
+			// An inconsistent cassette: step 2 started before step 1. A
+			// divergence goes to the highest step among the responses that
+			// started at or before it.
+			name: "response start times that disagree with the step order",
+			events: []cassette.Event{
+				at(resp(1, ""), 5), at(resp(2, ""), 3),
+				at(ev(3, "divergence", 0), 2), at(ev(4, "divergence", 0), 4), at(ev(5, "divergence", 0), 6),
+			},
+			want: []shape{
+				{N: 0, Diverge: []int64{3}},
+				{N: 1, Response: 1},
+				{N: 2, Response: 2, Diverge: []int64{4, 5}},
+			},
+		},
+		{
+			name: "divergence in the last step",
+			events: []cassette.Event{
+				resp(1, ""), ev(2, "tool_use", 1), ev(3, "divergence", 0),
+			},
+			want: []shape{{N: 1, Response: 1, ToolUses: []int64{2}, Diverge: []int64{3}}},
+		},
+		{
+			name:   "divergence before any response",
+			events: []cassette.Event{ev(1, "user_message", 0), ev(2, "divergence", 0)},
+			want:   []shape{{N: 0, Diverge: []int64{2}}},
 		},
 		{
 			name:   "step 0 holds events before the first response",
@@ -235,18 +299,11 @@ func TestBuildSteps(t *testing.T) {
 			want: []shape{{N: 1, Response: 1}},
 		},
 		{
-			// A strict stop: the divergence ends the session after the
-			// last response.
-			name: "divergence in the last step",
+			name: "duplicate seq",
 			events: []cassette.Event{
-				resp(1, ""), ev(2, "tool_use", 1), ev(3, "divergence", 0),
+				resp(1, ""), ev(1, "tool_use", 1), ev(2, "tool_call", 0),
 			},
-			want: []shape{{N: 1, Response: 1, ToolUses: []int64{2}, Diverge: []int64{3}}},
-		},
-		{
-			name:   "divergence before any response",
-			events: []cassette.Event{ev(1, "user_message", 0), ev(2, "divergence", 0)},
-			want:   []shape{{N: 0, Diverge: []int64{2}}},
+			want: []shape{{N: 1, Response: 1, ToolUses: []int64{1}, ToolCalls: []int64{2}}},
 		},
 		{
 			name:   "no model_response",
@@ -278,9 +335,21 @@ func TestBuildStop(t *testing.T) {
 			want:   &Stop{StopReason: "end_turn"},
 		},
 		{
-			name:   "last by seq, not by position in the input",
-			events: []cassette.Event{resp(3, `{"stop_reason":"end_turn"}`), resp(1, `{"stop_reason":"tool_use"}`)},
+			// Concurrent requests that complete in reverse order: the last
+			// response is that of the last request, not the last appended.
+			name:   "last by interaction_id, not by seq",
+			events: []cassette.Event{iid(resp(1, `{"stop_reason":"end_turn"}`), 2), iid(resp(3, `{"stop_reason":"tool_use"}`), 1)},
 			want:   &Stop{StopReason: "end_turn"},
+		},
+		{
+			// The cassette is untrusted: responses without an
+			// interaction_id come after those with one, by seq.
+			name: "responses without interaction_id come last",
+			events: []cassette.Event{
+				noIID(resp(1, `{"stop_reason":"a"}`)), noIID(resp(2, `{"stop_reason":"b"}`)),
+				resp(3, `{"stop_reason":"c"}`), noIID(resp(4, `{"stop_reason":"d"}`)), resp(5, `{"stop_reason":"e"}`),
+			},
+			want: &Stop{StopReason: "d"},
 		},
 		{
 			name:   "error of a failed last response",
