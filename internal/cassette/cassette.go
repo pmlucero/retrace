@@ -26,6 +26,9 @@ var (
 	ErrAlreadyCompleted = errors.New("interaction already completed")
 	// ErrNotFound is returned when a referenced row does not exist.
 	ErrNotFound = errors.New("not found")
+	// ErrReadOnly is returned when writing to a cassette opened with
+	// OpenForRead.
+	ErrReadOnly = errors.New("cassette was opened for reading")
 	// ErrNotCassette is returned by Open for a file that was never a cassette:
 	// schema version 0, such as a foreign SQLite database or an empty file.
 	ErrNotCassette = errors.New("not a retrace cassette")
@@ -38,6 +41,7 @@ type Cassette struct {
 	schema   int  // schema version of the file
 	walMode  bool // the file is in WAL mode: Close switches it back to a single file
 	writable bool // false when the file's schema is newer than this build's
+	readOnly bool // opened with OpenForRead
 }
 
 // Create creates a new cassette at path with the current schema. The file must
@@ -108,6 +112,22 @@ func Open(ctx context.Context, path string) (*Cassette, error) {
 	return c, nil
 }
 
+// OpenForRead opens an existing cassette like Open, for commands that only
+// read it, such as ls and show. Writes to it fail, and Close leaves the
+// journal as it is: the cassette may be a session still being recorded, and
+// switching it out of WAL mode would checkpoint the whole log, which blocks
+// the recorder's writes until it is done (ADR 0009: a writer that falls
+// behind drops records). A crashed recording keeps its -wal file until a
+// command that writes, such as reindex or run, opens it.
+func OpenForRead(ctx context.Context, path string) (*Cassette, error) {
+	c, err := Open(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+	c.walMode, c.readOnly = false, true
+	return c, nil
+}
+
 func open(ctx context.Context, path string) (*Cassette, error) {
 	if strings.ContainsRune(path, '?') {
 		// The driver reads connection options after '?'.
@@ -166,6 +186,9 @@ func (c *Cassette) Close() error {
 // Write runs fn in a single transaction. If fn returns an error, nothing it
 // wrote is kept.
 func (c *Cassette) Write(ctx context.Context, fn func(*Tx) error) error {
+	if c.readOnly {
+		return fmt.Errorf("writing %s: %w", c.path, ErrReadOnly)
+	}
 	if !c.writable {
 		return fmt.Errorf("writing %s (schema v%d, supported v%d): %w", c.path, c.schema, len(migrations), ErrNewerSchema)
 	}
