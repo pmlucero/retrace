@@ -120,3 +120,42 @@ func TestRulesQueryAndURL(t *testing.T) {
 		t.Error("URL changed its input; the upstream needs the real URL")
 	}
 }
+
+// Spec §4.3: a stored URL that holds a redaction marker needs --mcp.
+func TestHasMarker(t *testing.T) {
+	r := NewRules(nil, nil)
+	secret, err := url.Parse("https://user:pw@mcp.example.com/mcp?api_key=sk-1&x=1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := url.Parse(r.URL(secret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !HasMarker(stored) {
+		t.Errorf("HasMarker(%s) = false for a URL stored by URL", stored)
+	}
+	for _, tc := range []struct {
+		raw  string
+		want bool
+	}{
+		{"https://REDACTED@h/mcp", true},
+		{"https://REDACTED:pw@h/mcp", false},
+		{"https://user@h/mcp", false},
+		{"https://h/mcp?k=[REDACTED:0a1b2c3d]", true},
+		{"https://h/mcp?k=%5BREDACTED:0A1B2C3D%5D", true},
+		{"https://h/mcp?a=1&k=[REDACTED:0a1b2c3d]", true},
+		{"https://h/mcp?k=[REDACTED:0a1b2c3]", false},
+		{"https://h/mcp?k=[REDACTED:0a1b2c3g]", false},
+		{"https://h/mcp?[REDACTED:0a1b2c3d]", false},
+		{"https://h/mcp", false},
+	} {
+		u, err := url.Parse(tc.raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := HasMarker(u); got != tc.want {
+			t.Errorf("HasMarker(%s) = %v, want %v", tc.raw, got, tc.want)
+		}
+	}
+}
