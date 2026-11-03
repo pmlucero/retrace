@@ -167,6 +167,42 @@ func (r *Rules) URL(u *url.URL) string {
 	return c.String()
 }
 
+// HasMarker reports whether u holds what URL writes in place of a
+// credential: userinfo equal to REDACTED, or a query value of the form
+// [REDACTED:<8 hex digits>], escaped or not. Such a stored URL is not the
+// one that was recorded (spec §4.3). A real URL of that form is reported
+// too: it cannot be told apart.
+func HasMarker(u *url.URL) bool {
+	if u.User != nil && u.User.String() == "REDACTED" {
+		return true
+	}
+	for part := range strings.SplitSeq(u.RawQuery, "&") {
+		_, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		if isMarker(value) {
+			return true
+		}
+		if unescaped, err := url.QueryUnescape(value); err == nil && isMarker(unescaped) {
+			return true
+		}
+	}
+	return false
+}
+
+func isMarker(v string) bool {
+	hexDigits, ok := strings.CutPrefix(v, "[REDACTED:")
+	if !ok {
+		return false
+	}
+	if hexDigits, ok = strings.CutSuffix(hexDigits, "]"); !ok || len(hexDigits) != 8 {
+		return false
+	}
+	_, err := hex.DecodeString(hexDigits)
+	return err == nil
+}
+
 func mask(v string) string {
 	sum := sha256.Sum256([]byte(v))
 	return "[REDACTED:" + hex.EncodeToString(sum[:4]) + "]"
