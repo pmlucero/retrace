@@ -27,14 +27,17 @@ var showCommand = command{
 	run:     runShow,
 }
 
-const showUsage = `Usage: retrace show <id> [--json]
+const showUsage = `Usage: retrace show <id> [--json] [--raw <interaction-id>]
 
 Shows session <id>: its metadata and totals, then a timeline of its events.
 Times are relative to the session's start. Costs are estimates from
 retrace's price table.
 
 Flags:
-  --json   emit the events as JSON Lines, one event per line
+  --json                  emit the events as JSON Lines, one event per line
+  --raw <interaction-id>  dump one interaction as stored, after redaction:
+                          its headers, bodies and SSE chunks with their
+                          offsets (the interaction_id of an event in --json)
 `
 
 // showArgumentRunes is where show cuts the arguments of an event (spec §9.6).
@@ -45,12 +48,24 @@ func runShow(ctx context.Context, env *Env, args []string) int {
 	fs := flag.NewFlagSet("show", flag.ContinueOnError)
 	fs.Usage = func() { fmt.Fprint(fs.Output(), showUsage) }
 	asJSON := fs.Bool("json", false, "")
+	var rawID int64
+	fs.Func("raw", "", func(v string) error {
+		n, err := strconv.ParseInt(v, 10, 64)
+		if err != nil || n <= 0 {
+			return errors.New("an interaction id is a positive integer")
+		}
+		rawID = n
+		return nil
+	})
 	positional, code, ok := parseWithPositional(fs, args, env)
 	if !ok {
 		return code
 	}
 	if len(positional) != 1 {
 		return usageError(env.Stderr, "show needs exactly one session id")
+	}
+	if rawID != 0 && *asJSON {
+		return usageError(env.Stderr, "--raw and --json cannot be used together")
 	}
 	id := positional[0]
 	if err := cassette.ValidateSessionID(id); err != nil {
@@ -61,6 +76,9 @@ func runShow(ctx context.Context, env *Env, args []string) int {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		env.Logger.Error("no such session", "session", id, "dir", env.Globals.Dir)
 		return ExitError
+	}
+	if rawID != 0 {
+		return showRaw(ctx, env, path, id, rawID)
 	}
 	s, events, err := readSession(ctx, path, env)
 	if err != nil {
@@ -74,6 +92,24 @@ func runShow(ctx context.Context, env *Env, args []string) int {
 	}
 	if err != nil {
 		env.Logger.Error("cannot write the session", "error", err)
+		return ExitError
+	}
+	return ExitOK
+}
+
+// showRaw implements `retrace show --raw` (spec §9.6).
+func showRaw(ctx context.Context, env *Env, path, session string, id int64) int {
+	raw, err := readRawInteraction(ctx, path, id, env)
+	if errors.Is(err, errNoInteraction) {
+		env.Logger.Error("no such interaction", "session", session, "interaction", id)
+		return ExitError
+	}
+	if err != nil {
+		env.Logger.Error("cannot read the interaction", "session", session, "interaction", id, "error", err)
+		return ExitError
+	}
+	if err := writeShowRaw(env.Stdout, raw); err != nil {
+		env.Logger.Error("cannot write the interaction", "error", err)
 		return ExitError
 	}
 	return ExitOK
@@ -173,13 +209,26 @@ func writeShowText(w io.Writer, s cassette.Session, events []cassette.Event) err
 // "\n", "\u202e"), so they can neither drive the terminal nor break the
 // columns.
 func printable(s string) string {
-	s = strings.ToValidUTF8(s, "\uFFFD")
-	if !strings.ContainsFunc(s, unsafeRune) {
+	return escapeRunes(strings.ToValidUTF8(s, "\uFFFD"), unsafeRune)
+}
+
+// printableText is printable for multi-line text, such as a body dumped by
+// `show --raw`: it keeps newlines and tabs, which cannot drive the terminal,
+// so that the text keeps its layout.
+func printableText(s string) string {
+	return escapeRunes(strings.ToValidUTF8(s, "\uFFFD"), func(r rune) bool {
+		return r != '\n' && r != '\t' && unsafeRune(r)
+	})
+}
+
+// escapeRunes escapes the runes of s that match unsafe in Go syntax.
+func escapeRunes(s string, unsafe func(rune) bool) string {
+	if !strings.ContainsFunc(s, unsafe) {
 		return s
 	}
 	var b strings.Builder
 	for _, r := range s {
-		if unsafeRune(r) {
+		if unsafe(r) {
 			q := strconv.QuoteRuneToASCII(r)
 			b.WriteString(q[1 : len(q)-1])
 			continue

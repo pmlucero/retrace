@@ -1,0 +1,22 @@
+id                     3
+channel                mcp
+upstream               mcp:shop
+request                POST /mcp
+status_code            500
+started_at             2026-10-23 09:30:03
+duration_ms            5
+provenance             replayed
+source_interaction_id  7
+error                  upstream\x1b[31m failed
+
+--- request headers ---
+Mcp-Session-Id: abc
+
+--- request body ---
+{"q":"\x1b]0;pwned\a\r\u202eexe"}
+
+--- response headers ---
+(none)
+
+--- response body ---
+<3 bytes, not UTF-8>
