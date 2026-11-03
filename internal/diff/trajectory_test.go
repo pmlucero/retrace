@@ -4,16 +4,27 @@ import (
 	"encoding/json"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
 )
 
+var t0 = time.Date(2026, 11, 2, 12, 0, 0, 0, time.UTC)
+
 // ev builds an event of kind at seq. parent is the parent_seq, or 0 for none.
+// It starts seq seconds after t0, so that time follows seq unless a test
+// says otherwise with at.
 func ev(seq int64, kind string, parent int64) cassette.Event {
-	e := cassette.Event{Seq: seq, Kind: kind, Status: "ok"}
+	e := cassette.Event{Seq: seq, Kind: kind, Status: "ok", StartedAt: t0.Add(time.Duration(seq) * time.Second)}
 	if parent != 0 {
 		e.ParentSeq = &parent
 	}
+	return e
+}
+
+// at returns e starting secs seconds after t0.
+func at(e cassette.Event, secs int) cassette.Event {
+	e.StartedAt = t0.Add(time.Duration(secs) * time.Second)
 	return e
 }
 
@@ -71,7 +82,7 @@ func TestBuildSteps(t *testing.T) {
 		want   []shape
 	}{
 		{
-			name: "steps by position",
+			name: "a recorded session",
 			events: []cassette.Event{
 				ev(1, "user_message", 0), resp(2, `{"stop_reason":"tool_use"}`),
 				ev(3, "tool_use", 2), ev(4, "tool_call", 3), ev(5, "tool_result", 4),
@@ -83,9 +94,10 @@ func TestBuildSteps(t *testing.T) {
 			},
 		},
 		{
-			// §7.4: linking is best-effort, so an unlinked tool_call still
-			// belongs to the step it falls in.
-			name: "positional assignment without parent_seq",
+			// §7.4: linking is best-effort, so an unlinked tool_call is
+			// placed by its started_at, and so is a tool_result without a
+			// tool_call.
+			name: "placement by time without parent_seq",
 			events: []cassette.Event{
 				resp(1, ""), ev(2, "tool_use", 1), ev(3, "tool_use", 1),
 				ev(4, "tool_call", 0), ev(5, "tool_result", 0), ev(6, "tool_call", 0), ev(7, "tool_result", 0),
@@ -97,15 +109,97 @@ func TestBuildSteps(t *testing.T) {
 			},
 		},
 		{
-			// parent_seq pointing at an earlier step does not move the event.
-			name: "parent_seq to another step is not followed",
+			// The race of §8.2: the agent acts on a streamed response before
+			// its model_response is appended, so the tool_call has the lower
+			// seq but started after the response did. An identical replay
+			// may append them the other way round; both land in step 2.
+			name: "tool_call appended before its model_response",
 			events: []cassette.Event{
-				resp(1, ""), ev(2, "tool_use", 1), resp(3, ""), ev(4, "tool_call", 2),
+				at(resp(1, ""), 1), at(ev(2, "tool_call", 0), 3), at(ev(3, "tool_result", 2), 4),
+				at(resp(4, ""), 2), at(ev(5, "tool_use", 4), 5),
 			},
 			want: []shape{
-				{N: 1, Response: 1, ToolUses: []int64{2}},
-				{N: 2, Response: 3, ToolCalls: []int64{4}},
+				{N: 1, Response: 1},
+				{N: 2, Response: 4, ToolUses: []int64{5}, ToolCalls: []int64{2}, ToolResults: []int64{3}},
 			},
+		},
+		{
+			name: "tool_call at the same time as a response belongs to it",
+			events: []cassette.Event{
+				at(resp(1, ""), 1), at(ev(2, "tool_call", 0), 5), at(resp(3, ""), 5),
+			},
+			want: []shape{{N: 1, Response: 1}, {N: 2, Response: 3, ToolCalls: []int64{2}}},
+		},
+		{
+			// A tool_use follows its parent, wherever its started_at is.
+			name: "tool_use goes to the step of its model_response",
+			events: []cassette.Event{
+				at(resp(1, ""), 1), at(resp(2, ""), 2), at(ev(3, "tool_use", 1), 9),
+			},
+			want: []shape{{N: 1, Response: 1, ToolUses: []int64{3}}, {N: 2, Response: 2}},
+		},
+		{
+			// A slow tool answers after the next request started: the result
+			// still belongs to the step of its call.
+			name: "tool_result goes to the step of its tool_call",
+			events: []cassette.Event{
+				resp(1, ""), ev(2, "tool_call", 0), resp(3, ""), at(ev(4, "tool_result", 2), 9),
+			},
+			want: []shape{
+				{N: 1, Response: 1, ToolCalls: []int64{2}, ToolResults: []int64{4}},
+				{N: 2, Response: 3},
+			},
+		},
+		{
+			// The cassette is untrusted: a parent_seq that names no event,
+			// or an event of the wrong kind, falls back to started_at.
+			name: "dangling or mistyped parent_seq",
+			events: []cassette.Event{
+				at(resp(1, ""), 1), at(resp(2, ""), 5),
+				at(ev(3, "tool_use", 99), 2), at(ev(4, "tool_use", 3), 6),
+				at(ev(5, "tool_result", 99), 2), at(ev(6, "tool_result", 1), 6),
+			},
+			want: []shape{
+				{N: 1, Response: 1, ToolUses: []int64{3}, ToolResults: []int64{5}},
+				{N: 2, Response: 2, ToolUses: []int64{4}, ToolResults: []int64{6}},
+			},
+		},
+		{
+			// A cycle of parent_seq values must not loop.
+			name: "parent_seq cycle",
+			events: []cassette.Event{
+				resp(1, ""), ev(2, "tool_call", 3), ev(3, "tool_result", 2), ev(4, "tool_use", 4),
+			},
+			want: []shape{{N: 1, Response: 1, ToolUses: []int64{4}, ToolCalls: []int64{2}, ToolResults: []int64{3}}},
+		},
+		{
+			// Concurrent requests: step 2 started before step 1. An event
+			// goes to the highest step among the responses that started at
+			// or before it.
+			name: "responses whose start times disagree with seq",
+			events: []cassette.Event{
+				at(resp(1, ""), 5), at(resp(2, ""), 3),
+				at(ev(3, "tool_call", 0), 2), at(ev(4, "tool_call", 0), 4), at(ev(5, "tool_call", 0), 6),
+			},
+			want: []shape{
+				{N: 0, ToolCalls: []int64{3}},
+				{N: 1, Response: 1},
+				{N: 2, Response: 2, ToolCalls: []int64{4, 5}},
+			},
+		},
+		{
+			name: "divergence placed by time",
+			events: []cassette.Event{
+				at(resp(1, ""), 1), at(ev(2, "divergence", 0), 3), at(resp(3, ""), 2),
+			},
+			want: []shape{{N: 1, Response: 1}, {N: 2, Response: 3, Diverge: []int64{2}}},
+		},
+		{
+			name: "duplicate seq",
+			events: []cassette.Event{
+				resp(1, ""), ev(1, "tool_use", 1), ev(2, "tool_call", 0),
+			},
+			want: []shape{{N: 1, Response: 1, ToolUses: []int64{1}, ToolCalls: []int64{2}}},
 		},
 		{
 			name:   "step 0 holds events before the first response",
