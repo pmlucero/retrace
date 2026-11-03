@@ -1,0 +1,16 @@
+session      s
+mode         record
+status       recording
+created      2026-10-23 09:30:00
+command      agent
+cwd
+recorded by  retrace v0.1.0-dev
+steps        1
+tool calls   1
+tokens       10 in / 5 out
+cost (est.)  $0.01
+models       claude-sonnet-4-5
+
+SEQ  TIME   SOURCE → TARGET   KIND            TOOL  ARGUMENTS  STATUS
+1    +1.0s  model → agent     model_response                   ok
+2    +2.0s  agent → mcp:shop  tool_call       t     {"a":1}    ok
