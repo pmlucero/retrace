@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -173,6 +174,42 @@ func TestLsJSON(t *testing.T) {
 	}
 	if want := []string{"live", "checkout.swap-model.1", "checkout.exact.1", "checkout"}; !reflect.DeepEqual(ids, want) {
 		t.Errorf("ids = %v, want newest first %v", ids, want)
+	}
+}
+
+// seedInvalidCosts writes session id with costs that a valid cassette never
+// holds: infinite, negative, NaN (which SQLite stores as NULL) and two whose
+// sum overflows. Spec §8.2 counts all of them as null but the first huge one.
+func seedInvalidCosts(t *testing.T, dir, id string) {
+	t.Helper()
+	seedSession(t, dir,
+		cassette.Session{ID: id, Mode: "record", Status: "recording", CreatedAt: lsT0},
+		&cassette.SessionEnd{Status: "completed", EndedAt: lsT0.Add(10 * time.Second)},
+		response(1, "m", 10, 1, cost(math.Inf(1))),
+		response(2, "m", 10, 1, cost(math.Inf(-1))),
+		response(3, "m", 10, 1, cost(-0.5)),
+		response(4, "m", 10, 1, cost(math.NaN())),
+		response(5, "m", 10, 1, cost(math.MaxFloat64)),
+		response(6, "m", 10, 1, cost(math.MaxFloat64)),
+	)
+}
+
+// AC-22, spec §8.2: invalid costs count as null, so ls --json still emits
+// valid JSON, with a finite known sum.
+func TestLsJSONInvalidCosts(t *testing.T) {
+	dir := t.TempDir()
+	seedInvalidCosts(t, dir, "bad")
+
+	r := runLsCmd(dir, "--json")
+	if r.code != ExitOK {
+		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
+	}
+	var got []lsEntry
+	if err := json.Unmarshal([]byte(r.stdout.String()), &got); err != nil {
+		t.Fatalf("not one JSON array: %v\n%s", err, r.stdout)
+	}
+	if len(got) != 1 || got[0].CostUSD != math.MaxFloat64 || got[0].UnpricedResponses != 5 {
+		t.Errorf("got %+v, want one session costing math.MaxFloat64 with 5 unpriced responses", got)
 	}
 }
 
