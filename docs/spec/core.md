@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.20
-- Last updated: 2026-11-02
+- Version: 0.21
+- Last updated: 2026-11-03
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -406,22 +406,42 @@ The cassette writer never delays forwarding ([ADR 0009](../adr/0009-append-only-
 
 ### 8.1 Inputs
 
-`retrace diff <a> <b>` compares two sessions. The typical pair is a recording and one of its replays, but any two sessions can be compared.
+`retrace diff <a> <b>` compares two sessions. The typical pair is a recording and one of its replays, but any two sessions can be compared. A session that is still `recording`, or never ended, is compared as it is, and the output says that it never ended.
 
 ### 8.2 Trajectory
 
-A session's trajectory is its events with `kind ∈ {tool_use, tool_call, tool_result, divergence}` plus a terminal **stop** marker built from the last `model_response` (`stop_reason`), ordered by `seq`. These are grouped into **steps**: step *n* is the *n*-th `model_response` together with its `tool_use` events and the resulting `tool_call` and `tool_result` events.
+A session's trajectory is its events with `kind ∈ {tool_use, tool_call, tool_result, divergence}` plus a terminal **stop** marker built from the last `model_response` (`stop_reason`). These are grouped into **steps**: step *n* is the *n*-th `model_response` together with its `tool_use` events and the resulting `tool_call` and `tool_result` events.
+
+- One order defines the steps: the order in which their LLM requests arrived, which is the order of the `model_response` events by `interaction_id` (§7.3: assigned when the request arrives). `seq` is not used for it, because it is not deterministic here. A `model_response` is appended when its response completes, so concurrent LLM requests can complete in a different order in a replay. An agent that acts on a streamed response as soon as it arrives can also have its `tool_call` appended before that response's `model_response` (§7.4, Order). Linking a `tool_call` to its `tool_use` is best-effort too (§7.4). Step *n* is the *n*-th `model_response` in this order, and the last one in this order gives the stop marker.
+- Each event is assigned to a step by causality:
+  - A `tool_use` belongs to the step of its `model_response` (its `parent_seq`).
+  - A `tool_call` belongs to the step of the last `model_response` whose `interaction_id` is lower than its own: a request cannot act on a response whose request had not arrived yet. Interaction ids are unique, so there is no tie, and no clock is involved.
+  - A `divergence` has no interaction. It belongs to the step of the last `model_response` whose `started_at` is at or before its own, and a tie gives the later step.
+  - A `tool_result` belongs to the step of its `tool_call` (its `parent_seq`), or, without one, is placed by its `interaction_id` like a `tool_call`.
+  - Events before the first `model_response` form step `0`, which exists only when it holds an event.
+- The stop marker holds the `stop_reason` of the last `model_response`, or its `error` when its `status` is `error`. A session with no `model_response` has no stop marker.
+- The `model_response` events themselves are not compared, except for their text under `--text` (§8.3). They define the steps and the totals.
+
+**Totals.** `diff` (§8.4), `ls` (§9.5) and `show` (§9.6) summarize a session from its events and its session row:
+
+- steps: the number of `model_response` events. Step `0`, which has no `model_response`, is not counted. Tool calls: the number of `tool_call` events.
+- tokens: the sums of `tokens_in` and `tokens_out` over `model_response` events.
+- cost: the sum of the known `cost_usd`, with the number of `model_response` events that have tokens but a null cost. A null cost is never guessed (§7.5): the output shows the known sum and that some responses are unpriced, e.g. `$0.18 + 2 unpriced`. A response with no tokens, such as an API error or a cassette miss, was not billed by tokens and is not counted as unpriced.
+- models: the distinct `model` values of `model_response` events, in order of first appearance.
+- duration: `ended_at − created_at`, absent while the session has not ended.
 
 ### 8.3 First divergence
 
-1. Walk both trajectories step by step and event by event, comparing on **action identity** = `(kind, target, tool, canonical arguments)`. For `tool_result`, the canonical `result` is also compared.
-2. Model text is **not** part of action identity by default, because different models almost always phrase things differently. `--text` includes text in the comparison. Without the flag, text differences are reported as informational.
+1. Walk both trajectories step by step and event by event, comparing on **action identity** = `(kind, source, target, tool, canonical arguments)`. For `tool_result`, the canonical `result` and the `status` are also compared. Stop markers are equal when their `stop_reason`, or their `error`, is.
+   - Within a step, `tool_use` events are compared in `seq` order, which is the order the model emitted them in. `tool_call` events are compared as a set, and so are `tool_result` events: the agent may run tool calls concurrently, so their order depends on which finishes first, and an exact replay answers at once. Each set is ordered by its full identity, `(target or source, tool, canonical arguments or result, status)`, before it is compared, so that no tie depends on `seq`.
+   - The order of comparison within a step is: `tool_use`, then `tool_call`, then `tool_result`, then `divergence`.
+2. Model text is **not** part of action identity by default, because different models almost always phrase things differently. `--text` includes text in the comparison: the `result.text` of each step's `model_response`, compared before its other events. Without the flag, text differences are reported as informational: the steps whose text differs are listed, and the exit code does not change.
 3. The first unequal pair (or the point where one trajectory ends early) is the **divergence point**. It is reported as step number, event kind, tool, and an argument-level diff (JSON paths with values on each side).
 4. If either session contains a `divergence` event (strict stop), it is reported, and the divergence point is at or before it.
 
 ### 8.4 Output
 
-Text output (default):
+Text output (default) has a summary of the two sessions with their totals (§8.2), the first divergence, if any, and the number of identical steps before it:
 
 ```text
 retrace diff 20261023-checkout  20261023-checkout.swap-model.1
@@ -443,11 +463,14 @@ duration     38.2s                         11.9s
 
 The model names and values above are illustrative.
 
-`--format json` emits a stable JSON document with the same information, for CI and for the future UI.
+- Each argument-level diff entry gives its path and `expected → received`, formatted as in the divergence report (§6.4): compact JSON values, `(missing)` for a side without the path, and values longer than 80 characters cut with `…`.
+- When text differs in steps that are not compared, a line says so, e.g. `text differs in steps 2, 5 (not compared; use --text)`.
+
+`--format json` emits a stable JSON document with the same information, for CI and for the future UI. It has a top-level `format_version` (`1`), and its JSON Schema is committed in the repository as `docs/schema/diff.v1.json`. A change that is not backward compatible increments `format_version` and adds a new schema file. Text differences are listed in `text_differences`, as step numbers. It is always present, and empty under `--text`, where text is part of the comparison.
 
 When either session has `dropped_events > 0` (§7.7), the text output starts with a warning that names the session and the count, and says that the divergence point may be caused by missing events. The JSON document carries `dropped_events` for each session. The exit code is unchanged.
 
-Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These follow `diff(1)`.
+Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These follow `diff(1)`. Because `1` means a divergence, every error is `2`: a usage error, a session that does not exist, and a cassette that cannot be read.
 
 ## 9. CLI
 
@@ -531,6 +554,10 @@ retrace ls [--json]
 
 Lists the cassettes in `--dir`, newest first, with these columns: `ID`, `CREATED`, `MODE`, `PARENT`, `STATUS`, `STEPS`, `TOKENS`, `COST (est.)`, `DURATION`.
 
+- The values are the totals of §8.2. `TOKENS` is `in/out`, abbreviated (e.g. `41.2k/3.9k`). `DURATION` is empty while a session has not ended.
+- A file in `--dir` that ends in `.cassette` but cannot be opened or read (e.g. a newer schema, a corrupt database or a missing session row) is skipped with a warning on stderr, and `ls` still exits `0`.
+- `--json` emits one JSON array with an object per session, newest first, with the same information unabbreviated.
+
 When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+gaps` (e.g. `completed+gaps`), because its steps and totals come from an incomplete log. `--json` carries `dropped_events` for each session.
 
 ### 9.6 `retrace show`
@@ -539,10 +566,10 @@ When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+g
 retrace show <id> [--json] [--raw <interaction-id>]
 ```
 
-- The default output is the session summary (metadata and totals) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status.
+- The default output is the session summary (metadata and totals, §8.2) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status. The relative time counts from the session's `created_at`. Arguments are compact JSON, cut after 60 characters with `…`.
 - When `dropped_events > 0` (§7.7), the summary warns that the event log is incomplete and gives the count, and the timeline shows a marker line where `seq` values are missing, with how many events are missing there. `--json` emits only the events that exist; consumers find gaps from `seq`.
 - `--json`: emits events as JSONL, one event per line, as a stable format.
-- `--raw`: dumps one interaction (headers, bodies, SSE chunks with offsets).
+- `--raw`: dumps one interaction (headers, bodies, SSE chunks with offsets), as stored, after redaction. A body or chunk that is not valid UTF-8 is shown as `<n bytes, not UTF-8>`. `--raw` with `--json` is a usage error.
 
 ### 9.7 Exit codes
 
@@ -550,7 +577,7 @@ retrace show <id> [--json] [--raw <interaction-id>]
 |---|---|
 | `0` | Success (for `diff`: trajectories identical) |
 | `1` | Runtime error (for `diff`: divergence found) |
-| `2` | Usage error, or unsupported option (reserved strategies, `--model` with `--tools live`) |
+| `2` | Usage error, or unsupported option (reserved strategies, `--model` with `--tools live`). For `diff`: any error (§8.4) |
 | `3` | `run`: replay stopped on a divergence (`strict`) |
 | `4` | `record` / `run`: the agent exited with a non-zero code. Its code is stored in `agent_exit_code` |
 
