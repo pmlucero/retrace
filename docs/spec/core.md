@@ -499,7 +499,7 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
   - An id whose part before the first `.` is a Windows reserved device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, in any case) is also a usage error, on every platform, so cassettes stay portable.
   - Whether an id exists is decided by the cassette file, not by comparing ids, so on a case-insensitive file system `Foo` and `foo` are the same session.
   - A generated id has the form `YYYYMMDD-HHMMSS-xxxx`: local time, then four random lowercase hexadecimal digits. If it already exists, a new random suffix is drawn.
-- `--force`: replaces the cassette of an existing session. The old cassette stays unchanged until the new one holds its session row (§7.2), and is then replaced in one step. If `record` fails before that, for example because the listen address is in use, the old session is left as it was.
+- `--force`: replaces the cassette of an existing session. The old cassette stays unchanged until the new one holds its session row (§7.2), and the new file then takes its place with an atomic rename. If `record` fails before that, for example because the session row cannot be written, the old session is left as it was. If the new cassette cannot be opened right after the rename, it is removed too, and the id is left free.
 - `--mcp`: registers an MCP upstream. Repeatable.
 - `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`.
 - `--anthropic-upstream`: the Anthropic API base URL. Default `https://api.anthropic.com`. A value that is not an absolute `http` or `https` URL is a usage error.
