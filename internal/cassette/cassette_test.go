@@ -206,7 +206,7 @@ func TestRemoveDeletesTheCassetteAndItsJournal(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "s.cassette")
 	other := filepath.Join(dir, "t.cassette")
-	for _, p := range []string{path, path + "-wal", path + "-shm", other} {
+	for _, p := range []string{path, path + "-wal", path + "-shm", path + "-journal", other} {
 		if err := os.WriteFile(p, nil, 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -220,6 +220,155 @@ func TestRemoveDeletesTheCassetteAndItsJournal(t *testing.T) {
 	if err := Remove(path); err != nil {
 		t.Errorf("Remove of a missing cassette: %v, want nil", err)
 	}
+}
+
+// insertSessionTx returns a Replace init that writes session s.
+func insertSessionTx(s Session) func(*Tx) error {
+	return func(tx *Tx) error { return tx.InsertSession(context.Background(), s) }
+}
+
+// assertFiles fails the test unless dir holds exactly the named files.
+func assertFiles(t *testing.T, dir string, want ...string) {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, e := range entries {
+		got = append(got, e.Name())
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s holds %v, want %v", dir, got, want)
+	}
+}
+
+// #111: a Replace that fails before the rename leaves the old cassette, with
+// its -wal, -shm and -journal files, as it was, and no temporary file.
+func TestReplaceKeepsTheOldCassetteWhenItFails(t *testing.T) {
+	errInit := errors.New("disk full (injected)")
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, tc := range []struct {
+		name string
+		ctx  context.Context
+		init func(*Tx) error
+		want error
+	}{
+		{"init fails", context.Background(), func(*Tx) error { return errInit }, errInit},
+		{"create fails", canceled, insertSessionTx(testSession()), context.Canceled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, "s.cassette")
+			old := map[string]string{path: "old cassette", path + "-journal": "old journal", path + "-shm": "old shm", path + "-wal": "old wal"}
+			for p, data := range old {
+				if err := os.WriteFile(p, []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := Replace(tc.ctx, path, tc.init); !errors.Is(err, tc.want) {
+				t.Fatalf("Replace: err = %v, want %v", err, tc.want)
+			}
+			for p, want := range old {
+				if got, _ := os.ReadFile(p); string(got) != want { //nolint:gosec // G304: the test's own file
+					t.Errorf("%s holds %q, want %q", p, got, want)
+				}
+			}
+			assertFiles(t, dir, "s.cassette", "s.cassette-journal", "s.cassette-shm", "s.cassette-wal")
+		})
+	}
+}
+
+// #111: a rename that fails removes the temporary file and keeps what is at
+// the path.
+func TestReplaceKeepsThePathWhenTheRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.cassette")
+	if err := os.MkdirAll(filepath.Join(path, "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Replace(context.Background(), path, insertSessionTx(testSession())); err == nil {
+		t.Fatal("Replace over a non-empty directory: err = nil")
+	}
+	assertFiles(t, dir, "s.cassette")
+	assertFiles(t, path, "x")
+}
+
+// #111: Replace puts the new cassette in place of the old one, open in WAL
+// mode, and the old cassette's stale -wal is not applied to it.
+func TestReplaceReplacesTheCassette(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.cassette")
+
+	// A crashed recording: its last writes are still in its -wal file.
+	crashed := filepath.Join(t.TempDir(), "s.cassette")
+	c, err := Create(ctx, crashed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSession := testSession()
+	oldSession.ID = "old"
+	write(t, c, insertSessionTx(oldSession))
+	for _, suffix := range []string{"", "-wal"} {
+		data, err := os.ReadFile(crashed + suffix) //nolint:gosec // G304: the test's own file
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+suffix, data, 0o600); err != nil { //nolint:gosec // G703: as above
+			t.Fatal(err)
+		}
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A rollback journal left by an interrupted write of another command.
+	if err := os.WriteFile(path+"-journal", []byte("old journal"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	newSession := testSession()
+	newSession.ID = "new"
+	c, err = Replace(ctx, path, insertSessionTx(newSession))
+	if err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+	var journal string
+	if err := c.db.QueryRowContext(ctx, "PRAGMA journal_mode").Scan(&journal); err != nil || journal != "wal" {
+		t.Errorf("journal mode = %q, %v; want wal", journal, err)
+	}
+	if s, err := c.Session(ctx); err != nil || s.ID != "new" {
+		t.Errorf("session = %q, %v; want the new one", s.ID, err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertFiles(t, dir, "s.cassette")
+
+	c, err = Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = c.Close() }()
+	if s, err := c.Session(ctx); err != nil || s.ID != "new" {
+		t.Errorf("reopened session = %q, %v; want the new one", s.ID, err)
+	}
+}
+
+// #111: when an old log cannot be removed after the rename, the new cassette
+// is removed too, so no cassette is left next to a stale log.
+func TestReplaceRemovesTheNewCassetteWhenAnOldLogStays(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.cassette")
+	// A non-empty directory cannot be removed with os.Remove.
+	if err := os.MkdirAll(filepath.Join(path+"-wal", "x"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Replace(context.Background(), path, insertSessionTx(testSession())); err == nil {
+		t.Fatal("Replace with an old -wal that cannot be removed: err = nil")
+	}
+	assertFiles(t, dir, "s.cassette-wal")
 }
 
 func TestPutBlobDeduplicatesContent(t *testing.T) {
