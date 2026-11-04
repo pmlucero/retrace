@@ -1,5 +1,6 @@
-# Keeps SHA-pinned GitHub Actions and Go modules up to date, one grouped weekly PR
-# per ecosystem. Long titles are exempt from the pr-title length limit (pr-metadata.yml).
+# Keeps SHA-pinned GitHub Actions, Go modules and the demo's Python packages
+# (examples/demo) up to date, one grouped weekly PR per ecosystem. Long titles
+# are exempt from the pr-title length limit (pr-metadata.yml).
 version: 2
 updates:
   - package-ecosystem: github-actions
@@ -26,4 +27,15 @@ updates:
       prefix: chore(deps)
     groups:
       go-modules:
+        patterns: ["*"]
+  - package-ecosystem: uv
+    directory: /examples/demo
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      demo-python:
         patterns: ["*"]

@@ -37,7 +37,7 @@ INDEX_ROW_RE = re.compile(r"^\| \[(\d{4})\]\((\d{4}-[^)]+\.md)\) \| (.+) \| (.+)
 LINK_RE = re.compile(r"(?<!!)\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 FENCE_RE = re.compile(r"^(```|~~~)")
-SKIP_DIRS = {".git", "node_modules"}
+SKIP_DIRS = {".git", "node_modules", ".venv"}
 
 ARCH_JSON = Path("docs/architecture/overview.json")
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
