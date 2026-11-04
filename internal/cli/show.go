@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"slices"
 	"strconv"
@@ -341,13 +342,23 @@ func writeShowJSON(w io.Writer, events []cassette.Event) error {
 			Model: e.Model, RequestedModel: e.RequestedModel, Tool: e.Tool,
 			Arguments: jsonOrString(e.Arguments), Result: jsonOrString(e.Result),
 			TokensIn: e.TokensIn, TokensOut: e.TokensOut, TokensCacheRead: e.TokensCacheRead,
-			TokensCacheWrite: e.TokensCacheWrite, CostUSD: e.CostUSD, Status: e.Status, Error: e.Error,
+			TokensCacheWrite: e.TokensCacheWrite, CostUSD: finite(e.CostUSD), Status: e.Status, Error: e.Error,
 			Provenance: e.Provenance, DeriverVersion: e.DeriverVersion,
 		}); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// finite returns f, or nil when it is not a finite number, which a valid
+// cassette never holds and JSON cannot carry: one bad value must not stop the
+// stream (spec §9.6).
+func finite(f *float64) *float64 {
+	if f == nil || math.IsInf(*f, 0) || math.IsNaN(*f) {
+		return nil
+	}
+	return f
 }
 
 // jsonOrString returns raw when it is JSON, null when it is absent, and

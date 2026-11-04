@@ -95,6 +95,40 @@ func TestOf(t *testing.T) {
 			want: Totals{Steps: 5, TokensIn: 4, TokensOut: 4, Unpriced: 4, Models: []string{"z", "a", "m"}},
 		},
 		{
+			// AC-22: spec §8.2 counts an invalid cost as null, so the known
+			// sum stays a finite number.
+			name:    "invalid costs count as null",
+			session: cassette.Session{CreatedAt: created},
+			events: []cassette.Event{
+				response("a", 1, 1, ptr(-0.5)),
+				response("a", 1, 1, ptr(math.Inf(1))),
+				response("a", 1, 1, ptr(math.Inf(-1))),
+				response("a", 1, 1, ptr(math.NaN())),
+				response("a", 1, 1, ptr(0.25)),                     // valid after invalid ones
+				{Kind: "model_response", CostUSD: ptr(math.NaN())}, // no tokens: neither priced nor unpriced
+			},
+			want: Totals{Steps: 6, TokensIn: 5, TokensOut: 5, CostUSD: 0.25, Unpriced: 4, Priced: 1, Models: []string{"a"}},
+		},
+		{
+			name:    "negative zero is a known cost",
+			session: cassette.Session{CreatedAt: created},
+			events:  []cassette.Event{response("a", 1, 1, ptr(math.Copysign(0, -1)))},
+			want:    Totals{Steps: 1, TokensIn: 1, TokensOut: 1, Priced: 1, Models: []string{"a"}},
+		},
+		{
+			// AC-22: adding in seq order, the cost that would overflow the
+			// sum counts as null, and later costs still add (1 is lost in the
+			// rounding of so large a sum).
+			name:    "cost that overflows the sum counts as null",
+			session: cassette.Session{CreatedAt: created},
+			events: []cassette.Event{
+				response("a", 1, 1, ptr(math.MaxFloat64)),
+				response("a", 1, 1, ptr(math.MaxFloat64)),
+				response("a", 1, 1, ptr(1.0)),
+			},
+			want: Totals{Steps: 3, TokensIn: 3, TokensOut: 3, CostUSD: math.MaxFloat64, Unpriced: 1, Priced: 2, Models: []string{"a"}},
+		},
+		{
 			name:    "clock stepped back",
 			session: cassette.Session{CreatedAt: ended, EndedAt: &created},
 			want:    Totals{Duration: &zero},

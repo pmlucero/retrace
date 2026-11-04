@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -134,6 +135,38 @@ func TestShowJSON(t *testing.T) {
 		}
 		if !slices.Equal(times, wantTimes) {
 			t.Errorf("started_at = %q, want %q", times, wantTimes)
+		}
+	}
+}
+
+// AC-22, spec §9.6: a stored cost that is not finite is emitted as null, so
+// every line is still JSON.
+func TestShowJSONNonFiniteCost(t *testing.T) {
+	dir := t.TempDir()
+	seedInvalidCosts(t, dir, "bad")
+
+	r := runShowCmd(dir, "bad", "--json")
+	if r.code != ExitOK {
+		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
+	}
+	var costs []*float64
+	sc := bufio.NewScanner(strings.NewReader(r.stdout.String()))
+	for sc.Scan() {
+		var e showEvent
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+			t.Fatalf("line %q: %v", sc.Text(), err)
+		}
+		costs = append(costs, e.CostUSD)
+	}
+	// Only the infinite costs become null: show --json emits the events as
+	// stored, a negative cost included, and NaN was stored as NULL.
+	want := []*float64{nil, nil, cost(-0.5), nil, cost(math.MaxFloat64), cost(math.MaxFloat64)}
+	if len(costs) != len(want) {
+		t.Fatalf("%d lines, want %d:\n%s", len(costs), len(want), r.stdout)
+	}
+	for i := range want {
+		if (costs[i] == nil) != (want[i] == nil) || costs[i] != nil && *costs[i] != *want[i] {
+			t.Errorf("line %d: cost_usd %v, want %v", i+1, costs[i], want[i])
 		}
 	}
 }

@@ -55,6 +55,23 @@ func TestDiffJSON(t *testing.T) {
 	}
 }
 
+// AC-21, spec §8.2: invalid costs count as null, so the document still
+// validates against the schema.
+func TestDiffJSONInvalidCosts(t *testing.T) {
+	dir := t.TempDir()
+	seedInvalidCosts(t, dir, "a")
+	seedInvalidCosts(t, dir, "b")
+
+	r := runDiffCmd(dir, "--format", "json", "a", "b")
+	if r.code != ExitOK {
+		t.Fatalf("exit %d, want %d\n%s", r.code, ExitOK, r.stderr)
+	}
+	out := r.stdout.String()
+	if err := loadDiffSchema(t).validate(decodeJSON(t, out)); err != nil {
+		t.Fatalf("output does not validate against %s: %v\n%s", diffSchemaPath, err, out)
+	}
+}
+
 // AC-27: the JSON document carries dropped_events for each session.
 func TestDiffJSONDroppedEvents(t *testing.T) {
 	dir := t.TempDir()
