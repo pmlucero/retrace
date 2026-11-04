@@ -32,9 +32,17 @@ archives:
     format_overrides:
       - goos: windows
         formats: [zip]
+    # The archive entries also take their times from the commit, not from the
+    # checkout or the build clock, so a rebuild of a tag gives the same bytes.
+    builds_info:
+      mtime: "{{ .CommitDate }}"
     files:
-      - LICENSE
-      - README.md
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          mtime: "{{ .CommitDate }}"
 
 checksum:
   name_template: checksums.txt
@@ -52,8 +60,10 @@ changelog:
       # PR merge commits repeat the commits they merge.
       - "^Merge pull request "
       - "^Merge branch "
-      # Not user-facing; the full history is in git.
-      - '^(docs|test|chore)(\(.+\))?!?:'
+      # Not user-facing; the full history is in git. chore(deps) is kept: a
+      # module bump (Dependabot) changes the shipped binary.
+      - '^(docs|test)(\(.+\))?!?:'
+      - '^chore(\((ci|release)\))?!?:'
   groups:
     - title: Features
       regexp: '^feat(\(.+\))?!?:'
@@ -64,6 +74,9 @@ changelog:
     - title: Refactoring
       regexp: '^refactor(\(.+\))?!?:'
       order: 2
+    - title: Dependencies
+      regexp: '^chore\(deps\)!?:'
+      order: 3
     - title: Other changes
       order: 999
 
