@@ -236,24 +236,8 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 		}
 	}
 	path := cassette.Path(dir, id)
-	if opts.force {
-		for _, p := range []string{path, path + "-wal", path + "-shm"} {
-			if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
-				return nil, "", fmt.Errorf("replacing session %s: %w", id, err)
-			}
-		}
-	}
-	c, err := cassette.Create(ctx, path)
-	if errors.Is(err, cassette.ErrExists) {
-		return nil, "", fmt.Errorf("session %q already exists in %s (use --force to replace it)", id, dir)
-	}
-	if err != nil {
-		return nil, "", err
-	}
-
 	cwd, err := os.Getwd()
 	if err != nil {
-		_ = c.Close()
 		return nil, "", fmt.Errorf("reading the working directory: %w", err)
 	}
 	servers := make([]mcpServer, len(opts.mcp))
@@ -262,16 +246,22 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 		servers[i] = mcpServer{Name: sv.Name, URL: rules.URL(u)} // spec §3.5: no credentials from the URL
 	}
 	serversJSON, _ := json.Marshal(servers)
-	err = c.Write(ctx, func(tx *cassette.Tx) error {
-		return tx.InsertSession(ctx, cassette.Session{
-			ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
-			Command: opts.command, Cwd: cwd, OnMiss: "strict",
-			MCPServers: serversJSON, Redaction: rules.Metadata(), RetraceVersion: Version(),
-			Labels: opts.labels, DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
-		})
+
+	if opts.force {
+		if err := cassette.Remove(path); err != nil {
+			return nil, "", fmt.Errorf("replacing session %s: %w", id, err)
+		}
+	}
+	c, err := createSessionCassette(ctx, path, cassette.Session{
+		ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
+		Command: opts.command, Cwd: cwd, OnMiss: "strict",
+		MCPServers: serversJSON, Redaction: rules.Metadata(), RetraceVersion: Version(),
+		Labels: opts.labels, DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 	})
+	if errors.Is(err, cassette.ErrExists) {
+		return nil, "", fmt.Errorf("session %q already exists in %s (use --force to replace it)", id, dir)
+	}
 	if err != nil {
-		_ = c.Close()
 		return nil, "", err
 	}
 	return c, id, nil

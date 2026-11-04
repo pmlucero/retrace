@@ -352,6 +352,40 @@ func TestRecordRefusesAnExistingSessionUnlessForced(t *testing.T) {
 	}
 }
 
+// #56: when the session row cannot be written, record exits 1 and leaves no
+// cassette, so the id stays free.
+func TestRecordFailedSessionInsertLeavesNothingBehind(t *testing.T) {
+	t.Setenv(agentModeEnv, "call")
+	dir := t.TempDir()
+	up := fakeAnthropic(t)
+	args := append([]string{"--session", "s", "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL, "--"}, agentCommand()...)
+
+	failSessionInsert(t)
+	r := runRecordCmd(t, dir, args...)
+	if r.code != ExitError || !strings.Contains(r.stderr.String(), errInsertFailed.Error()) {
+		t.Errorf("exit %d, stderr %q; want %d and the insert's error", r.code, r.stderr, ExitError)
+	}
+	assertDirHolds(t, dir)
+}
+
+// With --force the old cassette is replaced first, as before #56; the failed
+// new one is removed too.
+func TestRecordForcedFailedSessionInsertLeavesNothingBehind(t *testing.T) {
+	t.Setenv(agentModeEnv, "call")
+	dir := t.TempDir()
+	up := fakeAnthropic(t)
+	args := append([]string{"--force", "--session", "s", "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL, "--"}, agentCommand()...)
+	if r := runRecordCmd(t, dir, args...); r.code != ExitOK {
+		t.Fatalf("first record: %d\n%s", r.code, r.stderr)
+	}
+
+	failSessionInsert(t)
+	if r := runRecordCmd(t, dir, args...); r.code != ExitError {
+		t.Errorf("exit %d, want %d", r.code, ExitError)
+	}
+	assertDirHolds(t, dir)
+}
+
 func TestRecordGeneratesASessionID(t *testing.T) {
 	t.Setenv(agentModeEnv, "call")
 	dir := t.TempDir()

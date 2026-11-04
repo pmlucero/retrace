@@ -61,20 +61,36 @@ func Create(ctx context.Context, path string) (*Cassette, error) {
 		return nil, fmt.Errorf("creating %s: %w", path, err)
 	}
 
+	// The file is new and ours: a failure from here on removes it, so the
+	// path stays free and no half-made cassette is left behind.
 	c, err := open(ctx, path)
 	if err != nil {
-		return nil, err
+		return nil, errors.Join(err, Remove(path))
 	}
 	if _, err := c.db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
 		_ = c.db.Close()
-		return nil, fmt.Errorf("enabling WAL on %s: %w", path, err)
+		return nil, errors.Join(fmt.Errorf("enabling WAL on %s: %w", path, err), Remove(path))
 	}
 	c.walMode = true
 	if err := c.migrate(ctx, migrations); err != nil {
 		_ = c.db.Close()
-		return nil, err
+		return nil, errors.Join(err, Remove(path))
 	}
 	return c, nil
+}
+
+// Remove deletes the cassette file at path and its -wal and -shm files. A file
+// that does not exist is not an error. The cassette must be closed.
+func Remove(path string) error {
+	var errs []error
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		// The caller chooses the path, as in Create: session ids are validated
+		// where they enter from the user.
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: see above
+			errs = append(errs, fmt.Errorf("removing %s: %w", p, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // Open opens an existing cassette. Older schemas are migrated forward (spec
