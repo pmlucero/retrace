@@ -11,6 +11,8 @@
   },
   "ignores": [
     "node_modules/**",
+    // Installed Python packages of the demo (examples/demo, uv sync).
+    "**/.venv/**",
     // Vendored text (Contributor Covenant), kept verbatim.
     "CODE_OF_CONDUCT.md",
     // Starts with H2 by design: GitHub inserts it under the PR title.
