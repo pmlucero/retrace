@@ -379,7 +379,7 @@ func TestRecordFailedSessionInsertLeavesNothingBehind(t *testing.T) {
 // byte, and leaves no temporary or -wal/-shm file: neither a session insert
 // that fails nor a busy port touches it.
 func TestRecordForcedFailedStartKeepsTheOldCassette(t *testing.T) {
-	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	busy, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
