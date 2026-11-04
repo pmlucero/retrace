@@ -86,9 +86,15 @@ func Create(ctx context.Context, path string) (*Cassette, error) {
 // same directory, runs init on it in one transaction, closes it into a single
 // file and only then renames it over path. On failure up to that point the
 // temporary file is removed and the old cassette is kept. After the rename,
-// the old cassette's -wal and -shm files are removed, because SQLite would
-// apply a stale -wal to the new file. The new cassette is then reopened in
-// WAL mode, as Create leaves it.
+// the old cassette's -wal, -shm and -journal files are removed, because
+// SQLite would apply a stale log to the new file. The new cassette is then
+// reopened in WAL mode, as Create leaves it. A failure after the rename
+// removes the new cassette as well.
+//
+// Two crash windows are accepted: a process killed between the rename and
+// the removal of the old logs leaves them next to the new file, and one
+// killed before the rename leaves the hidden temporary file behind, which no
+// command reads.
 //
 // The old cassette must not be open. On Windows the rename fails while
 // another process has it open, and the old cassette is kept.
@@ -113,19 +119,26 @@ func Replace(ctx context.Context, path string, init func(*Tx) error) (*Cassette,
 	if err := os.Rename(tmp, path); err != nil {
 		return nil, errors.Join(fmt.Errorf("replacing %s: %w", path, err), Remove(tmp))
 	}
-	for _, p := range []string{path + "-wal", path + "-shm"} {
-		// The caller chooses the path, as in Create.
-		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: see above
-			return nil, fmt.Errorf("removing %s of the replaced cassette: %w", p, err)
-		}
+	// The old cassette is gone from here on. A failure removes the new one
+	// too: a file next to a stale log, or a session that never started, is
+	// worse than a free id.
+	if err := removeFiles(sidecars(path)); err != nil {
+		return nil, errors.Join(err, Remove(path))
 	}
 	if c, err = Open(ctx, path); err != nil {
-		return nil, err
+		return nil, errors.Join(err, Remove(path))
 	}
 	if err := c.enableWAL(ctx); err != nil {
-		return nil, errors.Join(err, c.db.Close())
+		return nil, errors.Join(err, c.db.Close(), Remove(path))
 	}
 	return c, nil
+}
+
+// sidecars returns the files SQLite keeps next to the database at path. It
+// treats a -wal or a hot -journal there as the database's own, and applies
+// it on the next open.
+func sidecars(path string) []string {
+	return []string{path + "-wal", path + "-shm", path + "-journal"}
 }
 
 // tempPath returns a new name next to path for a cassette being built. It
@@ -145,11 +158,18 @@ func (c *Cassette) enableWAL(ctx context.Context) error {
 	return nil
 }
 
-// Remove deletes the cassette file at path and its -wal and -shm files. A file
-// that does not exist is not an error. The cassette must be closed.
+// Remove deletes the cassette file at path and its -wal, -shm and -journal
+// files. A file that does not exist is not an error. The cassette must be
+// closed.
 func Remove(path string) error {
+	return removeFiles(append([]string{path}, sidecars(path)...))
+}
+
+// removeFiles deletes the files at paths. A file that does not exist is not
+// an error.
+func removeFiles(paths []string) error {
 	var errs []error
-	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+	for _, p := range paths {
 		// The caller chooses the path, as in Create: session ids are validated
 		// where they enter from the user.
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: see above
