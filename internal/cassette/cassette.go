@@ -97,16 +97,20 @@ func Create(ctx context.Context, path string) (*Cassette, error) {
 // command reads.
 //
 // The old cassette must not be open. On Windows the rename fails while
-// another process has it open, and the old cassette is kept.
+// another process has it open, and the old cassette is kept. Elsewhere the
+// rename succeeds, and a process still writing the old cassette, such as a
+// concurrent record --force of the same id, goes on writing a file that is
+// no longer at path.
 func Replace(ctx context.Context, path string, init func(*Tx) error) (*Cassette, error) {
 	tmp := tempPath(path)
 	c, err := Create(ctx, tmp)
 	if errors.Is(err, ErrExists) {
 		// Not the caller's ErrExists: that one is about path.
-		return nil, fmt.Errorf("creating %s: temporary file already exists", tmp)
+		return nil, fmt.Errorf("replacing %s: temporary file %s already exists", path, tmp)
 	}
 	if err != nil {
-		return nil, err
+		// The temporary name alone would not tell the user which cassette.
+		return nil, fmt.Errorf("replacing %s: %w", path, err)
 	}
 	if err := c.Write(ctx, init); err != nil {
 		return nil, errors.Join(err, c.Close(), Remove(tmp))
