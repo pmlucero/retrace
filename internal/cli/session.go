@@ -39,6 +39,13 @@ func createSessionCassette(ctx context.Context, path string, s cassette.Session)
 	return c, nil
 }
 
+// replaceSessionCassette creates the cassette at path with session row s,
+// replacing the cassette there, if any (record --force, spec §9.2). The old
+// cassette is kept unless the new one gets its session row (#111).
+func replaceSessionCassette(ctx context.Context, path string, s cassette.Session) (*cassette.Cassette, error) {
+	return cassette.Replace(ctx, path, func(tx *cassette.Tx) error { return insertSession(tx, ctx, s) })
+}
+
 // sessionConfig is what runSession needs to run one agent session against a
 // local proxy, for recording or for replay.
 type sessionConfig struct {

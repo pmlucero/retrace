@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -347,8 +348,14 @@ func TestRecordRefusesAnExistingSessionUnlessForced(t *testing.T) {
 	if r := runRecordCmd(t, dir, args...); r.code != ExitError || !strings.Contains(r.stderr.String(), "already exists") {
 		t.Errorf("second record: exit %d, stderr %q; want it refused", r.code, r.stderr)
 	}
-	if r := runRecordCmd(t, dir, append([]string{"--force"}, args...)...); r.code != ExitOK {
-		t.Errorf("record --force: exit %d\n%s", r.code, r.stderr)
+	if r := runRecordCmd(t, dir, append([]string{"--force", "--label", "run=2"}, args...)...); r.code != ExitOK {
+		t.Fatalf("record --force: exit %d\n%s", r.code, r.stderr)
+	}
+	// #111: the new cassette replaced the old one and is complete.
+	assertDirHolds(t, dir, "s.cassette")
+	s, err := openCassette(t, cassette.Path(dir, "s")).Session(context.Background())
+	if err != nil || s.Labels["run"] != "2" || s.Status != "completed" {
+		t.Errorf("session labels %v, status %q, %v; want the forced recording, completed", s.Labels, s.Status, err)
 	}
 }
 
@@ -368,22 +375,49 @@ func TestRecordFailedSessionInsertLeavesNothingBehind(t *testing.T) {
 	assertDirHolds(t, dir)
 }
 
-// With --force the old cassette is replaced first, as before #56; the failed
-// new one is removed too.
-func TestRecordForcedFailedSessionInsertLeavesNothingBehind(t *testing.T) {
-	t.Setenv(agentModeEnv, "call")
-	dir := t.TempDir()
-	up := fakeAnthropic(t)
-	args := append([]string{"--force", "--session", "s", "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL, "--"}, agentCommand()...)
-	if r := runRecordCmd(t, dir, args...); r.code != ExitOK {
-		t.Fatalf("first record: %d\n%s", r.code, r.stderr)
+// #111: with --force, a start that fails keeps the old cassette byte for
+// byte, and leaves no temporary or -wal/-shm file: neither a session insert
+// that fails nor a busy port touches it.
+func TestRecordForcedFailedStartKeepsTheOldCassette(t *testing.T) {
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer busy.Close()
+	for _, tc := range []struct {
+		name   string
+		listen string
+		inject func(*testing.T)
+	}{
+		{"session insert fails", "127.0.0.1:0", failSessionInsert},
+		{"port is busy", busy.Addr().String(), func(*testing.T) {}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(agentModeEnv, "call")
+			dir := t.TempDir()
+			up := fakeAnthropic(t)
+			args := func(listen string) []string {
+				return append([]string{"--force", "--session", "s", "--listen", listen, "--anthropic-upstream", up.URL, "--"}, agentCommand()...)
+			}
+			if r := runRecordCmd(t, dir, args("127.0.0.1:0")...); r.code != ExitOK {
+				t.Fatalf("first record: %d\n%s", r.code, r.stderr)
+			}
+			path := cassette.Path(dir, "s")
+			before, err := os.ReadFile(path) //nolint:gosec // G304: the test's own cassette
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	failSessionInsert(t)
-	if r := runRecordCmd(t, dir, args...); r.code != ExitError {
-		t.Errorf("exit %d, want %d", r.code, ExitError)
+			tc.inject(t)
+			if r := runRecordCmd(t, dir, args(tc.listen)...); r.code != ExitError {
+				t.Errorf("exit %d, want %d\n%s", r.code, ExitError, r.stderr)
+			}
+			if after, _ := os.ReadFile(path); !bytes.Equal(after, before) { //nolint:gosec // G304: as above
+				t.Error("the old cassette changed")
+			}
+			assertDirHolds(t, dir, "s.cassette")
+		})
 	}
-	assertDirHolds(t, dir)
 }
 
 func TestRecordGeneratesASessionID(t *testing.T) {

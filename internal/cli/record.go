@@ -247,12 +247,11 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 	}
 	serversJSON, _ := json.Marshal(servers)
 
+	create := createSessionCassette
 	if opts.force {
-		if err := cassette.Remove(path); err != nil {
-			return nil, "", fmt.Errorf("replacing session %s: %w", id, err)
-		}
+		create = replaceSessionCassette
 	}
-	c, err := createSessionCassette(ctx, path, cassette.Session{
+	c, err := create(ctx, path, cassette.Session{
 		ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
 		Command: opts.command, Cwd: cwd, OnMiss: "strict",
 		MCPServers: serversJSON, Redaction: rules.Metadata(), RetraceVersion: Version(),

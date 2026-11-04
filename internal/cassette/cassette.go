@@ -7,10 +7,12 @@ package cassette
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	_ "modernc.org/sqlite" // registers the "sqlite" driver (pure Go, ADR 0001)
@@ -67,16 +69,80 @@ func Create(ctx context.Context, path string) (*Cassette, error) {
 	if err != nil {
 		return nil, errors.Join(err, Remove(path))
 	}
-	if _, err := c.db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
+	if err := c.enableWAL(ctx); err != nil {
 		_ = c.db.Close()
-		return nil, errors.Join(fmt.Errorf("enabling WAL on %s: %w", path, err), Remove(path))
+		return nil, errors.Join(err, Remove(path))
 	}
-	c.walMode = true
 	if err := c.migrate(ctx, migrations); err != nil {
 		_ = c.db.Close()
 		return nil, errors.Join(err, Remove(path))
 	}
 	return c, nil
+}
+
+// Replace creates a cassette at path like Create, replacing the cassette
+// there, if any. The old cassette stays untouched until the new one is
+// complete (#111): Replace creates the new one under a temporary name in the
+// same directory, runs init on it in one transaction, closes it into a single
+// file and only then renames it over path. On failure up to that point the
+// temporary file is removed and the old cassette is kept. After the rename,
+// the old cassette's -wal and -shm files are removed, because SQLite would
+// apply a stale -wal to the new file. The new cassette is then reopened in
+// WAL mode, as Create leaves it.
+//
+// The old cassette must not be open. On Windows the rename fails while
+// another process has it open, and the old cassette is kept.
+func Replace(ctx context.Context, path string, init func(*Tx) error) (*Cassette, error) {
+	tmp := tempPath(path)
+	c, err := Create(ctx, tmp)
+	if errors.Is(err, ErrExists) {
+		// Not the caller's ErrExists: that one is about path.
+		return nil, fmt.Errorf("creating %s: temporary file already exists", tmp)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := c.Write(ctx, init); err != nil {
+		return nil, errors.Join(err, c.Close(), Remove(tmp))
+	}
+	if err := c.Close(); err != nil {
+		return nil, errors.Join(err, Remove(tmp))
+	}
+	// os.Rename replaces path atomically on POSIX, and through MoveFileEx
+	// with MOVEFILE_REPLACE_EXISTING on Windows.
+	if err := os.Rename(tmp, path); err != nil {
+		return nil, errors.Join(fmt.Errorf("replacing %s: %w", path, err), Remove(tmp))
+	}
+	for _, p := range []string{path + "-wal", path + "-shm"} {
+		// The caller chooses the path, as in Create.
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) { //nolint:gosec // G703: see above
+			return nil, fmt.Errorf("removing %s of the replaced cassette: %w", p, err)
+		}
+	}
+	if c, err = Open(ctx, path); err != nil {
+		return nil, err
+	}
+	if err := c.enableWAL(ctx); err != nil {
+		return nil, errors.Join(err, c.db.Close())
+	}
+	return c, nil
+}
+
+// tempPath returns a new name next to path for a cassette being built. It
+// starts with a dot and does not end in .cassette, so commands that list
+// cassettes ignore it, and its random part keeps it from colliding.
+func tempPath(path string) string {
+	dir, base := filepath.Split(path)
+	return filepath.Join(dir, "."+base+"."+rand.Text()+".tmp")
+}
+
+// enableWAL switches the open file to WAL journaling, which Close undoes.
+func (c *Cassette) enableWAL(ctx context.Context) error {
+	if _, err := c.db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
+		return fmt.Errorf("enabling WAL on %s: %w", c.path, err)
+	}
+	c.walMode = true
+	return nil
 }
 
 // Remove deletes the cassette file at path and its -wal and -shm files. A file
