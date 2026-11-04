@@ -1,0 +1,85 @@
+# Release build for retrace: one static binary per ADR 0001 target, archived with
+# the license and README, plus a SHA-256 checksums file. Run by
+# .github/workflows/release.yml on a `v*` tag, and as a snapshot on PRs that touch it.
+#
+# Not here yet: an SBOM and artifact signing (e.g. cosign or build provenance).
+# Both are decided in the security review (#100) and added after it.
+version: 2
+
+project_name: retrace
+
+builds:
+  - id: retrace
+    main: ./cmd/retrace
+    binary: retrace
+    env:
+      # ADR 0001: a static binary with no cgo, so cross-compilation needs no C toolchain.
+      - CGO_ENABLED=0
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    flags:
+      - -trimpath
+    # .Version has no leading "v" (tag v0.1.0 gives 0.1.0). The prefix makes
+    # `retrace --version` print "retrace v0.1.0", the same form as the module
+    # version a `go install` build reports (internal/cli/version.go).
+    ldflags:
+      - -s -w -X github.com/pmlucero/retrace/internal/cli.version=v{{ .Version }}
+    # Reproducible builds: file times come from the commit, not the build clock.
+    mod_timestamp: "{{ .CommitTimestamp }}"
+
+archives:
+  - formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    # The archive entries also take their times from the commit, not from the
+    # checkout or the build clock, so a rebuild of a tag gives the same bytes.
+    builds_info:
+      mtime: "{{ .CommitDate }}"
+    files:
+      - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        info:
+          mtime: "{{ .CommitDate }}"
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  # A semver pre-release of the next patch, so a snapshot never looks like a release.
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      # PR merge commits repeat the commits they merge.
+      - "^Merge pull request "
+      - "^Merge branch "
+      # Not user-facing; the full history is in git. chore(deps) is kept: a
+      # module bump (Dependabot) changes the shipped binary.
+      - '^(docs|test)(\(.+\))?!?:'
+      - '^chore(\((ci|release)\))?!?:'
+  groups:
+    - title: Features
+      regexp: '^feat(\(.+\))?!?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^fix(\(.+\))?!?:'
+      order: 1
+    - title: Refactoring
+      regexp: '^refactor(\(.+\))?!?:'
+      order: 2
+    - title: Dependencies
+      regexp: '^chore\(deps\)!?:'
+      order: 3
+    - title: Other changes
+      order: 999
+
+release:
+  # A tag with a pre-release suffix (v0.2.0-rc.1) is published as a pre-release.
+  prerelease: auto
