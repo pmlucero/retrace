@@ -3,9 +3,10 @@
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
-from mcp import Client
+from mcp import Client, MCPError
 
 import agent
 from fake_anthropic import FINAL_HAIKU, FINAL_SONNET
@@ -75,13 +76,45 @@ def test_agent_fails_cleanly(demo_env: dict[str, str], override: dict[str, str],
     assert result.stderr.count("\n") == 1
 
 
-@pytest.mark.anyio
-async def test_tool_errors_go_back_to_the_model(orders_url: str) -> None:
-    async with Client(orders_url, mode="legacy") as client:
-        text, is_error = await agent.call_tool(client, "get_order", {"order_id": "o_9999"})
-        assert is_error
-        assert "no order with id o_9999" in text
+def tool_use(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    return {"type": "tool_use", "id": "toolu_test", "name": name, "input": arguments}
 
-        text, is_error = await agent.call_tool(client, "get_order", {"order_id": "o_1002"})
-        assert not is_error
-        assert "trk_7342" in text
+
+@pytest.mark.anyio
+async def test_tool_result(orders_url: str) -> None:
+    async with Client(orders_url, mode="legacy") as client:
+        owners = {"get_order": client}
+
+        result = await agent.tool_result(owners, tool_use("get_order", {"order_id": "o_1002"}))
+        assert result.keys() == {"type", "tool_use_id", "content"}
+        assert result["type"] == "tool_result"
+        assert result["tool_use_id"] == "toolu_test"
+        assert "trk_7342" in result["content"]
+
+        result = await agent.tool_result(owners, tool_use("get_order", {"order_id": "o_9999"}))
+        assert result["is_error"] is True
+        assert "no order with id o_9999" in result["content"]
+
+        result = await agent.tool_result(owners, tool_use("cancel_order", {"order_id": "o_1002"}))
+        assert result == {
+            "type": "tool_result",
+            "tool_use_id": "toolu_test",
+            "content": "unknown tool cancel_order",
+            "is_error": True,
+        }
+
+
+class MissingRecording:
+    """A client whose server answers every call with a JSON-RPC error, as
+    retrace does for a request it has no recording of (spec §5, §6.2)."""
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> None:
+        raise MCPError(-32099, "retrace: no recorded interaction matches this request")
+
+
+@pytest.mark.anyio
+async def test_tool_result_for_an_mcp_error() -> None:
+    owners: dict[str, Any] = {"search_orders": MissingRecording()}
+    result = await agent.tool_result(owners, tool_use("search_orders", {"customer_id": "c_812"}))
+    assert result["is_error"] is True
+    assert "no recorded interaction matches this request" in result["content"]
