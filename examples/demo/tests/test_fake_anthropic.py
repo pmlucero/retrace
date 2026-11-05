@@ -1,7 +1,9 @@
 """Calls the scripted fake Anthropic API over HTTP."""
 
+import http.client
 import json
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -76,6 +78,28 @@ def test_scripts(anthropic_url: str, model: str, tag: str, first_input: dict, fi
 def test_responses_are_deterministic(anthropic_url: str) -> None:
     request = conversation("claude-haiku-5-5", 1)
     assert post(anthropic_url, request) == post(anthropic_url, request)
+
+
+@pytest.mark.parametrize(
+    ("headers", "want_status"),
+    [
+        ({}, 411),
+        ({"Content-Length": "many"}, 400),
+        ({"Content-Length": "-1"}, 400),
+    ],
+)
+def test_content_length_errors(anthropic_url: str, headers: dict[str, str], want_status: int) -> None:
+    connection = http.client.HTTPConnection(urllib.parse.urlsplit(anthropic_url).netloc, timeout=10)
+    try:
+        connection.putrequest("POST", "/v1/messages")
+        for name, value in headers.items():
+            connection.putheader(name, value)
+        connection.endheaders()
+        response = connection.getresponse()
+        assert response.status == want_status
+        assert json.load(response)["error"]["type"] == "invalid_request_error"
+    finally:
+        connection.close()
 
 
 @pytest.mark.parametrize(

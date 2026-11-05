@@ -23,10 +23,6 @@ DEFAULT_PORT = 9000
 NAME = "fake-anthropic"
 
 
-def tool_use(name: str, arguments: dict[str, Any]) -> dict[str, Any]:
-    return {"tool": name, "input": arguments}
-
-
 FINAL_HAIKU = (
     "Your order o_1002 (a steel kettle) has shipped with Parcelo and is in transit. "
     "It was last scanned at the Central hub on 2026-10-21, and it should arrive "
@@ -39,25 +35,29 @@ FINAL_SONNET = (
     "and it is expected on 2026-10-24."
 )
 
-# One script per model: tool calls in order, then the final answer. The two
-# differ in the first call only: haiku filters by status, sonnet fetches every
-# order, so replaying a haiku recording with sonnet diverges at step 1.
-SCRIPTS: dict[str, tuple[str, list[dict[str, Any] | str]]] = {
+# A script step: a tool call as (tool name, input), or the final answer.
+Step = tuple[str, dict[str, Any]] | str
+
+# One script per model, with the tag for its message ids: tool calls in order,
+# then the final answer. The two differ in the first call only: haiku filters
+# by status, sonnet fetches every order, so replaying a haiku recording with
+# sonnet diverges at step 1.
+SCRIPTS: dict[str, tuple[str, list[Step]]] = {
     "claude-haiku-5-5": (
         "haiku",
         [
-            tool_use("search_orders", {"customer_id": "c_812", "status": "shipped"}),
-            tool_use("get_order", {"order_id": "o_1002"}),
-            tool_use("track_package", {"tracking_id": "trk_7342"}),
+            ("search_orders", {"customer_id": "c_812", "status": "shipped"}),
+            ("get_order", {"order_id": "o_1002"}),
+            ("track_package", {"tracking_id": "trk_7342"}),
             FINAL_HAIKU,
         ],
     ),
     "claude-sonnet-5-5": (
         "sonnet",
         [
-            tool_use("search_orders", {"customer_id": "c_812"}),
-            tool_use("get_order", {"order_id": "o_1002"}),
-            tool_use("track_package", {"tracking_id": "trk_7342"}),
+            ("search_orders", {"customer_id": "c_812"}),
+            ("get_order", {"order_id": "o_1002"}),
+            ("track_package", {"tracking_id": "trk_7342"}),
             FINAL_SONNET,
         ],
     ),
@@ -95,9 +95,8 @@ def respond(request: dict[str, Any]) -> dict[str, Any]:
         content = [{"type": "text", "text": action}]
         stop_reason = "end_turn"
     else:
-        content = [
-            {"type": "tool_use", "id": f"toolu_demo_{step + 1}", "name": action["tool"], "input": action["input"]}
-        ]
+        name, arguments = action
+        content = [{"type": "tool_use", "id": f"toolu_demo_{step + 1}", "name": name, "input": arguments}]
         stop_reason = "tool_use"
     return {
         "id": f"msg_demo_{tag}_{step + 1}",
@@ -118,22 +117,39 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if self.path.split("?", 1)[0] != "/v1/messages":
                 raise Error(HTTPStatus.NOT_FOUND, "not_found_error", f"no route for POST {self.path}")
-            length = int(self.headers.get("Content-Length") or 0)
-            try:
-                request = json.loads(self.rfile.read(length))
-            except ValueError:
-                raise Error(HTTPStatus.BAD_REQUEST, "invalid_request_error", "the body is not valid JSON") from None
-            if not isinstance(request, dict):
-                raise Error(HTTPStatus.BAD_REQUEST, "invalid_request_error", "the body is not a JSON object")
+            request = self.read_json()
             self.send(HTTPStatus.OK, respond(request))
         except Error as err:
+            # The body may be unread, so the connection cannot be reused.
+            self.close_connection = True
             self.send(err.status, {"type": "error", "error": {"type": err.kind, "message": err.message}})
+
+    def read_json(self) -> dict[str, Any]:
+        """Read the request body, which must be a JSON object with a Content-Length."""
+        header = self.headers.get("Content-Length")
+        if header is None:
+            raise Error(HTTPStatus.LENGTH_REQUIRED, "invalid_request_error", "the request has no Content-Length")
+        try:
+            length = int(header)
+        except ValueError:
+            length = -1
+        if length < 0:
+            raise Error(HTTPStatus.BAD_REQUEST, "invalid_request_error", f"invalid Content-Length {header!r}")
+        try:
+            request = json.loads(self.rfile.read(length))
+        except ValueError:
+            raise Error(HTTPStatus.BAD_REQUEST, "invalid_request_error", "the body is not valid JSON") from None
+        if not isinstance(request, dict):
+            raise Error(HTTPStatus.BAD_REQUEST, "invalid_request_error", "the body is not a JSON object")
+        return request
 
     def send(self, status: HTTPStatus, body: dict[str, Any]) -> None:
         data = json.dumps(body).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(data)))
+        if self.close_connection:
+            self.send_header("Connection", "close")
         self.end_headers()
         self.wfile.write(data)
 
