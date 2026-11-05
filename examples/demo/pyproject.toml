@@ -1,9 +1,12 @@
 [project]
 name = "retrace-demo"
 version = "0.1.0"
-description = "Demo MCP servers for retrace (not part of the Go module)"
+description = "Demo agent and MCP servers for retrace (not part of the Go module)"
 requires-python = ">=3.13,<3.14"
-dependencies = ["mcp>=2.3.0,<3"]
+dependencies = [
+    "anthropic>=2.0.0,<3",
+    "mcp>=2.3.0,<3",
+]
 
 [dependency-groups]
 dev = ["pytest>=9.1.1"]
