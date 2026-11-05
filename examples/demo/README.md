@@ -33,7 +33,7 @@ It is configured only through the environment, which is what `retrace record` an
 | `RETRACE_MCP_SHIPPING_URL` | `http://127.0.0.1:9002/mcp` | The `shipping` server |
 | `DEMO_MODEL` | `claude-haiku-5-5` | The model |
 
-Every request it sends is the same on every run. A tool call that fails goes back to Claude as a `tool_result` with `is_error: true`. Errors it cannot recover from (a server it cannot reach, an API error, no answer after 10 turns) print one line to stderr and exit with status 1.
+It builds each request only from fixed text, the servers' tool lists and the earlier responses, with no timestamps or random ids. So when the responses are the same, as with the fake or in an exact replay, so are the requests. A tool call that fails goes back to Claude as a `tool_result` with `is_error: true`. Errors it cannot recover from (a server it cannot reach, an API error, no answer after 10 turns) print one line to stderr and exit with status 1.
 
 ## The fake Anthropic API
 

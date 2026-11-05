@@ -79,7 +79,7 @@ def respond(request: dict[str, Any]) -> dict[str, Any]:
     if request.get("stream"):
         raise Error(HTTPStatus.BAD_REQUEST, "invalid_request_error", "streaming is not supported by the fake")
     model = request.get("model")
-    if model not in SCRIPTS:
+    if not isinstance(model, str) or model not in SCRIPTS:
         raise Error(HTTPStatus.NOT_FOUND, "not_found_error", f"model: {model}")
     messages = request.get("messages")
     if not isinstance(messages, list):

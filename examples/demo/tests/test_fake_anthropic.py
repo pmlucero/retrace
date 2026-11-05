@@ -106,6 +106,7 @@ def test_content_length_errors(anthropic_url: str, headers: dict[str, str], want
     ("body", "path", "want_status", "want_type"),
     [
         (conversation("claude-unknown", 0), "/v1/messages", 404, "not_found_error"),
+        ({**conversation("claude-haiku-5-5", 0), "model": []}, "/v1/messages", 404, "not_found_error"),
         ({**conversation("claude-haiku-5-5", 0), "stream": True}, "/v1/messages", 400, "invalid_request_error"),
         ({"model": "claude-haiku-5-5"}, "/v1/messages", 400, "invalid_request_error"),
         (conversation("claude-haiku-5-5", 0), "/v1/complete", 404, "not_found_error"),
