@@ -1,59 +1,7 @@
 """Runs each demo server as a process and calls its tools over Streamable HTTP."""
 
-import signal
-import subprocess
-import sys
-from collections.abc import Iterator
-from pathlib import Path
-
 import pytest
 from mcp import Client
-
-DEMO_DIR = Path(__file__).resolve().parent.parent
-
-
-@pytest.fixture
-def anyio_backend() -> str:
-    return "asyncio"
-
-
-def start(module: str) -> tuple[subprocess.Popen[str], str]:
-    """Start a server on a free port and return the process and its MCP URL."""
-    proc = subprocess.Popen(
-        [sys.executable, "-m", module, "--port", "0"],
-        cwd=DEMO_DIR,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-    line = proc.stdout.readline()  # blocks until the port is bound, or EOF
-    if not line:
-        proc.kill()
-        pytest.fail(f"{module} exited before printing its URL (status {proc.wait()})")
-    return proc, line.split(": ", 1)[1].strip()
-
-
-def stop(proc: subprocess.Popen[str]) -> int:
-    proc.send_signal(signal.SIGTERM)
-    try:
-        return proc.wait(timeout=10)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        raise
-
-
-@pytest.fixture(scope="module")
-def orders_url() -> Iterator[str]:
-    proc, url = start("servers.orders")
-    yield url
-    assert stop(proc) == 0
-
-
-@pytest.fixture(scope="module")
-def shipping_url() -> Iterator[str]:
-    proc, url = start("servers.shipping")
-    yield url
-    assert stop(proc) == 0
 
 
 # The legacy mode uses the initialize handshake, which is what retrace records
