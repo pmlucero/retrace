@@ -105,16 +105,20 @@ async def test_tool_result(orders_url: str) -> None:
 
 
 class MissingRecording:
-    """A client whose server answers every call with a JSON-RPC error, as
-    retrace does for a request it has no recording of (spec §5, §6.2)."""
+    """A client whose server answers every call with the JSON-RPC error that
+    retrace sends for a cassette miss (spec §5 step 3, §6.2)."""
 
     async def call_tool(self, name: str, arguments: dict[str, Any]) -> None:
-        raise MCPError(-32099, "retrace: no recorded interaction matches this request")
+        raise MCPError(-32099, "retrace: cassette miss", "no recorded request matches this one")
 
 
 @pytest.mark.anyio
 async def test_tool_result_for_an_mcp_error() -> None:
     owners: dict[str, Any] = {"search_orders": MissingRecording()}
     result = await agent.tool_result(owners, tool_use("search_orders", {"customer_id": "c_812"}))
-    assert result["is_error"] is True
-    assert "no recorded interaction matches this request" in result["content"]
+    assert result == {
+        "type": "tool_result",
+        "tool_use_id": "toolu_test",
+        "content": "MCP error -32099: retrace: cassette miss: no recorded request matches this one",
+        "is_error": True,
+    }

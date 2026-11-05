@@ -96,7 +96,10 @@ async def tool_result(owners: Mapping[str, Client], block: dict[str, Any]) -> di
         try:
             result = await client.call_tool(block["name"], block["input"])
         except MCPError as err:
-            text, is_error = f"MCP error: {err}", True
+            # retrace puts why a request missed the cassette in data.
+            text, is_error = f"MCP error {err.code}: {err.message}", True
+            if err.data is not None:
+                text += f": {err.data}"
         else:
             text = "".join(item.text for item in result.content if item.type == "text")
             is_error = result.is_error
