@@ -17,3 +17,5 @@ package = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The tests import agent.py and fake_anthropic.py from this directory.
+pythonpath = ["."]
