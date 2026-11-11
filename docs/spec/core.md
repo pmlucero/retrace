@@ -92,7 +92,7 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 - All methods on `/mcp/<name>` (`POST`, `GET`, `DELETE`) are forwarded and recorded ([ADR 0004](../adr/0004-mcp-streamable-http-first.md)).
 - A request for `/mcp/<name>` is forwarded to exactly the URL registered for `<name>`, and a request for `/mcp/<name>/<rest>` to that URL's path followed by `/<rest>`. retrace MUST NOT add a trailing slash, because many servers treat `/mcp` and `/mcp/` as different endpoints. For example, with `--mcp orders=http://127.0.0.1:9001/mcp`, `/mcp/orders` is forwarded to `http://127.0.0.1:9001/mcp` and `/mcp/orders/x` to `http://127.0.0.1:9001/mcp/x`. A registered URL with no path gets `/`.
   - The registered URL's path and `/<rest>` are joined with a single `/`, so `http://127.0.0.1:9001/mcp/` and `/mcp/orders/x` give `/mcp/x`. The request's query string is forwarded, after any query in the registered URL.
-  - The forwarding rule does not change the stored `path` (§7.2), which is `/` for a request for `/mcp/<name>`.
+  - The forwarding rule does not change the stored `path` (§7.2), which is `/` for a request for `/mcp/<name>` or `/mcp/<name>/`.
 - A `POST` body MAY be a single JSON-RPC message or a batch. Each JSON-RPC request in it is matched to its response, whether the response comes as JSON or inside an SSE stream.
 - The protocol version and server info from `initialize` are stored in the session metadata (§7.2).
   - They are read from the recorded exchanges when the session ends. A cassette left by a retrace that was killed has the servers without them. `reindex` never changes `mcp_servers`.
