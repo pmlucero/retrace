@@ -158,6 +158,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ex.id = p.writer.BeginInteraction(in, blobs...)
 
 	out := r.Clone(context.WithValue(r.Context(), exchangeKey{}, ex))
+	// An empty path marks the bare route for the reverse proxy's Rewrite
+	// (spec §3.4): do not normalize it to rel.
 	out.URL.Path, out.URL.RawPath = rest, ""
 	if rt.Rewrite != nil {
 		if fwd := rt.Rewrite(r.Method, rel, body); !bytes.Equal(fwd, body) {
