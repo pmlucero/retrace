@@ -84,6 +84,15 @@ func New(cfg Config) *Proxy {
 		p.routes = append(p.routes, route{Route: r, rp: &httputil.ReverseProxy{
 			Rewrite: func(pr *httputil.ProxyRequest) {
 				pr.SetURL(target)
+				if pr.In.URL.Path == "" {
+					// The bare route goes to exactly the registered URL:
+					// SetURL would add a trailing slash, which servers such
+					// as Starlette answer with a redirect (spec §3.4).
+					pr.Out.URL.Path, pr.Out.URL.RawPath = target.Path, target.RawPath
+					if pr.Out.URL.Path == "" {
+						pr.Out.URL.Path = "/"
+					}
+				}
 				// Without this header the transport asks for gzip itself and
 				// decodes it, so the agent and the cassette both get plain
 				// bytes (spec §3.3).
@@ -117,7 +126,13 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	path := rest
+	// The bare route is stored, and passed to Rewrite, as "/" (spec §7.2):
+	// only the forwarded URL tells it apart, so fingerprints do not change.
+	rel := rest
+	if rel == "" {
+		rel = "/"
+	}
+	path := rel
 	if r.URL.RawQuery != "" {
 		path += "?" + p.redact.Query(r.URL.RawQuery) // spec §3.5
 	}
@@ -143,9 +158,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	ex.id = p.writer.BeginInteraction(in, blobs...)
 
 	out := r.Clone(context.WithValue(r.Context(), exchangeKey{}, ex))
+	// An empty path marks the bare route for the reverse proxy's Rewrite
+	// (spec §3.4): do not normalize it to rel.
 	out.URL.Path, out.URL.RawPath = rest, ""
 	if rt.Rewrite != nil {
-		if fwd := rt.Rewrite(r.Method, rest, body); !bytes.Equal(fwd, body) {
+		if fwd := rt.Rewrite(r.Method, rel, body); !bytes.Equal(fwd, body) {
 			out.Body = io.NopCloser(bytes.NewReader(fwd))
 			out.ContentLength = int64(len(fwd))
 			out.Header.Del("Content-Length")
@@ -154,13 +171,11 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rt.rp.ServeHTTP(w, out)
 }
 
-// match finds the route for path and returns the path relative to it.
+// match finds the route for path and returns the path relative to it, which
+// is empty for the bare route.
 func (p *Proxy) match(path string) (route, string, bool) {
 	for _, rt := range p.routes {
 		if rest, ok := strings.CutPrefix(path, rt.Prefix); ok && (rest == "" || rest[0] == '/') {
-			if rest == "" {
-				rest = "/"
-			}
 			return rt, rest, true
 		}
 	}

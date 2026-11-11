@@ -50,6 +50,10 @@ type harnessOptions struct {
 	// provenance and rewrite configure the LLM route.
 	provenance string
 	rewrite    func(method, path string, body []byte) []byte
+	// prefix and targetPath, if set, replace the route's prefix and are
+	// appended to its target URL (a path, a query or both).
+	prefix     string
+	targetPath string
 }
 
 func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harness {
@@ -62,7 +66,10 @@ func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harn
 	if upstream != nil {
 		up := httptest.NewServer(upstream)
 		t.Cleanup(up.Close)
-		target, _ = url.Parse(up.URL)
+		target, _ = url.Parse(up.URL + o.targetPath)
+	}
+	if o.prefix == "" {
+		o.prefix = "/llm/anthropic"
 	}
 
 	c, err := cassette.Create(ctx, filepath.Join(t.TempDir(), "s.cassette"))
@@ -82,7 +89,7 @@ func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harn
 		t.Fatal(err)
 	}
 	p := New(Config{
-		Routes: []Route{{Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: target,
+		Routes: []Route{{Prefix: o.prefix, Channel: "llm", Upstream: "anthropic", Target: target,
 			Provenance: o.provenance, Rewrite: o.rewrite}},
 		Writer:       w,
 		Redact:       o.rules,
@@ -620,6 +627,57 @@ func TestProxyRecordsAnEmptyResponse(t *testing.T) {
 	}
 	if body, err := h.c.Blob(context.Background(), *in.ResponseBlob); err != nil || len(body) != 0 {
 		t.Errorf("response blob = %q, %v; want empty", body, err)
+	}
+}
+
+// A request for the bare route goes to exactly the registered URL, with no
+// trailing slash. One below it, even just "/", goes to the URL's path and
+// the rest joined with a single slash. The query goes after any query in
+// the URL. Both /mcp/orders and /mcp/orders/ are stored with path "/"
+// (spec §3.4, §7.2, #121). The upstream answers any other path with a
+// redirect, like a Starlette MCP server does for /mcp/.
+func TestProxyForwardsToTheRegisteredPath(t *testing.T) {
+	tests := []struct {
+		name, target, path, wantUpstream, wantQuery, wantRecorded string
+	}{
+		{"bare route", "/mcp", "/mcp/orders", "/mcp", "", "/"},
+		{"bare route with a trailing slash", "/mcp", "/mcp/orders/", "/mcp/", "", "/"},
+		{"subpath", "/mcp", "/mcp/orders/x", "/mcp/x", "", "/x"},
+		{"bare route, target with a trailing slash", "/mcp/", "/mcp/orders", "/mcp/", "", "/"},
+		{"subpath, target with a trailing slash", "/mcp/", "/mcp/orders/x", "/mcp/x", "", "/x"},
+		{"bare route, target without a path", "", "/mcp/orders", "/", "", "/"},
+		{"subpath, target without a path", "", "/mcp/orders/x", "/x", "", "/x"},
+		{"bare route, query", "/mcp", "/mcp/orders?a=1", "/mcp", "a=1", "/?a=1"},
+		{"bare route, query in the target", "/mcp?k=v", "/mcp/orders?a=1", "/mcp", "k=v&a=1", "/?a=1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var got, gotQuery string
+			upstream := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got, gotQuery = r.URL.Path, r.URL.RawQuery
+				if r.URL.Path != tt.wantUpstream {
+					http.Redirect(w, r, tt.wantUpstream, http.StatusTemporaryRedirect)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{}`)
+			})
+			h := newHarnessOpts(t, upstream, harnessOptions{prefix: "/mcp/orders", targetPath: tt.target})
+			client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, h.server.URL+tt.path, strings.NewReader(`{}`))
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _ = io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if got != tt.wantUpstream || gotQuery != tt.wantQuery || resp.StatusCode != http.StatusOK {
+				t.Errorf("upstream got %q?%s, agent got %d; want %q?%s and 200", got, gotQuery, resp.StatusCode, tt.wantUpstream, tt.wantQuery)
+			}
+			if in := h.interactions(); len(in) != 1 || in[0].Path != tt.wantRecorded {
+				t.Errorf("recorded %+v; want one interaction with path %q", in, tt.wantRecorded)
+			}
+		})
 	}
 }
 
