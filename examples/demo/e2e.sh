@@ -139,10 +139,14 @@ expect 1 rt diff "$ID" "$ID.swap"
 # JSON format (spec §8.4): step 1, a search_orders tool_use whose arguments
 # lose "status". The exit code alone would pass for any miss.
 log "Checking the divergence point"
-json=$(rt diff "$ID" "$ID.swap" --format json) || true
+code=0
+json=$(rt diff "$ID" "$ID.swap" --format json) || code=$?
+((code == 1)) || fail "'diff --format json' exited with $code, want 1"
 "$DEMO_DIR/.venv/bin/python" -I -c '
 import json, sys
 p = json.loads(sys.argv[1])["first_divergence"]
+if not p or not p["a"] or not p["b"]:
+    sys.exit(f"e2e: want a divergence with an event on each side, got {p}")
 got = (p["step"], p["kind"], p["a"]["tool"], p["b"]["tool"], [e["path"] for e in p["diff"]])
 want = (1, "tool_use", "search_orders", "search_orders", ["$.status"])
 if got != want:
