@@ -178,9 +178,14 @@ func TestRecordMCPOverStreamableHTTP(t *testing.T) {
 			Strict: true, Mode: mcptest.SSE, LogEvents: 1, EventDelay: eventDelay, Tools: []mcptest.Tool{lookupTool()}}),
 	}
 
+	// orders is registered at a path, like a real MCP server, and weather
+	// without one. retrace forwards to exactly the registered URL: no
+	// trailing slash for orders, "/" for weather (spec §3.4, #121).
+	urls := map[string]string{"orders": servers["orders"].URL + "/mcp", "weather": servers["weather"].URL}
+	wantPaths := map[string]string{"orders": "/mcp", "weather": "/"}
 	args := []string{"--session", "mcp", "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL}
 	for _, name := range mcpAgentServers {
-		args = append(args, "--mcp", name+"="+servers[name].URL)
+		args = append(args, "--mcp", name+"="+urls[name])
 	}
 	args = append(args, "--mcp", "idle=http://127.0.0.1:9/mcp") // registered, never called
 	r := runRecordCmd(t, dir, append(append(args, "--"), agentCommand()...)...)
@@ -210,13 +215,19 @@ func TestRecordMCPOverStreamableHTTP(t *testing.T) {
 	}
 	want := fmt.Sprintf(`[{"name":"orders","url":%q,"protocol_version":"2025-06-18","server_info":{"name":"orders","version":"1.0.0"}},`+
 		`{"name":"weather","url":%q,"protocol_version":"2025-03-26","server_info":{"name":"weather","version":"2.1.0"}},`+
-		`{"name":"idle","url":"http://127.0.0.1:9/mcp"}]`, servers["orders"].URL, servers["weather"].URL)
+		`{"name":"idle","url":"http://127.0.0.1:9/mcp"}]`, urls["orders"], urls["weather"])
 	if string(s.MCPServers) != want {
 		t.Errorf("mcp_servers = %s\nwant %s", s.MCPServers, want)
 	}
 	for _, name := range mcpAgentServers {
-		if got := len(servers[name].Received()); got != 7 {
+		received := servers[name].Received()
+		if got := len(received); got != 7 {
 			t.Errorf("server %s received %d requests, want 7", name, got)
+		}
+		for _, rq := range received {
+			if rq.Path != wantPaths[name] {
+				t.Errorf("server %s received %s %s, want path %s", name, rq.Method, rq.Path, wantPaths[name])
+			}
 		}
 	}
 

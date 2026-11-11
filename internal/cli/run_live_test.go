@@ -19,7 +19,15 @@ func liveServers(t *testing.T, tool mcptest.Tool) []string {
 	orders := mcptest.New(t, mcptest.Config{Name: "orders", Strict: true, Tools: []mcptest.Tool{tool}})
 	weather := mcptest.New(t, mcptest.Config{Name: "weather", Strict: true, Mode: mcptest.SSE, LogEvents: 1,
 		Tools: []mcptest.Tool{tool}})
-	return []string{"--mcp", "orders=" + orders.URL, "--mcp", "weather=" + weather.URL}
+	// orders is registered at a path, and gets exactly that path (spec §3.4, #121).
+	t.Cleanup(func() {
+		for _, rq := range orders.Received() {
+			if rq.Path != "/mcp" {
+				t.Errorf("orders received %s %s, want path /mcp", rq.Method, rq.Path)
+			}
+		}
+	})
+	return []string{"--mcp", "orders=" + orders.URL + "/mcp", "--mcp", "weather=" + weather.URL}
 }
 
 // AC-18: run --tools live serves the LLM from the cassette and forwards MCP
