@@ -48,7 +48,7 @@ start() {
 	PIDS+=("$!")
 	local pid=$!
 	local deadline=$((SECONDS + 30))
-	until head -n 1 "$out" | grep -q '^.*: http://'; do
+	until head -n 1 "$out" | grep -q "^$name: http://"; do
 		if ! kill -0 "$pid" 2>/dev/null; then
 			cat "$WORK/$name.err" >&2
 			fail "$name exited before printing its URL"
@@ -98,12 +98,16 @@ FAKE=$URL
 
 # Global flags go before the command (spec §9.1). Each proxy listens on a
 # free port, so the script does not clash with anything on 4790.
+mkdir -p "$WORK/cassettes"
 rt() { "$RETRACE" --dir "$WORK/cassettes" --no-color "$@"; }
 ID=checkout
 
 # The key is a placeholder: the fake ignores it, and it keeps the agent's SDK
 # from failing for lack of one.
 export ANTHROPIC_API_KEY=test
+# The agent reads its model from DEMO_MODEL. Pin it, so that a value in the
+# caller's environment cannot change the recorded session.
+export DEMO_MODEL=claude-haiku-5-5
 
 log "Recording the session with claude-haiku-5-5 (expect 0)"
 expect 0 rt record --session "$ID" --listen 127.0.0.1:0 \
@@ -130,5 +134,20 @@ rt show "$ID.swap"
 
 log "Diff with the swap-model replay (expect 1, AC-20)"
 expect 1 rt diff "$ID" "$ID.swap"
+
+# AC-20 also asks for the right divergence point, so check it in the stable
+# JSON format (spec §8.4): step 1, a search_orders tool_use whose arguments
+# lose "status". The exit code alone would pass for any miss.
+log "Checking the divergence point"
+json=$(rt diff "$ID" "$ID.swap" --format json) || true
+"$DEMO_DIR/.venv/bin/python" -I -c '
+import json, sys
+p = json.loads(sys.argv[1])["first_divergence"]
+got = (p["step"], p["kind"], p["a"]["tool"], p["b"]["tool"], [e["path"] for e in p["diff"]])
+want = (1, "tool_use", "search_orders", "search_orders", ["$.status"])
+if got != want:
+    sys.exit(f"e2e: divergence point is {got}, want {want}")
+print("step 1, tool_use search_orders, $.status: as expected")
+' "$json"
 
 log "The demo ran end to end"

@@ -98,7 +98,7 @@ It runs `uv sync --locked`, starts the servers and the fake on free ports, and s
 | Swap-model replay | `retrace run checkout --as checkout.swap --model claude-sonnet-5-5 --anthropic-upstream <fake>` | `3`, the `search_orders` call without `status` is a cassette miss |
 | Diff (AC-20) | `retrace diff checkout checkout.swap` | `1`, divergence at step 1 |
 
-It prints `retrace show` for the recorded session and the swap-model replay, and the output of both diffs. CI runs it in the `demo` workflow when this directory or the Go code changes.
+For the last diff it also checks the divergence point in `retrace diff --format json`: step 1, a `search_orders` `tool_use`, with `$.status` differing. It pins `DEMO_MODEL` to `claude-haiku-5-5` for the recording, and prints `retrace show` for the recorded session and the swap-model replay, along with the output of both diffs. CI runs it in the `demo` workflow when this directory or the Go code changes.
 
 ## Tests
 
