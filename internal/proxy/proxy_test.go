@@ -631,16 +631,17 @@ func TestProxyRecordsAnEmptyResponse(t *testing.T) {
 }
 
 // A request for the bare route goes to exactly the registered URL, with no
-// trailing slash, and one below it to the URL's path followed by the rest
-// joined with a single slash. The query goes after any query in the URL. The
-// stored path of the bare route stays "/" (spec §3.4, §7.2, #121). The
-// upstream answers any other path with a redirect, like a Starlette MCP
-// server does for /mcp/.
+// trailing slash. One below it, even just "/", goes to the URL's path and
+// the rest joined with a single slash. The query goes after any query in
+// the URL. Both /mcp/orders and /mcp/orders/ are stored with path "/"
+// (spec §3.4, §7.2, #121). The upstream answers any other path with a
+// redirect, like a Starlette MCP server does for /mcp/.
 func TestProxyForwardsToTheRegisteredPath(t *testing.T) {
 	tests := []struct {
 		name, target, path, wantUpstream, wantQuery, wantRecorded string
 	}{
 		{"bare route", "/mcp", "/mcp/orders", "/mcp", "", "/"},
+		{"bare route with a trailing slash", "/mcp", "/mcp/orders/", "/mcp/", "", "/"},
 		{"subpath", "/mcp", "/mcp/orders/x", "/mcp/x", "", "/x"},
 		{"bare route, target with a trailing slash", "/mcp/", "/mcp/orders", "/mcp/", "", "/"},
 		{"subpath, target with a trailing slash", "/mcp/", "/mcp/orders/x", "/mcp/x", "", "/x"},
