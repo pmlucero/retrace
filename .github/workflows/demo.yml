@@ -1,16 +1,25 @@
 name: demo
 
 # The demo (examples/demo) is a Python project, separate from the Go module.
+# The e2e job also builds retrace, so changes to the Go code trigger it too.
 on:
   pull_request:
     paths:
       - "examples/demo/**"
       - ".github/workflows/demo.yml"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
   push:
     branches: [main]
     paths:
       - "examples/demo/**"
       - ".github/workflows/demo.yml"
+      - "cmd/**"
+      - "internal/**"
+      - "go.mod"
+      - "go.sum"
 
 permissions:
   contents: read
@@ -38,3 +47,22 @@ jobs:
         run: uv sync --locked
       - name: Test the MCP servers
         run: uv run --locked pytest -v
+
+  e2e:
+    # Record, exact replay, swap-model replay and diff through retrace, against
+    # the scripted fake Anthropic API: no API key, no real API (AC-19, AC-20).
+    name: demo e2e
+    runs-on: ubuntu-latest
+    # e2e.sh bounds each server's start-up, but not the agent or the replays.
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # One release is enough here: go.yml tests both supported ones.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.27.x"
+      - uses: astral-sh/setup-uv@18d369b23da25a81e9458561248e1aafff6a70fa # v10.3.1
+        with:
+          version: "0.13.4"
+      - name: Run the demo end to end
+        run: examples/demo/e2e.sh

@@ -2,7 +2,7 @@
 
 The demo shows retrace working with an agent written in another language, against real MCP servers (AC-23 in the [spec](../../docs/spec/core.md), M7 in the [MVP plan](../../docs/plan/mvp.md)). It is a Python project managed with [uv](https://docs.astral.sh/uv/), separate from the Go module.
 
-It contains a support agent, the two MCP servers it uses, and a scripted fake of the Anthropic API that lets the demo run without an API key. The end-to-end flow in CI (record, exact replay, swap-model replay, diff) comes in a later pull request ([#22](https://github.com/pmlucero/retrace/issues/22)).
+It contains a support agent, the two MCP servers it uses, and a scripted fake of the Anthropic API that lets the demo run without an API key. A script runs the whole flow through retrace against the fake (record, exact replay, swap-model replay, diff), and CI runs it (see [End to end](#end-to-end)).
 
 ## The servers
 
@@ -78,6 +78,27 @@ ANTHROPIC_API_KEY=test retrace record --session checkout \
 ```
 
 Without `--anthropic-upstream` and with a real `ANTHROPIC_API_KEY`, the same command records a session with the real API.
+
+## End to end
+
+[e2e.sh](e2e.sh) runs the demo through retrace against the fake, with no API key:
+
+```sh
+examples/demo/e2e.sh                     # builds retrace first, which needs Go
+examples/demo/e2e.sh path/to/retrace     # or uses this binary
+```
+
+It runs `uv sync --locked`, starts the servers and the fake on free ports, and stops them when it exits. Its cassettes go to a temporary directory that it removes at the end. Then it runs these steps and fails on the first unexpected exit code ([spec](../../docs/spec/core.md) §9.7):
+
+| Step | Command | Exit code |
+|---|---|---|
+| Record with `claude-haiku-5-5` | `retrace record --session checkout ... -- uv run --locked python agent.py` | `0` |
+| Exact replay | `retrace run checkout --as checkout.exact` | `0` |
+| Diff (AC-19) | `retrace diff checkout checkout.exact` | `0`, identical trajectories |
+| Swap-model replay | `retrace run checkout --as checkout.swap --model claude-sonnet-5-5 --anthropic-upstream <fake>` | `3`, the `search_orders` call without `status` is a cassette miss |
+| Diff (AC-20) | `retrace diff checkout checkout.swap` | `1`, divergence at step 1 |
+
+For the last diff it also checks the divergence point in `retrace diff --format json`: step 1, a `search_orders` `tool_use`, with `$.status` differing. It pins `DEMO_MODEL` to `claude-haiku-5-5` for the recording, and prints `retrace show` for the recorded session and the swap-model replay, along with the output of both diffs. CI runs it in the `demo` workflow when this directory or the Go code changes.
 
 ## Tests
 
