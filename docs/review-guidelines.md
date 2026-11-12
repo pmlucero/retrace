@@ -76,7 +76,7 @@ This is the core promise of retrace. Look for:
 
 ### 8. Security
 
-- No credential reaches disk: header redaction (ADR 0008), logs above `debug`, error messages.
+- No credential reaches disk: header and URL redaction (ADR 0011), logs above `debug`, error messages.
 - The proxy binds to loopback by default. There is no unexpected network exposure.
 - Cassettes are untrusted input when read: check paths, sizes and parsing robustness (SECURITY.md, *Scope*).
 - No shell or command injection, including in CI workflows.
