@@ -149,6 +149,7 @@ jobs:
           path: .review-context
 
       - name: Gather the review context
+        id: context
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -164,16 +165,20 @@ jobs:
           gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --json number,url,title,body,author,baseRefName,headRefName,headRefOid,labels,files,commits \
             > .review-context/pr.json
-          # The metadata, the diff and the checkout must describe the same commit.
+          # The metadata, the diff and the checkout must describe the same
+          # commit. A push during the run is ordinary (synchronize does not
+          # trigger a review), so skip the review with a warning, not a failure.
           now=$(jq -r .headRefOid .review-context/pr.json)
           if [ "$now" != "$HEAD_SHA" ]; then
-            echo "::error::PR #$PR_NUMBER moved from $HEAD_SHA to $now during the run, so it was not reviewed. A maintainer can comment '@claude review' to review the new head."
-            exit 1
+            echo "::warning::PR #$PR_NUMBER moved from $HEAD_SHA to $now during the run, so it was not reviewed. A maintainer can comment '@claude review' to review the new head."
+            echo "moved=true" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA" \
             -H "Accept: application/vnd.github.diff" > .review-context/pr.diff
 
       - uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
+        if: steps.context.outputs.moved != 'true'
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           github_token: ${{ github.token }}
@@ -251,6 +256,7 @@ jobs:
             --disallowedTools "Bash,WebFetch,WebSearch,NotebookEdit"
 
       - name: Post the summary comment
+        if: steps.context.outputs.moved != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
