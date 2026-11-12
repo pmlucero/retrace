@@ -4,7 +4,9 @@ name: govulncheck
 # supported Go releases at their newest patch, the one a user building from
 # source or a release would get. The vulnerability database changes while the
 # code does not, so a weekly run re-scans main and a new finding shows up there,
-# not first on an unrelated PR (CONTRIBUTING.md, "Code").
+# not first on an unrelated PR (CONTRIBUTING.md, "Code"). GitHub emails a
+# failed scheduled run to whoever last changed the cron line (the maintainer),
+# and disables the schedule after 60 days without repository activity.
 on:
   pull_request:
   push:
@@ -14,12 +16,6 @@ on:
 
 permissions:
   contents: read
-
-env:
-  # At least 14 days old (CONTRIBUTING.md, "Dependencies"). Dependabot does not
-  # see a version that is only named in a `go run` command, so update it by
-  # hand, together with release.yml and the local command in CONTRIBUTING.md.
-  GOVULNCHECK_VERSION: v1.9.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -48,4 +44,5 @@ jobs:
           go version
           echo "Scanned with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
       - name: Scan for known vulnerabilities
-        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+        # Pinned version and the GOOS list: .github/scripts/govulncheck.sh.
+        run: sh .github/scripts/govulncheck.sh

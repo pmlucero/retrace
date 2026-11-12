@@ -22,10 +22,6 @@ env:
   # At least 14 days old (CONTRIBUTING.md, "Dependencies"). Dependabot bumps the
   # action's SHA but not this input, so update it by hand.
   GORELEASER_VERSION: v2.18.3
-  # Same rule and the same caveat: Dependabot does not see a version that is
-  # only named in a `go run` command. Keep it in step with govulncheck.yml and
-  # the local command in CONTRIBUTING.md.
-  GOVULNCHECK_VERSION: v1.9.0
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -58,10 +54,11 @@ jobs:
         run: |
           go version
           echo "Built with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
-      # Dependabot does not cover the standard library (#133). A finding fails
-      # the job; on a tag, before anything is published.
+      # Dependabot does not cover the standard library (#133). A finding, for
+      # any GOOS the release ships, fails the job; on a tag, before anything
+      # is published.
       - name: Scan for known vulnerabilities
-        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+        run: sh .github/scripts/govulncheck.sh
       - name: Check the GoReleaser config
         uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
@@ -127,10 +124,11 @@ jobs:
         run: |
           go version
           echo "Built with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
-      # Dependabot does not cover the standard library (#133). A finding fails
-      # the job; on a tag, before anything is published.
+      # Dependabot does not cover the standard library (#133). A finding, for
+      # any GOOS the release ships, fails the job; on a tag, before anything
+      # is published.
       - name: Scan for known vulnerabilities
-        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
+        run: sh .github/scripts/govulncheck.sh
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: ${{ env.GORELEASER_VERSION }}
