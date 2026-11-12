@@ -69,7 +69,7 @@ jobs:
           if [ -n "$COMMENT_AT" ]; then
             commit_at=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq .commit.committer.date)
             if [ "$(date -d "$commit_at" +%s)" -gt "$(date -d "$COMMENT_AT" +%s)" ]; then
-              echo "::error::PR #$PR_NUMBER changed after the request ($head was committed at $commit_at). Comment '@claude review' again."
+              echo "::error::PR #$PR_NUMBER changed after the request: $head was committed at $commit_at, after the comment at $COMMENT_AT (a skewed clock on the pusher's machine can also cause this). Comment '@claude review' again."
               exit 1
             fi
           fi
