@@ -55,7 +55,7 @@ jobs:
           go version
           echo "Built with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
       # Dependabot does not cover the standard library (#133). A finding, for
-      # any GOOS the release ships, fails the job; on a tag, before anything
+      # any platform the release ships, fails the job; on a tag, before anything
       # is published.
       - name: Scan for known vulnerabilities
         run: sh .github/scripts/govulncheck.sh
@@ -125,7 +125,7 @@ jobs:
           go version
           echo "Built with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
       # Dependabot does not cover the standard library (#133). A finding, for
-      # any GOOS the release ships, fails the job; on a tag, before anything
+      # any platform the release ships, fails the job; on a tag, before anything
       # is published.
       - name: Scan for known vulnerabilities
         run: sh .github/scripts/govulncheck.sh
