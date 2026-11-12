@@ -18,6 +18,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0009](0009-append-only-event-log.md) | Cassette as an append-only event log | Accepted |
 | [0010](0010-record-event-log-gaps.md) | Record gaps in the semantic event log | Accepted |
 | [0011](0011-secret-redaction-defaults.md) | Secret redaction defaults | Accepted |
+| [0012](0012-release-integrity.md) | Release integrity | Accepted |
 
 ## Statuses
 
