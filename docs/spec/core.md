@@ -405,7 +405,8 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 - `PRAGMA user_version` holds the schema version. retrace refuses to write to a cassette with a newer schema version, and migrates older ones forward when opening them for read.
 - A cassette is untrusted input, and SQL stored in its schema runs when the file is read or written: a recursive view named `events`, for example, would hang `ls`. So before reading or migrating a cassette, retrace checks its schema objects (`sqlite_schema`):
   - `session`, `interactions`, `events`, `blobs` and `chunks` MUST be ordinary tables, not views or virtual tables.
-  - The file MUST NOT hold any view, or any trigger other than those retrace's migrations create, compared by name and SQL text.
+  - The file MUST NOT hold any view, any virtual table, or any trigger other than those retrace's migrations create, compared by name and SQL text.
+  - Other tables and indexes are allowed. Reading never evaluates them: an index runs SQL only when its table is written, and `trusted_schema(0)` limits the functions it can call to those SQLite marks innocuous. A crafted index can at worst slow down a write to the cassette, such as `reindex`.
   - The check applies to a cassette with a newer schema version too, against the objects of retrace's own schema.
   - A file that fails it is a cassette that cannot be read: `ls` skips it with a warning (§9.5), and the other commands fail as they do for a corrupt cassette.
 - `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver (§9.8). Interactions are never modified.
