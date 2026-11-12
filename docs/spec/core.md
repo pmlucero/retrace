@@ -85,7 +85,7 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 - `POST /llm/anthropic/v1/messages` is recorded with full semantics, both streaming and non-streaming ([ADR 0003](../adr/0003-anthropic-messages-api-with-sse.md)).
 - For streaming responses, each SSE event is forwarded to the agent **as soon as it is received** and stored as a chunk with its offset from the start of the response, that is, from when the response headers arrive. Recording MUST NOT add buffering to the forwarded stream.
 - Responses reach the agent without `Content-Encoding`: retrace accepts a compressed response from the upstream and decodes it. What is stored is exactly what the agent received.
-- Any other path under `/llm/anthropic/` is forwarded and recorded as an opaque interaction.
+- Any other path under `/llm/anthropic/` is forwarded and recorded as an opaque interaction, unless it is rejected (§3.6).
 
 ### 3.4 MCP channel
 
@@ -93,6 +93,7 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 - A request for `/mcp/<name>` is forwarded to exactly the URL registered for `<name>`, and a request for `/mcp/<name>/<rest>` to that URL's path followed by `/<rest>`. retrace MUST NOT add a trailing slash, because many servers treat `/mcp` and `/mcp/` as different endpoints. For example, with `--mcp orders=http://127.0.0.1:9001/mcp`, `/mcp/orders` is forwarded to `http://127.0.0.1:9001/mcp` and `/mcp/orders/x` to `http://127.0.0.1:9001/mcp/x`. A registered URL with no path gets `/`.
   - The registered URL's path and `/<rest>` are joined with a single `/`, so `http://127.0.0.1:9001/mcp/` and `/mcp/orders/x` give `/mcp/x`. The request's query string is forwarded, after any query in the registered URL.
   - The forwarding rule does not change the stored `path` (§7.2), which is `/` for a request for `/mcp/<name>` or `/mcp/<name>/`.
+  - A `<rest>` with a dot segment is rejected (§3.6), so a request cannot leave the registered path.
 - A `POST` body MAY be a single JSON-RPC message or a batch. Each JSON-RPC request in it is matched to its response, whether the response comes as JSON or inside an SSE stream.
 - The protocol version and server info from `initialize` are stored in the session metadata (§7.2).
   - They are read from the recorded exchanges when the session ends. A cassette left by a retrace that was killed has the servers without them. `reindex` never changes `mcp_servers`.
@@ -120,6 +121,13 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - Redaction runs on the forwarding path. It parses each stored JSON body once, which takes milliseconds for a megabyte, against model latencies of hundreds of milliseconds.
 - The agent and the upstream always receive the original bodies. Only what is written to the cassette is redacted.
 - The rules are stored in the session's `redaction` metadata (§7.2). M3 applies them to incoming requests before fingerprinting them (§5).
+
+### 3.6 Rejected requests
+
+Some requests are answered by retrace itself, before they are forwarded or matched. These rules apply in record and in every replay mode, on both routes.
+
+- A request whose path relative to its route (`/llm/anthropic` or `/mcp/<name>`) has a `.` or `..` segment is answered with HTTP `400`. The path is percent-decoded before it is split on `/`, so `%2e%2e` and `..%2f` count too. The route is a boundary: without this check, `/mcp/orders/../admin` would reach a path on the MCP server's host outside the registered URL.
+- A rejected request is not forwarded and not recorded, and retrace logs a warning. The agent gets the same answer in every mode, so the recording and its replays stay consistent without storing it. It is not a cassette miss.
 
 ## 4. Replay modes
 
@@ -159,6 +167,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 ### 4.4 Common replay behavior
 
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
+- Requests are checked as in record mode before they are matched or forwarded (§3.6).
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. MCP requests answered without matching (§5 step 3) are also `replayed`, with no source interaction. Forwarded ones get `provenance = live`.
 - The new session uses the source session's redaction rules (`redaction`, §7.2) and copies them, with any `--redact-header` names added (§9.3). They apply to everything the replay stores, forwarded interactions included, as in record mode (§3.5).
 - At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error. Only channels answered from the cassette count: the LLM in `exact` and `live-tools`, and MCP in `exact` and `swap-model`. MCP interactions that replay answers without matching (§5 step 3) are never reported as unconsumed.
