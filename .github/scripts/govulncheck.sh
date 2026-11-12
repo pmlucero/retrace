@@ -10,6 +10,9 @@
 #   sh .github/scripts/govulncheck.sh
 set -eu
 
+# .goreleaser.yaml and ./... are relative to the repository root.
+cd "$(dirname "$0")/../.."
+
 # At least 14 days old (CONTRIBUTING.md, "Dependencies"). Dependabot does not
 # see a version named in a script, so update it by hand.
 version=v1.9.0
