@@ -505,6 +505,11 @@ Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These f
 
 Global flags MUST precede the command: `retrace [global flags] <command> [command flags] [arguments]`. Flags after the command name belong to that command, so a global flag placed there is a usage error (exit `2`). That error SHOULD say that global flags go before the command.
 
+`--dir` need not exist.
+
+- The commands that create a cassette (`record` and `run`) create a missing `--dir`, with any missing parents, with mode `0700`, when they create the cassette. An existing directory is used as it is.
+- The other commands never create it. For them a missing `--dir` holds no sessions: `ls` lists none, and a command that names a session reports that it does not exist.
+
 Each global flag's value is resolved with the precedence flag > environment variable > default. When an invalid value comes from an environment variable, the error message MUST name the variable. `NO_COLOR` follows the [no-color.org](https://no-color.org) convention: any non-empty value disables color, and no value is invalid. `--no-color` can only disable color. It never re-enables color that `NO_COLOR` disabled.
 
 ### 9.2 `retrace record`
