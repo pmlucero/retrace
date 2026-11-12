@@ -181,9 +181,10 @@ jobs:
           # out of the public job summary (#132, P-4).
           display_report: false
           # User-scope settings (the only scope loaded, see claude_args): the
-          # file tools cannot read or write outside the checkout. The deny
-          # list also names the runner's secret-bearing paths, so it holds on
-          # its own.
+          # file tools cannot read or write outside the checkout (settings
+          # reference, Claude Code v2.1.257+). The deny list names the paths
+          # that hold the runner's secrets as a second layer; the runner
+          # directory is the path on GitHub-hosted images.
           settings: |
             {
               "permissions": {
@@ -194,8 +195,9 @@ jobs:
                   "Read(//sys/**)",
                   "Read(//etc/**)",
                   "Read(//tmp/**)",
-                  "Read(//home/runner/work/_temp/**)",
+                  "Read(/${{ runner.temp }}/**)",
                   "Read(//home/runner/runners/**)",
+                  "Read(~/.*)",
                   "Read(~/.*/**)"
                 ]
               }
