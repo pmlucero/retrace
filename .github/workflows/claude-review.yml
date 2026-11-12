@@ -19,7 +19,7 @@ on:
 jobs:
   coverage:
     name: claude-review-coverage
-    # Same-repo, non-draft PRs only: fork PRs have no access to secrets.
+    # Same-repo, non-draft PRs only; forks are also refused through the API below.
     # Dependabot PRs are skipped: they cannot read Actions secrets, and version bumps need no architecture review.
     # On-demand reviews only for trusted commenters, so outsiders cannot spend the quota.
     if: |
@@ -41,6 +41,7 @@ jobs:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
     outputs:
       head_sha: ${{ steps.pr.outputs.head_sha }}
+      base_ref: ${{ steps.pr.outputs.base_ref }}
     steps:
       # Before the checkout and the tests, so the token never shares a step
       # with the PR's code. The comment payload does not say where the PR
@@ -49,9 +50,10 @@ jobs:
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
+          COMMENT_AT: ${{ github.event.comment.created_at }}
         run: |
-          meta=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isCrossRepository,headRefOid --jq '"\(.isCrossRepository) \(.headRefOid)"')
-          read -r cross head <<< "$meta"
+          meta=$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json isCrossRepository,headRefOid,baseRefName --jq '"\(.isCrossRepository) \(.headRefOid) \(.baseRefName)"')
+          read -r cross head base <<< "$meta"
           if [ "$cross" != "false" ]; then
             echo "::error::PR #$PR_NUMBER comes from a fork. The automated review runs only for branches of this repository; the maintainer reviews fork PRs."
             exit 1
@@ -60,8 +62,22 @@ jobs:
             echo "::error::unexpected head commit for PR #$PR_NUMBER: $head"
             exit 1
           fi
+          # On request, review only what the maintainer saw: refuse a head
+          # committed after the comment. Commit dates come from the pusher, so
+          # this guards against a race, not an attacker; refusing forks is the
+          # security boundary.
+          if [ -n "$COMMENT_AT" ]; then
+            commit_at=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq .commit.committer.date)
+            if [ "$(date -d "$commit_at" +%s)" -gt "$(date -d "$COMMENT_AT" +%s)" ]; then
+              echo "::error::PR #$PR_NUMBER changed after the request ($head was committed at $commit_at). Comment '@claude review' again."
+              exit 1
+            fi
+          fi
           echo "head_sha=$head" >> "$GITHUB_OUTPUT"
-          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > "$RUNNER_TEMP/pr.diff"
+          echo "base_ref=$base" >> "$GITHUB_OUTPUT"
+          # The diff of the pinned head, not of whatever the PR points to now.
+          gh api "repos/$GITHUB_REPOSITORY/compare/$base...$head" \
+            -H "Accept: application/vnd.github.diff" > "$RUNNER_TEMP/pr.diff"
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -114,6 +130,7 @@ jobs:
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       HEAD_SHA: ${{ needs.coverage.outputs.head_sha }}
+      BASE_REF: ${{ needs.coverage.outputs.base_ref }}
       # Strip credentials from the environment of anything Claude Code starts.
       CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: "1"
     steps:
@@ -146,7 +163,14 @@ jobs:
           gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" \
             --json number,url,title,body,author,baseRefName,headRefName,headRefOid,labels,files,commits \
             > .review-context/pr.json
-          gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" > .review-context/pr.diff
+          # The metadata, the diff and the checkout must describe the same commit.
+          now=$(jq -r .headRefOid .review-context/pr.json)
+          if [ "$now" != "$HEAD_SHA" ]; then
+            echo "::error::PR #$PR_NUMBER moved from $HEAD_SHA to $now during the run. Comment '@claude review' again."
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA" \
+            -H "Accept: application/vnd.github.diff" > .review-context/pr.diff
 
       - uses: anthropics/claude-code-action@aa8a7738e48bf30a40ee499ce818bef081c5ab5e # v1.0.257
         with:
