@@ -23,7 +23,8 @@ env:
   # action's SHA but not this input, so update it by hand.
   GORELEASER_VERSION: v2.18.3
   # Same rule and the same caveat: Dependabot does not see a version that is
-  # only named in a `go run` command. Keep it in step with govulncheck.yml.
+  # only named in a `go run` command. Keep it in step with govulncheck.yml and
+  # the local command in CONTRIBUTING.md.
   GOVULNCHECK_VERSION: v1.9.0
 
 concurrency:

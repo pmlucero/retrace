@@ -18,7 +18,7 @@ permissions:
 env:
   # At least 14 days old (CONTRIBUTING.md, "Dependencies"). Dependabot does not
   # see a version that is only named in a `go run` command, so update it by
-  # hand, together with release.yml.
+  # hand, together with release.yml and the local command in CONTRIBUTING.md.
   GOVULNCHECK_VERSION: v1.9.0
 
 concurrency:
