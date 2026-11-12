@@ -9,7 +9,7 @@
 
 - **The header deny-list is too narrow** (#127). It misses headers that real services use for credentials: `apikey` (Kong, Supabase), `token`, `x-auth`, `*-auth`, and signature headers such as `x-amz-signature`. The query parameter rule of spec §3.5 already redacts `apikey`, `token`, `auth` and `signature` in URLs, so the same credential was redacted in a query and stored in plain text in a header.
 - **Signed URLs leak through their query** (#127). `X-Amz-Signature` and `X-Amz-Credential` (S3 presigned URLs), and the `X-Goog-*` equivalents, match neither the query names nor the suffixes.
-- **URLs in header values are not redacted** (#128). Redaction works on header names. A `Location` header that carries an OAuth redirect with a `code` or a token in its query, or a signed URL, reaches disk as it is.
+- **URLs in header values are not redacted** (#128). Redaction works on header names. A `Location` header that carries an OAuth redirect with a token in its query (`access_token`, `id_token`), or a signed URL, reaches disk as it is.
 - **A replay cannot add a header** (#127). `record` has `--redact-header`, `run` does not. A replay in `swap-model` or `live-tools` forwards requests and records them, so it can meet a credential header the recording never saw.
 - **AC-06 tests too little.** Its file scan covers the LLM `x-api-key` and the MCP URL, not MCP `Authorization`, a `*-token` header, a query token, `Set-Cookie`, or the cassette of a replay.
 
@@ -44,6 +44,10 @@ It is the safest option for credentials, but stored headers are part of what a c
 ### Add `*-credentials` and `*-session` patterns
 
 `*-credentials` would also mask `Access-Control-Allow-Credentials`, a CORS response header whose value is `true`. `*-session` would mask `Mcp-Session-Id`, whose value replay needs (spec §5 step 3). Both are left out. The singular `*-credential` covers signed URLs.
+
+### Add `code` (OAuth authorization codes)
+
+An OAuth redirect carries the authorization code in a `code` query parameter. But `code` is also a common harmless parameter name (a country, an error or a product code), and the shared list would mask it in every stored path and header. An authorization code is single-use and expires within minutes, so a stored one is far less useful than a token. It is left out. A user whose agent handles OAuth redirects can add it with `--redact-header code`, which also applies to query parameters.
 
 ### Scan header values for anything that looks like a URL
 
