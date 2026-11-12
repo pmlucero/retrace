@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.25
-- Last updated: 2026-11-11
+- Version: 0.26
+- Last updated: 2026-11-12
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
