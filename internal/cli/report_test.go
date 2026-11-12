@@ -91,7 +91,9 @@ func TestDivergenceReport(t *testing.T) {
 }
 
 // untrustedReport is a report of a replay of the crafted session
-// "evil\x1b]0;t\x07", whose first miss is first.
+// "evil\x1b]0;t\x07", whose first miss is first. run rejects such an id
+// before it gets here (ValidateSessionID), so escaping the ids is defense in
+// depth; the upstream, request, paths and values can carry these characters.
 func untrustedReport(first replay.MissReport) divergenceReport {
 	return divergenceReport{source: "evil\x1b]0;t\x07", replay: "evil\x1b]0;t\x07.exact.1", misses: 1, first: first}
 }

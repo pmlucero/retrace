@@ -265,6 +265,9 @@ func parseWithPositional(fs *flag.FlagSet, args []string, env *Env) (positional 
 // a valid cassette never holds, are cut the same way. Either goes through
 // printable after the cut: a JSON string can hold C1 and bidirectional
 // formatting characters raw, and bytes that are not JSON can hold anything.
+// The order is deliberate, as in diffValue: the limit counts the characters
+// before escaping, so an escaped cell can print wider than the limit, but the
+// cut can never split an escape such as \u202e.
 func showArguments(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
