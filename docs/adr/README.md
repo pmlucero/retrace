@@ -19,6 +19,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0010](0010-record-event-log-gaps.md) | Record gaps in the semantic event log | Accepted |
 | [0011](0011-secret-redaction-defaults.md) | Secret redaction defaults | Accepted |
 | [0012](0012-release-integrity.md) | Release integrity | Accepted |
+| [0013](0013-explicit-replay-command.md) | Explicit agent command for replay | Accepted |
 
 ## Statuses
 

@@ -558,7 +558,7 @@ The mode is derived from the flags:
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: the agent command. The agent runs in retrace's working directory.
 - `--recorded-command`: runs the source session's recorded command (`command`, §7.2) in its recorded working directory (`cwd`). A source with no recorded command (an empty `command`) is a usage error (exit `2`).
-- `run` MUST NOT run the recorded command unless `--recorded-command` is given. A cassette may come from someone else, so it is untrusted input, and its `command` is code that would run with the user's privileges (the shareable bug reports of the [vision](../vision.md), §2).
+- `run` MUST NOT run the recorded command unless `--recorded-command` is given ([ADR 0013](../adr/0013-explicit-replay-command.md)). A cassette may come from someone else, so it is untrusted input, and its `command` is code that would run with the user's privileges (the shareable bug reports of the [vision](../vision.md), §2).
   - Without `-- <cmd>` or `--recorded-command`, `run` fails with a usage error (exit `2`) that prints the stored argv and cwd, so the user can review them before choosing. Each argv element and the cwd are printed as quoted strings, with control and bidirectional control characters escaped, so the text cannot drive the terminal or hide part of the command.
   - Giving both `-- <cmd>` and `--recorded-command` is a usage error (exit `2`).
 - `--model`: the model for `swap-model` (§4.2). An empty value is a usage error.
