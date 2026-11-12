@@ -14,9 +14,10 @@ This directory records the significant architectural decisions of retrace, follo
 | [0005](0005-sqlite-cassette-storage.md) | One SQLite file per cassette | Accepted |
 | [0006](0006-strict-divergence-default.md) | `strict` as the default divergence strategy | Accepted |
 | [0007](0007-request-matching-fingerprints.md) | Request matching by canonical fingerprint | Accepted |
-| [0008](0008-secret-redaction.md) | Secret redaction in cassettes | Accepted |
+| [0008](0008-secret-redaction.md) | Secret redaction in cassettes | Superseded by 0011 |
 | [0009](0009-append-only-event-log.md) | Cassette as an append-only event log | Accepted |
 | [0010](0010-record-event-log-gaps.md) | Record gaps in the semantic event log | Accepted |
+| [0011](0011-secret-redaction-defaults.md) | Secret redaction defaults | Accepted |
 
 ## Statuses
 
