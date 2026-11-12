@@ -1,0 +1,51 @@
+name: govulncheck
+
+# Dependabot does not cover the standard library (#133), so this scans both
+# supported Go releases at their newest patch, the one a user building from
+# source or a release would get. The vulnerability database changes while the
+# code does not, so a weekly run re-scans main and a new finding shows up there,
+# not first on an unrelated PR (CONTRIBUTING.md, "Code").
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+env:
+  # At least 14 days old (CONTRIBUTING.md, "Dependencies"). Dependabot does not
+  # see a version that is only named in a `go run` command, so update it by
+  # hand, together with release.yml.
+  GOVULNCHECK_VERSION: v1.9.0
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  govulncheck:
+    name: govulncheck (go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        go: ["1.26", "1.27"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ matrix.go }}.x
+          # Scan the newest patch, not an older one cached on the runner.
+          check-latest: true
+      - name: Record the Go version
+        run: |
+          go version
+          echo "Scanned with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
+      - name: Scan for known vulnerabilities
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
