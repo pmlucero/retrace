@@ -262,8 +262,9 @@ func parseWithPositional(fs *flag.FlagSet, args []string, env *Env) (positional 
 
 // showArguments renders arguments as compact JSON cut after
 // showArgumentRunes runes (spec §9.6). Stored bytes that are not JSON, which
-// a valid cassette never holds, are shown through printable, cut the same
-// way. JSON needs no escaping: its strings keep their escape sequences.
+// a valid cassette never holds, are cut the same way. Either goes through
+// printable after the cut: a JSON string can hold C1 and bidirectional
+// formatting characters raw, and bytes that are not JSON can hold anything.
 func showArguments(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
@@ -273,11 +274,11 @@ func showArguments(raw json.RawMessage) string {
 	if json.Compact(&b, raw) == nil {
 		text = b.String()
 	}
-	text = strings.ToValidUTF8(text, "�")
-	if utf8.RuneCountInString(text) <= showArgumentRunes {
-		return text
+	text = strings.ToValidUTF8(text, "\uFFFD")
+	if utf8.RuneCountInString(text) > showArgumentRunes {
+		text = string([]rune(text)[:showArgumentRunes]) + "…"
 	}
-	return string([]rune(text)[:showArgumentRunes]) + "…"
+	return printable(text)
 }
 
 func formatLabels(labels map[string]string) string {
