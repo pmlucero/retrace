@@ -61,6 +61,7 @@ It would catch URLs in custom headers, but parsing every value as a URL is a heu
 
 - The broader patterns can mask harmless values, for example a `*-signature` header that only carries a content checksum. The value is lost from the cassette, but only from what is stored: the agent and the upstream receive it unchanged, and headers do not affect matching.
 - A credential in a custom header that matches no pattern still needs `--redact-header`.
+- A replay serves recorded response headers back to the agent (spec §4.4), so it now serves a `Location`, `Content-Location` or `Link` URL with redaction markers where the agent saw the real URL while recording. An agent that follows such a URL in replay sends a request that differs from the recorded one, which is a cassette miss, so the difference shows up as a divergence rather than silently. This is the same trade-off ADR 0008 made for `Set-Cookie`: a credential is never served from a cassette.
 
 ### Risks and mitigations
 
