@@ -100,12 +100,15 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 
 ### 3.5 Redaction
 
-Header and body redaction are applied before anything is written to disk, as specified in [ADR 0008](../adr/0008-secret-redaction.md).
+Header and body redaction are applied before anything is written to disk, as specified in [ADR 0011](../adr/0011-secret-redaction-defaults.md).
 
-Credentials can also travel in URLs, so the same rule covers every URL retrace stores (the registered MCP server URLs and each interaction's `path`). The upstream always receives the original URL.
+- A header is redacted when its name, compared case-insensitively, is on the deny-list: `authorization`, `proxy-authorization`, `x-api-key`, `cookie`, `set-cookie`, `apikey`, `auth`, `key`, `password`, `secret`, `sig`, `signature`, `token`, any name matching `*-token`, `*-secret`, `*-key`, `*-auth`, `*-password`, `*-signature`, `*-credential` or `*apikey`, and any name given with `--redact-header`. Its value becomes `[REDACTED:<sha256-prefix-8>]`.
+
+Credentials can also travel in URLs, so the same rule covers every URL retrace stores: the registered MCP server URLs, each interaction's `path`, and the values of the URL-carrying headers `Location`, `Content-Location`, `Referer` and `Link` (each URI reference inside `<…>`), in request and response headers, in record and in every replay mode. Only what is stored is redacted: a forwarded request or response keeps its original URLs.
 
 - Userinfo (`https://user:pass@host`) is replaced with `REDACTED`.
-- A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is a redacted header name, ends in one of the header suffixes (`-token`, `-secret`, `-key`), or is one of `key`, `token`, `secret`, `password`, `apikey`, `auth`, `sig` or `signature`. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the query is kept as it was.
+- A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is on the header deny-list. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the URL is kept as it was. So `X-Amz-Signature`, `X-Amz-Credential` and `access_token` are redacted.
+- A URL-carrying header that is itself on the deny-list is masked whole, as any other redacted header.
 
 **Body redaction** (`--redact <jsonpath>`, repeatable) is opt-in.
 
@@ -157,7 +160,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. MCP requests answered without matching (§5 step 3) are also `replayed`, with no source interaction. Forwarded ones get `provenance = live`.
-- The new session uses the source session's redaction rules (`redaction`, §7.2) and copies them. They apply to everything the replay stores, forwarded interactions included, as in record mode (§3.5).
+- The new session uses the source session's redaction rules (`redaction`, §7.2) and copies them, with any `--redact-header` names added (§9.3). They apply to everything the replay stores, forwarded interactions included, as in record mode (§3.5).
 - At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error. Only channels answered from the cassette count: the LLM in `exact` and `live-tools`, and MCP in `exact` and `swap-model`. MCP interactions that replay answers without matching (§5 step 3) are never reported as unconsumed.
 - A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the body as served, which may differ from the original because of redaction and, for MCP, the id rewrite of §5 step 3. An interaction recorded with a transport error has neither status nor headers, and is served as in §5 step 2.
 
@@ -513,7 +516,8 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 retrace run <id> [--model <model>] [--tools frozen|live] [--as <new-id>]
                  [--on-miss strict] [--realtime] [--grace <duration>]
                  [--anthropic-upstream <url>] [--mcp <name>=<url>]...
-                 [--listen <addr>] (--recorded-command | -- <agent command...>)
+                 [--redact-header <name>]... [--listen <addr>]
+                 (--recorded-command | -- <agent command...>)
 ```
 
 The mode is derived from the flags:
@@ -541,6 +545,7 @@ The mode is derived from the flags:
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs (§4.3), with the same syntax as in `record` (§9.2).
   - Its name MUST be one of the source's `mcp_servers` (§7.2). Another name is a usage error, because the agent would have no `RETRACE_MCP_<NAME>_URL` for it.
   - In other modes MCP is served from the cassette, so the flag is a usage error.
+- `--redact-header`: adds a header name to the source session's redaction rules (§3.5), as in `record`. Repeatable. The new session stores the combined rules. Headers are not fingerprinted (§5), so matching does not change. `run` has no `--redact`: body rules change fingerprints, so a replay uses the source's.
 - `--grace`: how long the agent has to exit after `SIGTERM` on a divergence (§6.2), as a Go duration (`5s`, `500ms`). Default `5s`. A negative value is a usage error.
 - MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. In `exact` and `swap-model`, where every MCP answer comes from the cassette, its `mcp_servers` is a copy of the source's. In `live-tools`, each server keeps its name, its `url` is the one actually used (after `--mcp`, redacted as in §3.5), and `protocol_version` and `server_info` are read from the replay's own exchanges as in §3.4.
 - Errors in the flags and arguments (exit `2`), including both `-- <cmd>` and `--recorded-command`, and a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): neither `-- <cmd>` nor `--recorded-command` (the error prints the stored argv and cwd), `--recorded-command` with an empty command, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
@@ -599,7 +604,7 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 
 ## 10. Security and privacy
 
-- Auth headers are redacted before storage, and body redaction is opt-in ([ADR 0008](../adr/0008-secret-redaction.md)).
+- Credentials in headers and URLs are redacted before storage, and body redaction is opt-in (§3.5, [ADR 0011](../adr/0011-secret-redaction-defaults.md)).
 - The proxy binds to loopback by default.
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
@@ -616,7 +621,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-03** A streaming `/v1/messages` exchange is recorded with every SSE event and its offset. The agent receives the first chunk before the upstream finishes (no buffering).
 - **AC-04** MCP `initialize`, `tools/list` and `tools/call` exchanges over Streamable HTTP are recorded, for both JSON and SSE responses, against two distinct MCP servers in the same session.
 - **AC-05** Events are derived with all §7.4 fields populated where applicable, including tokens and estimated cost for each `model_response`, and correct `source`/`target`.
-- **AC-06** `authorization`, `x-api-key` and `*-token` header values never appear in the cassette file (verified by scanning the raw file bytes).
+- **AC-06** Credentials never appear in the cassette file, verified by scanning the raw file bytes: the LLM `x-api-key`, an MCP `Authorization` header, a `*-token` header, a token in a query string, a credential in the query or userinfo of a `Location` URL, and a `Set-Cookie` response header. The scan covers the cassette of a recording and the cassette of a replay that forwards requests (`swap-model` and `live-tools`).
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
 - **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
 - **AC-25** `record --redact '$..email'` stores no `email` value from request bodies, response bodies or SSE events (verified by scanning the raw file bytes), while the agent and the upstream receive the original bodies.
