@@ -141,12 +141,8 @@ jobs:
           fetch-depth: 1
           persist-credentials: false
 
-      # The PR controls these files. Claude Code is also started with
-      # --setting-sources user and --strict-mcp-config, so project settings,
-      # hooks and MCP servers from the PR are never loaded; removing them as
-      # well keeps that true if the flags change meaning.
-      - name: Remove Claude Code configuration from the checkout
-        run: rm -rf .claude .mcp.json CLAUDE.local.md .review-context
+      - name: Start from an empty review context
+        run: rm -rf .review-context
 
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -157,6 +153,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # The PR controls these files. Claude Code is also started with
+          # --setting-sources user and --strict-mcp-config, so project settings,
+          # hooks and MCP servers from the PR are never loaded; removing them as
+          # well keeps that true if the flags change meaning. After the
+          # download, so the artifact cannot bring them back either.
+          rm -rf .claude .mcp.json CLAUDE.local.md
           # The artifact was written after the PR's code ran: only the coverage
           # report is taken from it.
           find .review-context -mindepth 1 ! \( -path .review-context/coverage-report.md -type f \) -delete
@@ -166,7 +168,7 @@ jobs:
           # The metadata, the diff and the checkout must describe the same commit.
           now=$(jq -r .headRefOid .review-context/pr.json)
           if [ "$now" != "$HEAD_SHA" ]; then
-            echo "::error::PR #$PR_NUMBER moved from $HEAD_SHA to $now during the run. Comment '@claude review' again."
+            echo "::error::PR #$PR_NUMBER moved from $HEAD_SHA to $now during the run, so it was not reviewed. A maintainer can comment '@claude review' to review the new head."
             exit 1
           fi
           gh api "repos/$GITHUB_REPOSITORY/compare/$BASE_REF...$HEAD_SHA" \
