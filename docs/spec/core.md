@@ -254,6 +254,7 @@ retrace: replay 20261023-checkout.swap-model.1 diverged from 20261023-checkout
 
 - The first-miss line names the upstream and the request: for MCP, the JSON-RPC method, plus the tool name for `tools/call` (`batch` for a batch); for the LLM, the HTTP method and path.
 - Each diff entry (§5 step 4) gives its path and `expected → received`. Values are compact JSON. A missing side is `(missing)`, and a value longer than 80 characters is cut and ends with `…`. A truncated diff ends with a line that says more paths differ.
+- Text from the cassette is escaped as in §10.
 - When there is no diff, the report says why: the matching recording is incomplete (record the session again), the request could not be redacted, no recorded request was left to compare against, or the two canonical forms are equal.
 - `misses` counts the misses of the session.
 - The layout above is illustrative. Its content is normative.
@@ -599,7 +600,7 @@ When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+g
 retrace show <id> [--json] [--raw <interaction-id>]
 ```
 
-- The default output is the session summary (metadata and totals, §8.2) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status. The relative time counts from the session's `created_at`. Arguments are compact JSON, cut after 60 characters with `…`.
+- The default output is the session summary (metadata and totals, §8.2) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status. The relative time counts from the session's `created_at`. Arguments are compact JSON, cut after 60 characters with `…`. Text from the cassette, here and in `--raw`, is escaped as in §10.
 - When `dropped_events > 0` (§7.7), the summary warns that the event log is incomplete and gives the count, and the timeline shows a marker line where `seq` values are missing, with how many events are missing there. `--json` emits only the events that exist; consumers find gaps from `seq`.
 - `--json`: emits events as JSONL, one event per line, as a stable format. Each line is an object with one member per column of the `events` table (§7.4), named as the column, with `null` for a null value. `arguments` and `result` are the stored JSON values. A stored value that is not valid JSON, which a valid cassette never holds, is emitted as a JSON string, with invalid UTF-8 replaced by U+FFFD. A stored number that is not finite, such as a `cost_usd` of `+Inf`, is emitted as `null`, so that one bad value does not stop the stream either. `started_at` is RFC 3339, in UTC for a valid cassette (§7.1), with the trailing zeros of the fraction left out (`2026-10-23T09:30:02Z`, `2026-10-23T09:30:02.5Z`), unlike the stored form of §7.1. Consumers parse it as RFC 3339 and do not assume six fractional digits.
 - `--raw`: dumps one interaction (headers, bodies, SSE chunks with offsets), as stored, after redaction. A body or chunk that is not valid UTF-8 is shown as `<n bytes, not UTF-8>`. `--raw` with `--json` is a usage error.
@@ -628,7 +629,10 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 - The proxy binds to loopback by default.
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
-- A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette escapes control characters so that it cannot drive the terminal.
+- A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
+- **Escaped text output.** The text outputs (`ls`, `show`, `show --raw`, `diff` in text format, and the divergence report of §6.4) escape every control character (C0 and C1) and every bidirectional control character that comes from a cassette.
+  - The length limits of §6.4 (80 characters) and §9.6 (60 characters) count characters before escaping. An escaped value can therefore print wider than the limit, but a cut never splits an escape.
+  - Text output is for people. The JSON outputs (`show --json`, `diff --format json`) are the faithful form of the cassette's values.
 
 ## 11. Acceptance criteria
 
