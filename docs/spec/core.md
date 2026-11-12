@@ -407,8 +407,8 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
   - `session`, `interactions`, `events`, `blobs` and `chunks` MUST be ordinary tables, not views or virtual tables.
   - None of their columns may be generated (`PRAGMA table_xinfo` reports them), because reading a generated column evaluates its expression, and `trusted_schema(0)` does not stop innocuous functions such as `printf`.
   - The file MUST NOT hold any view, any virtual table, or any trigger other than those retrace's migrations create, compared by name and SQL text.
-  - Other tables and indexes are allowed. Reading never evaluates them: an index runs SQL only when its table is written, and `trusted_schema(0)` limits the functions it can call to those SQLite marks innocuous. A crafted index can at worst slow down a write to the cassette, such as `reindex`.
-  - The check applies to a cassette with a newer schema version too, against the objects of retrace's own schema.
+  - Other tables and indexes are allowed. Reading never evaluates them: an index runs SQL only when its table is written, and `trusted_schema(0)` limits the functions it can call to those SQLite marks innocuous. A crafted index can at worst slow down a write to the cassette, such as `reindex`, or make it fail (a `UNIQUE` index), which leaves the cassette as it was because the write is one transaction.
+  - The check applies to a cassette with a newer schema version too, against the objects of retrace's own schema. When such a cassette fails it, the error says that its schema is newer than this retrace, since a later migration may have added the object.
   - A file that fails it is a cassette that cannot be read: `ls` skips it with a warning (§9.5), and the other commands fail as they do for a corrupt cassette.
 - `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver (§9.8). Interactions are never modified.
   - It replaces the events in one transaction, so a failure leaves them as they were. It is the only operation that removes events, as [ADR 0009](../adr/0009-append-only-event-log.md) foresees.
