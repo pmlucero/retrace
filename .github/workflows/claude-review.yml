@@ -126,7 +126,6 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
-      issues: write
     env:
       PR_NUMBER: ${{ github.event.pull_request.number || github.event.issue.number }}
       HEAD_SHA: ${{ needs.coverage.outputs.head_sha }}
