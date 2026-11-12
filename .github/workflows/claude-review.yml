@@ -180,7 +180,9 @@ jobs:
           # out of the public job summary (#132, P-4).
           display_report: false
           # User-scope settings (the only scope loaded, see claude_args): the
-          # file tools cannot read or write outside the checkout.
+          # file tools cannot read or write outside the checkout. The deny
+          # list also names the runner's secret-bearing paths, so it holds on
+          # its own.
           settings: |
             {
               "permissions": {
@@ -191,6 +193,8 @@ jobs:
                   "Read(//sys/**)",
                   "Read(//etc/**)",
                   "Read(//tmp/**)",
+                  "Read(//home/runner/work/_temp/**)",
+                  "Read(//home/runner/runners/**)",
                   "Read(~/.*/**)"
                 ]
               }
