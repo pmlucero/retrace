@@ -400,6 +400,11 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 ### 7.6 Schema versioning
 
 - `PRAGMA user_version` holds the schema version. retrace refuses to write to a cassette with a newer schema version, and migrates older ones forward when opening them for read.
+- A cassette is untrusted input, and SQL stored in its schema runs when the file is read or written: a recursive view named `events`, for example, would hang `ls`. So before reading or migrating a cassette, retrace checks its schema objects (`sqlite_schema`):
+  - `session`, `interactions`, `events`, `blobs` and `chunks` MUST be ordinary tables, not views or virtual tables.
+  - The file MUST NOT hold any view, or any trigger other than those retrace's migrations create, compared by name and SQL text.
+  - The check applies to a cassette with a newer schema version too, against the objects of retrace's own schema.
+  - A file that fails it is a cassette that cannot be read: `ls` skips it with a warning (§9.5), and the other commands fail as they do for a corrupt cassette.
 - `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver (§9.8). Interactions are never modified.
   - It replaces the events in one transaction, so a failure leaves them as they were. It is the only operation that removes events, as [ADR 0009](../adr/0009-append-only-event-log.md) foresees.
   - Events that are not derived from interactions (`divergence`) are kept, and placed among the rebuilt events by `started_at`.
@@ -578,7 +583,7 @@ retrace ls [--json]
 Lists the cassettes in `--dir`, newest first, with these columns: `ID`, `CREATED`, `MODE`, `PARENT`, `STATUS`, `STEPS`, `TOKENS`, `COST (est.)`, `DURATION`.
 
 - The values are the totals of §8.2. `TOKENS` is `in/out`, abbreviated (e.g. `41.2k/3.9k`). `DURATION` is empty while a session has not ended.
-- A file in `--dir` that ends in `.cassette` but cannot be opened or read (e.g. a newer schema, a corrupt database or a missing session row) is skipped with a warning on stderr, and `ls` still exits `0`.
+- A file in `--dir` that ends in `.cassette` but cannot be opened or read (e.g. a newer schema, a corrupt database, a missing session row, or a schema that fails the checks of §7.6) is skipped with a warning on stderr, and `ls` still exits `0`.
 - `--json` emits one JSON array with an object per session, newest first, with the same information unabbreviated.
 
 When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+gaps` (e.g. `completed+gaps`), because its steps and totals come from an incomplete log. `--json` carries `dropped_events` for each session.
@@ -670,6 +675,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-20** `diff` of a session with a diverging swap-model replay reports the correct step, event, tool and argument diff, and exits `1`.
 - **AC-21** `diff --format json` output validates against a JSON schema committed in the repo.
 - **AC-22** `ls` and `show` (text and `--json`) display the fields listed in §9.5 and §9.6.
+- **AC-35** A cassette whose `events` is a view, or that holds a trigger retrace's migrations do not create, is rejected before it is read: `ls` skips it with a warning and exits `0`, `show` and `run` exit `1`, and the file is not modified.
 - **AC-27** For a session with `dropped_events > 0`, `ls` shows `+gaps` after its status and `dropped_events` in `--json`, `show` warns with the count and marks each gap in its timeline, and `diff` warns in text output and reports `dropped_events` in `--format json`.
 
 ### Demo (manual)
