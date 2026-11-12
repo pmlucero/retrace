@@ -120,7 +120,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 ## 4. Replay modes
 
-`retrace run <id>` re-launches the agent (by default with the recorded command and working directory) against a proxy that serves the channels as follows:
+`retrace run <id>` re-launches the agent (the command given after `--`, or the recorded command and working directory with `--recorded-command`, §9.3) against a proxy that serves the channels as follows:
 
 | Mode | LLM channel | MCP channel | Network needed | Typical question |
 |---|---|---|---|---|
@@ -513,7 +513,7 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 retrace run <id> [--model <model>] [--tools frozen|live] [--as <new-id>]
                  [--on-miss strict] [--realtime] [--grace <duration>]
                  [--anthropic-upstream <url>] [--mcp <name>=<url>]...
-                 [--listen <addr>] [-- <agent command...>]
+                 [--listen <addr>] (--recorded-command | -- <agent command...>)
 ```
 
 The mode is derived from the flags:
@@ -531,7 +531,11 @@ The mode is derived from the flags:
   - As in `record` (§9.2), existence is decided by the cassette file. If another session takes the default id before the cassette is created, the next `n` is tried. If that `n` does not fit the id format or reaches 2^63 − 1, `run` fails with exit `1` and asks for `--as`.
   - If the default does not fit the id format (§9.2), or its `n` reaches 2^63 − 1, it is a usage error that asks for `--as`.
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
-- `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
+- `-- <cmd>`: the agent command. The agent runs in retrace's working directory.
+- `--recorded-command`: runs the source session's recorded command (`command`, §7.2) in its recorded working directory (`cwd`). A source with no recorded command (an empty `command`) is a usage error (exit `2`).
+- `run` MUST NOT run the recorded command unless `--recorded-command` is given. A cassette may come from someone else, so it is untrusted input, and its `command` is code that would run with the user's privileges (the shareable bug reports of the [vision](../vision.md), §2).
+  - Without `-- <cmd>` or `--recorded-command`, `run` fails with a usage error (exit `2`) that prints the stored argv and cwd, so the user can review them before choosing. Each argv element and the cwd are printed as quoted strings, with control and bidirectional control characters escaped, so the text cannot drive the terminal or hide part of the command.
+  - Giving both `-- <cmd>` and `--recorded-command` is a usage error (exit `2`).
 - `--model`: the model for `swap-model` (§4.2). An empty value is a usage error.
 - `--anthropic-upstream`: the Anthropic API base URL in `swap-model`, with the same default and validation as in `record` (§9.2). In other modes the LLM channel is not forwarded, so the flag is a usage error.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs (§4.3), with the same syntax as in `record` (§9.2).
@@ -539,7 +543,7 @@ The mode is derived from the flags:
   - In other modes MCP is served from the cassette, so the flag is a usage error.
 - `--grace`: how long the agent has to exit after `SIGTERM` on a divergence (§6.2), as a Go duration (`5s`, `500ms`). Default `5s`. A negative value is a usage error.
 - MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. In `exact` and `swap-model`, where every MCP answer comes from the cassette, its `mcp_servers` is a copy of the source's. In `live-tools`, each server keeps its name, its `url` is the one actually used (after `--mcp`, redacted as in §3.5), and `protocol_version` and `server_info` are read from the replay's own exchanges as in §3.4.
-- Errors in the flags and arguments (exit `2`), including a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): the empty command, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
+- Errors in the flags and arguments (exit `2`), including both `-- <cmd>` and `--recorded-command`, and a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): neither `-- <cmd>` nor `--recorded-command` (the error prints the stored argv and cwd), `--recorded-command` with an empty command, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
 ### 9.4 `retrace diff`
@@ -599,6 +603,7 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 - The proxy binds to loopback by default.
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
+- A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette escapes control characters so that it cannot drive the terminal.
 
 ## 11. Acceptance criteria
 
@@ -629,7 +634,8 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-32** In exact mode, a `POST` with only client notifications or responses gets `202`, `GET` gets `405` and `DELETE` gets `200`. None of them consumes a recorded interaction, each is stored with `provenance = replayed` and no source interaction, and recorded ones of these kinds are not reported as unconsumed.
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. This holds even when the agent then exits with a non-zero code or retrace receives a signal, and in both cases `agent_exit_code` keeps the agent's code. The incomplete interaction is not reported as unconsumed.
 - **AC-29** In exact mode, an LLM or MCP request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same events as the source (for an LLM request, the same `model_response`).
-- **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run` of a source with no recorded command and no `-- <cmd>` exits `2`. None of them creates a new cassette.
+- **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run --recorded-command` of a source with no recorded command exits `2`. None of them creates a new cassette.
+- **AC-33** `run <id>` with neither `-- <cmd>` nor `--recorded-command` exits `2`, starts no process, creates no cassette, and prints the recorded argv and cwd with control characters escaped. `run` with both exits `2`. `run <id> --recorded-command` runs the recorded command in the recorded working directory.
 
 ### Swap-model and strict
 
