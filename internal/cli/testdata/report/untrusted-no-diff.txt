@@ -1,0 +1,5 @@
+retrace: replay evil\x1b]0;t\a.exact.1 diverged from evil\x1b]0;t\a
+  first miss: mcp:\u202eshop
+    no diff: body\x1b[2J\n\u009b
+  misses: 1
+  compare: retrace diff evil\x1b]0;t\a evil\x1b]0;t\a.exact.1

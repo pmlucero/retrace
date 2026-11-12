@@ -189,7 +189,9 @@ func (c *collector) value(v jsonvalue.Value) json.RawMessage {
 }
 
 // name is the path step for member key, in the JSONPath subset of spec §3.5:
-// .key for a name of letters, digits, '_' and '-', ['key'] otherwise.
+// .key for a name of letters, digits, '_' and '-', ['key'] otherwise. The
+// key is kept as received, control characters included: the path is stored
+// in the divergence event, and the text outputs escape it when they print it.
 func name(key string) string {
 	if key != "" && strings.IndexFunc(key, func(r rune) bool { return !isNameRune(r) }) < 0 {
 		return "." + key

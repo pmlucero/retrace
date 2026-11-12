@@ -51,10 +51,25 @@ func TestDivergenceReport(t *testing.T) {
 		{"elided at the cap", divergenceReport{source: "s", replay: "s.exact.1", misses: 1, first: replay.MissReport{
 			Upstream: "anthropic", Request: "POST /v1/messages", Diff: elided, DiffTruncated: true,
 		}}},
+		// SECURITY.md: the upstream, request, paths and values come from an
+		// untrusted cassette and cannot drive the terminal.
+		{"untrusted", untrustedReport(replay.MissReport{
+			Upstream: "mcp:\x1b]0;pwned\x07shop", Request: "tools/call evil\x1b[2J\u009b31m\u202etool",
+			Diff: []divergence.Entry{
+				{Path: "$.params.arguments['\x1b[1A\rspoofed']", Expected: json.RawMessage(`1`), Received: json.RawMessage(`2`)},
+				{Path: "$.params.arguments['\u202ekey']", Expected: json.RawMessage("\"\u009b\u202eopen\""), Received: json.RawMessage("\x1b]0;t\x07")},
+			},
+		})},
+		{"untrusted no diff", untrustedReport(replay.MissReport{
+			Upstream: "mcp:\u202eshop", NoDiff: "body\x1b[2J\n\u009b",
+		})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var b bytes.Buffer
 			tc.report.write(&b)
+			if strings.ContainsFunc(b.String(), func(r rune) bool { return r != '\n' && unsafeRune(r) }) {
+				t.Errorf("report holds raw control or bidi characters:\n%q", b.String())
+			}
 			path := filepath.Join("testdata", "report", strings.ReplaceAll(tc.name, " ", "-")+".txt")
 			if *update {
 				if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
@@ -73,6 +88,12 @@ func TestDivergenceReport(t *testing.T) {
 			}
 		})
 	}
+}
+
+// untrustedReport is a report of a replay of the crafted session
+// "evil\x1b]0;t\x07", whose first miss is first.
+func untrustedReport(first replay.MissReport) divergenceReport {
+	return divergenceReport{source: "evil\x1b]0;t\x07", replay: "evil\x1b]0;t\x07.exact.1", misses: 1, first: first}
 }
 
 func TestReportValue(t *testing.T) {
