@@ -159,6 +159,10 @@ jobs:
           # well keeps that true if the flags change meaning. After the
           # download, so the artifact cannot bring them back either.
           find . -path ./.git -prune -o \( -name .claude -o -name .mcp.json -o -name CLAUDE.local.md \) -exec rm -rf {} +
+          # A symlink in the PR could point outside the checkout (/proc, home
+          # dotfiles). The repository tracks none, so drop them all rather
+          # than rely on how the permission checks resolve links.
+          find . -path ./.git -prune -o -type l -exec rm -f {} +
           # The artifact was written after the PR's code ran: only the coverage
           # report is taken from it.
           find .review-context -mindepth 1 ! \( -path .review-context/coverage-report.md -type f \) -delete
