@@ -1,8 +1,9 @@
 name: release
 
 # A `v*` tag publishes a GitHub release with the binaries and checksums built by
-# GoReleaser (.goreleaser.yaml, ADR 0001). PRs that can change the release build
-# run the same build as a snapshot, without publishing anything.
+# GoReleaser (.goreleaser.yaml, ADR 0001), and a build provenance attestation of
+# the archives (ADR 0012). PRs that can change the release build run the same
+# build as a snapshot, without publishing or attesting anything.
 on:
   push:
     tags: ["v*"]
@@ -10,6 +11,7 @@ on:
     paths:
       - .goreleaser.yaml
       - .github/workflows/release.yml
+      - .github/scripts/notices.sh
       - go.mod
       - go.sum
       - cmd/**
@@ -77,11 +79,14 @@ jobs:
             echo "::error::unexpected --version output: $out"
             exit 1
           fi
+      - name: Check the third-party notices cover the linked modules
+        run: sh .github/scripts/notices.sh check
       - name: List the artifacts
         run: |
           ls -l dist/*.tar.gz dist/*.zip dist/checksums.txt
           # Entry times come from the commit (reproducible archives).
           tar -tvzf dist/retrace_*_linux_amd64.tar.gz
+          tar -tzf dist/retrace_*_linux_amd64.tar.gz | grep -qx THIRD_PARTY_NOTICES.txt
           cat dist/checksums.txt
           (cd dist && sha256sum --check checksums.txt)
 
@@ -92,8 +97,11 @@ jobs:
     permissions:
       # Create the GitHub release and upload its assets.
       contents: write
+      # Sign the build provenance attestation (OIDC) and store it (ADR 0012).
+      id-token: write
+      attestations: write
     # The version injection is checked by the snapshot job on the PR that changed
-    # it; checking it here would only happen after the release is published.
+    # it.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -129,9 +137,23 @@ jobs:
       # is published.
       - name: Scan for known vulnerabilities
         run: sh .github/scripts/govulncheck.sh
+      # Uploads to a draft release (.goreleaser.yaml): immutable releases refuse
+      # assets added after publishing (ADR 0012).
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           version: ${{ env.GORELEASER_VERSION }}
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Check the third-party notices cover the linked modules
+        run: sh .github/scripts/notices.sh check
+      # Each archive listed in checksums.txt becomes a subject. Users verify
+      # with `gh attestation verify <archive> --repo pmlucero/retrace`.
+      - name: Attest the build provenance of the archives
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: dist/checksums.txt
+      - name: Publish the draft release
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

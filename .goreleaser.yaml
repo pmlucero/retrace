@@ -1,12 +1,18 @@
 # Release build for retrace: one static binary per ADR 0001 target, archived with
-# the license and README, plus a SHA-256 checksums file. Run by
-# .github/workflows/release.yml on a `v*` tag, and as a snapshot on PRs that touch it.
-#
-# Not here yet: an SBOM and artifact signing (e.g. cosign or build provenance).
-# Both are decided in the security review (#100) and added after it.
+# the license, the third-party notices and the README, plus a SHA-256 checksums
+# file. Run by .github/workflows/release.yml on a `v*` tag, and as a snapshot on
+# PRs that touch it. The workflow attests checksums.txt (build provenance); there
+# is no SBOM or cosign signature (ADR 0012).
 version: 2
 
 project_name: retrace
+
+before:
+  hooks:
+    # THIRD_PARTY_NOTICES.txt, generated from the module graph being built
+    # (ADR 0012). It needs a Go toolchain that ships its LICENSE file, such as
+    # the official downloads that setup-go installs.
+    - sh .github/scripts/notices.sh
 
 builds:
   - id: retrace
@@ -40,6 +46,9 @@ archives:
       mtime: "{{ .CommitDate }}"
     files:
       - src: LICENSE
+        info:
+          mtime: "{{ .CommitDate }}"
+      - src: THIRD_PARTY_NOTICES.txt
         info:
           mtime: "{{ .CommitDate }}"
       - src: README.md
@@ -85,3 +94,9 @@ changelog:
 release:
   # A tag with a pre-release suffix (v0.2.0-rc.1) is published as a pre-release.
   prerelease: auto
+  # Releases are immutable once published (ADR 0012), so GoReleaser uploads to
+  # a draft, and release.yml publishes it after the attestation and the
+  # notices check.
+  draft: true
+  # A re-run after a failed attestation or check replaces the draft it left.
+  replace_existing_draft: true
