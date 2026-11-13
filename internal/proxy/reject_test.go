@@ -7,7 +7,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 )
@@ -66,6 +68,26 @@ func TestGuardRejectsDotSegments(t *testing.T) {
 			checkRejectionLog(t, logs.String(), tt.wantRoute, token, strings.TrimPrefix(tt.target, "/"))
 		})
 	}
+}
+
+// AC-34: a Proxy mounted without Guard still refuses a dot segment, so the
+// route stays a boundary (spec §3.4), and forwards nothing.
+func TestProxyRejectsDotSegmentsWithoutGuard(t *testing.T) {
+	var calls atomic.Int64
+	up := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { calls.Add(1) }))
+	t.Cleanup(up.Close)
+	target, _ := url.Parse(up.URL + "/mcp")
+	var logs bytes.Buffer
+	p := New(Config{Routes: []Route{{Prefix: "/mcp/orders", Channel: "mcp", Upstream: "mcp:orders", Target: target}},
+		Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+
+	rec := httptest.NewRecorder()
+	p.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/mcp/orders/%2e%2e/admin", nil))
+	if rec.Code != http.StatusBadRequest || calls.Load() != 0 {
+		t.Fatalf("status %d with %d upstream calls, want 400 and none", rec.Code, calls.Load())
+	}
+	checkRejection(t, rec, routeMCP, "invalid_request_error")
+	checkRejectionLog(t, logs.String(), routeMCP, "admin")
 }
 
 // AC-34: a body over 64 MiB is answered 413 with or without a Content-Length,

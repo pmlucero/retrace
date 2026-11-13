@@ -112,6 +112,12 @@ func New(cfg Config) *Proxy {
 
 // ServeHTTP routes r by path prefix, then forwards and records it.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Guard answers these first in a session; checking again here keeps the
+	// route a boundary however the Proxy is mounted (spec §3.4, §3.6).
+	if hasDotSegment(r.URL.Path) {
+		reject(w, p.log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
+		return
+	}
 	rt, rest, ok := p.match(r.URL.Path)
 	if !ok {
 		http.Error(w, fmt.Sprintf("retrace: no route for %s", r.URL.Path), http.StatusNotFound)

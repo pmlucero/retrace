@@ -33,11 +33,9 @@ var reasonTooLarge = fmt.Sprintf("the request body is larger than %d MiB (%d byt
 //
 // The path is the one the agent sent, without the query, percent-decoded
 // once, as the HTTP server leaves it in r.URL.Path. The server itself
-// refuses a request line with an invalid percent-encoding.
+// refuses a request line with an invalid percent-encoding. log must not be
+// nil.
 func Guard(next http.Handler, log *slog.Logger) http.Handler {
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if hasDotSegment(r.URL.Path) {
 			reject(w, log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
@@ -75,11 +73,8 @@ func routeOf(path string) string {
 // r itself and returns false: 413 for a larger body (spec §3.6), whether or
 // not r has a Content-Length, and 400 when the body cannot be read. A
 // Content-Length above the limit is rejected before anything is read. channel
-// is the route r arrived on, "llm" or "mcp".
+// is the route r arrived on, "llm" or "mcp", and log must not be nil.
 func ReadBody(w http.ResponseWriter, r *http.Request, log *slog.Logger, channel string) ([]byte, bool) {
-	if log == nil {
-		log = slog.New(slog.DiscardHandler)
-	}
 	if r.ContentLength > MaxRequestBytes {
 		reject(w, log, channel, http.StatusRequestEntityTooLarge, reasonTooLarge)
 		return nil, false
