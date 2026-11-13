@@ -186,7 +186,9 @@ func removeFiles(paths []string) error {
 // Open opens an existing cassette. Older schemas are migrated forward (spec
 // §7.6). A cassette with a newer schema can be read, but writes to it fail
 // with ErrNewerSchema. A file with schema version 0 is not a cassette (v1 is
-// the initial schema) and is rejected with ErrNotCassette, untouched.
+// the initial schema) and is rejected with ErrNotCassette, untouched. A file
+// whose schema objects would run stored SQL when read is rejected with
+// ErrUnsafeSchema before it is read or migrated, also untouched.
 func Open(ctx context.Context, path string) (*Cassette, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)
@@ -198,6 +200,15 @@ func Open(ctx context.Context, path string) (*Cassette, error) {
 	if c.schema == 0 {
 		_ = c.db.Close()
 		return nil, fmt.Errorf("opening %s: %w", path, ErrNotCassette)
+	}
+	// Before anything else reads the file or a migration writes it (spec §7.6).
+	if err := checkSchema(ctx, c.db); err != nil {
+		_ = c.db.Close()
+		if c.schema > len(migrations) {
+			// A later migration may have added the object.
+			return nil, fmt.Errorf("opening %s (schema v%d, supported v%d): %w: %w", path, c.schema, len(migrations), ErrNewerSchema, err)
+		}
+		return nil, fmt.Errorf("opening %s: %w", path, err)
 	}
 	if c.schema > len(migrations) {
 		c.writable = false
@@ -241,6 +252,8 @@ func open(ctx context.Context, path string) (*Cassette, error) {
 	}
 	// trusted_schema(0): cassettes are untrusted input (SECURITY.md, Scope), so
 	// views, triggers and defaults in the file may not call application functions.
+	// It does not stop the stored SQL from running, which is what checkSchema
+	// is for.
 	dsn := path + "?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=trusted_schema(0)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {

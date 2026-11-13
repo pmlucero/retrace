@@ -33,11 +33,12 @@ func TestReindexRestoresEventsDroppedWhileRecording(t *testing.T) {
 			dropped[e.Seq] = true
 		}
 	}
-	var path string
-	c, _ := recordWith(t, exchanges, func(p string) {
-		path = p
+	// The trigger goes before the cassette is reopened: Open rejects a
+	// trigger retrace does not create (spec §7.6).
+	c, _ := recordWith(t, exchanges, func(p string) func() {
 		execSQL(t, p, fmt.Sprintf(`CREATE TRIGGER fail_events BEFORE INSERT ON events
 			WHEN NEW.seq IN (2, %d) BEGIN SELECT RAISE(ABORT, 'forced failure'); END`, last))
+		return func() { execSQL(t, p, `DROP TRIGGER fail_events`) }
 	})
 
 	s, err := c.Session(ctx)
@@ -73,7 +74,6 @@ func TestReindexRestoresEventsDroppedWhileRecording(t *testing.T) {
 		}
 	}
 
-	execSQL(t, path, `DROP TRIGGER fail_events`)
 	res, err := Reindex(ctx, c)
 	if err != nil {
 		t.Fatal(err)
