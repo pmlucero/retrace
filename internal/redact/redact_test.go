@@ -45,9 +45,84 @@ func TestRulesHeaders(t *testing.T) {
 	}
 }
 
+// AC-06: the deny-list of ADR 0011, shared by headers and query parameters
+func TestRulesDenyList(t *testing.T) {
+	r := NewRules([]string{"X-Tenant"}, nil)
+	redacted := []string{
+		"Authorization", "Proxy-Authorization", "X-Api-Key", "Cookie", "Set-Cookie",
+		"Apikey", "Auth", "Key", "Password", "Secret", "Sig", "Signature", "Token",
+		"X-Mcp-Token", "X-Amz-Security-Token", "X-Client-Secret", "Anthropic-Key", "X-Auth", "Proxy-Auth",
+		"X-Db-Password", "X-Amz-Signature", "X-Goog-Signature", "X-Amz-Credential", "X-Goog-Credential",
+		"X-Apikey", "Xapikey", "X-Tenant",
+	}
+	kept := []string{
+		"Content-Type", "Anthropic-Version", "Anthropic-Beta", "Mcp-Session-Id", "Access-Control-Allow-Credentials",
+		"X-Ratelimit-Remaining-Tokens", "Authority", "Monkey", "Tokens", "Location",
+	}
+	for _, name := range redacted {
+		if !r.RedactsHeader(name) {
+			t.Errorf("RedactsHeader(%q) = false, want true", name)
+		}
+		if q := name + "=v"; r.Query(q) == q {
+			t.Errorf("Query(%q) kept the value, want it masked", q)
+		}
+	}
+	for _, name := range kept {
+		if r.RedactsHeader(name) {
+			t.Errorf("RedactsHeader(%q) = true, want false", name)
+		}
+		if q := name + "=v"; r.Query(q) != q {
+			t.Errorf("Query(%q) = %q, want it kept", q, r.Query(q))
+		}
+	}
+}
+
+// AC-06: URLs in header values (ADR 0011, spec §3.5)
+func TestRulesHeadersRedactURLValues(t *testing.T) {
+	r := NewRules(nil, nil)
+	in := http.Header{
+		"Location":         {"https://app.example.com/cb?code=c1&access_token=tok1&state=s"},
+		"Content-Location": {"https://user:pw@files.example.com/a.txt"},
+		"Referer":          {"https://b.s3.amazonaws.com/k?X-Amz-Credential=cred1&X-Amz-Signature=sig1&X-Amz-Expires=60"},
+		"Link": {`<https://api.example.com/items?page=2&token=tok2>; rel="next", </items?page=1>; rel="prev"`,
+			`<https://u:p@h/x>; rel=alternate`},
+		"X-Next": {"https://h/x?token=custom-header-not-a-url-header"},
+		"Plain":  {"/relative/path?page=3"},
+	}
+	in["Location-Plain"] = []string{"/a?page=1"}
+	out := r.Headers(in)
+	want := map[string][]string{
+		"Location":         {"https://app.example.com/cb?code=c1&access_token=" + mask("tok1") + "&state=s"},
+		"Content-Location": {"https://REDACTED@files.example.com/a.txt"},
+		"Referer":          {"https://b.s3.amazonaws.com/k?X-Amz-Credential=" + mask("cred1") + "&X-Amz-Signature=" + mask("sig1") + "&X-Amz-Expires=60"},
+		"Link": {`<https://api.example.com/items?page=2&token=` + mask("tok2") + `>; rel="next", </items?page=1>; rel="prev"`,
+			`<https://REDACTED@h/x>; rel=alternate`},
+		"X-Next":         in["X-Next"],
+		"Plain":          in["Plain"],
+		"Location-Plain": in["Location-Plain"],
+	}
+	for name, w := range want {
+		if got := out[name]; strings.Join(got, "\n") != strings.Join(w, "\n") {
+			t.Errorf("%s = %q, want %q", name, got, w)
+		}
+	}
+	if in.Get("Location") != "https://app.example.com/cb?code=c1&access_token=tok1&state=s" {
+		t.Error("Headers changed its input; the agent needs the real URL")
+	}
+	// A value that is not a URL cannot be checked, so it is masked whole.
+	if got := r.Headers(http.Header{"Location": {"https://h/%zz?token=t"}}).Get("Location"); got != mask("https://h/%zz?token=t") {
+		t.Errorf("unparsable Location = %q, want it masked whole", got)
+	}
+	// A URL-carrying header on the deny-list is masked whole.
+	if got := NewRules([]string{"Referer"}, nil).Headers(http.Header{"Referer": {"https://h/"}}).Get("Referer"); got != mask("https://h/") {
+		t.Errorf("Referer on the deny-list = %q, want it masked whole", got)
+	}
+}
+
 func TestRulesHeaderNames(t *testing.T) {
 	got := strings.Join(NewRules([]string{"X-Tenant"}, nil).HeaderNames(), ",")
-	want := "*-key,*-secret,*-token,authorization,cookie,proxy-authorization,set-cookie,x-api-key,x-tenant"
+	want := "*-auth,*-credential,*-key,*-password,*-secret,*-signature,*-token,*apikey," +
+		"apikey,auth,authorization,cookie,key,password,proxy-authorization,secret,set-cookie,sig,signature,token,x-api-key,x-tenant"
 	if got != want {
 		t.Errorf("HeaderNames() = %s, want %s", got, want)
 	}
@@ -77,8 +152,28 @@ func TestRulesMetadataRoundTrip(t *testing.T) {
 			t.Errorf("round trip of %s gave %s", stored, got)
 		}
 	}
-	if got := string(NewRules(nil, []Path{email}).Metadata()); !strings.HasPrefix(got, `{"body":["$..email"],"headers":["*-key",`) {
+	if got := string(NewRules(nil, []Path{email}).Metadata()); !strings.HasPrefix(got, `{"body":["$..email"],"headers":["*-auth",`) {
 		t.Errorf("Metadata() = %s", got)
+	}
+}
+
+// ADR 0011: a cassette written with the older defaults is read with the
+// current ones, plus its stored names, plus the names run --redact-header adds.
+func TestRulesFromMetadataAddsCurrentDefaults(t *testing.T) {
+	old := `{"body":["$..email"],"headers":["*-key","*-secret","*-token","authorization","cookie","proxy-authorization","set-cookie","x-api-key","x-tenant"]}`
+	r, err := RulesFromMetadata([]byte(old), "X-Run-Only")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"X-Tenant", "X-Run-Only", "Apikey", "X-Amz-Signature"} {
+		if !r.RedactsHeader(name) {
+			t.Errorf("RedactsHeader(%q) = false", name)
+		}
+	}
+	want := `{"body":["$..email"],"headers":["*-auth","*-credential","*-key","*-password","*-secret","*-signature","*-token","*apikey",` +
+		`"apikey","auth","authorization","cookie","key","password","proxy-authorization","secret","set-cookie","sig","signature","token","x-api-key","x-run-only","x-tenant"]}`
+	if got := string(r.Metadata()); got != want {
+		t.Errorf("Metadata() = %s, want %s", got, want)
 	}
 }
 
