@@ -214,7 +214,7 @@ func TestDiffEscapesUntrustedText(t *testing.T) {
 func TestDiffOfAnExactReplay(t *testing.T) {
 	dir := t.TempDir()
 	recordMCPForReplay(t, dir)
-	if r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0"); r.code != ExitOK {
+	if r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0"); r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
 	r := runDiffCmd(dir, "s", "s.exact.1")
@@ -257,7 +257,7 @@ func TestDiffOfADivergingSwapModelReplay(t *testing.T) {
 	up := toolUseUpstream(t)
 	t.Setenv(mcpKeyEnv, "Z9")
 	t.Setenv(agentIgnoreTermEnv, "1") // so every run makes the same calls
-	r := runRunCmd(t, dir, "s", "--model", "claude-haiku-4-5", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--model", "claude-haiku-4-5", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
 	if r.code != ExitDiverged {
 		t.Fatalf("run: exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
