@@ -9,9 +9,10 @@ import (
 	"sync"
 )
 
-// ErrUnsafeSchema is returned by Open for a file whose schema holds objects
-// that would run SQL stored in the file when it is read (spec §7.6).
-var ErrUnsafeSchema = errors.New("cassette schema holds objects retrace does not allow")
+// ErrUnsafeSchema is returned by Open for a file whose schema objects would
+// run SQL stored in the file when it is read, or lack a table retrace reads
+// (spec §7.6).
+var ErrUnsafeSchema = errors.New("cassette schema fails retrace's safety checks")
 
 // expectedTables are the tables retrace reads, which must be ordinary tables
 // (spec §7.6).
@@ -113,8 +114,10 @@ func checkColumns(ctx context.Context, db *sql.DB, table string) error {
 // migrationTriggers returns the triggers the migrations create, by name, with
 // every SQL text SQLite stores for them at any schema version. A cassette at
 // an older version may hold a trigger a later migration drops or rewrites,
-// and it must still open so that the migrations can bring it forward. It runs
-// the migrations once on an in-memory database.
+// and it must still open so that the migrations can bring it forward. The
+// union is deliberate, whatever the cassette's version: every text in it is
+// retrace's own SQL, so an obsolete one in a current cassette runs nothing
+// retrace did not write. It runs the migrations once on an in-memory database.
 var migrationTriggers = sync.OnceValues(func() (map[string]map[string]bool, error) {
 	return triggersOf(context.Background(), migrations)
 })

@@ -206,3 +206,67 @@ func TestCheckObject(t *testing.T) {
 		}
 	}
 }
+
+// AC-35 for a cassette shipped with a -wal that holds the unsafe object, as a
+// crashed recording leaves it. The rejection writes nothing: no migration and
+// no journal mode switch. SQLite's own checkpoint when the connection closes
+// may fold the -wal into the main file, which changes its bytes but not its
+// content, so this checks the content.
+func TestOpenRejectsAnUnsafeWALCassetteWithoutMigrating(t *testing.T) {
+	ctx := context.Background()
+	src := craftCassette(t, 1)
+	db, err := sql.Open("sqlite", src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	for _, s := range []string{"PRAGMA journal_mode = WAL", "PRAGMA wal_autocheckpoint = 0", "CREATE VIEW v AS SELECT 1"} {
+		if _, err := db.ExecContext(ctx, s); err != nil {
+			t.Fatalf("%s: %v", s, err)
+		}
+	}
+	// Copy the files while the connection keeps the view in the -wal.
+	path := filepath.Join(t.TempDir(), "wal.cassette")
+	for _, suffix := range []string{"", "-wal"} {
+		b, err := os.ReadFile(src + suffix) //nolint:gosec // G304: a file of this test
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path+suffix, b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if c, err := OpenForRead(ctx, path); !errors.Is(err, ErrUnsafeSchema) {
+		if err == nil {
+			_ = c.Close()
+		}
+		t.Fatalf("OpenForRead: err = %v, want ErrUnsafeSchema", err)
+	}
+	if c, err := Open(ctx, path); !errors.Is(err, ErrUnsafeSchema) {
+		if err == nil {
+			_ = c.Close()
+		}
+		t.Fatalf("Open: err = %v, want ErrUnsafeSchema", err)
+	}
+
+	after, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer after.Close()
+	var version, views, sessions int
+	if err := after.QueryRowContext(ctx, "PRAGMA user_version").Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if err := after.QueryRowContext(ctx, "SELECT count(*) FROM sqlite_schema WHERE type = 'view'").Scan(&views); err != nil {
+		t.Fatal(err)
+	}
+	if err := after.QueryRowContext(ctx, "SELECT count(*) FROM session").Scan(&sessions); err != nil {
+		t.Fatal(err)
+	}
+	if version != 1 || views != 1 || sessions != 1 {
+		t.Errorf("after the rejection: user_version %d, views %d, sessions %d; want 1, 1, 1 (unchanged)", version, views, sessions)
+	}
+}
