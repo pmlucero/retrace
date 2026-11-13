@@ -122,7 +122,8 @@ func RulesFromMetadata(stored json.RawMessage, extraHeaders ...string) (*Rules, 
 	r := NewRules(headers, body)
 	// Stored patterns are kept, including one this binary does not know
 	// that a newer one wrote: a replay never stores a value its source
-	// redacted (spec §4.4).
+	// redacted (spec §4.4). A bare "*" redacts every header and query
+	// parameter, which is the safe reading of what it claims.
 	for _, p := range patterns {
 		r.addPattern(p)
 	}

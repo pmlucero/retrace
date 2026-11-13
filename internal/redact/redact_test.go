@@ -192,6 +192,15 @@ func TestRulesFromMetadataKeepsUnknownPatterns(t *testing.T) {
 	if r.RedactsHeader("X-Futures") || r.RedactsHeader(strings.Repeat("x", 1<<16)) {
 		t.Error("a name that does not end in a pattern is redacted")
 	}
+
+	// A bare "*" in an untrusted cassette redacts everything: the safe side.
+	all, err := RulesFromMetadata([]byte(`{"body":[],"headers":["*"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !all.RedactsHeader("Content-Type") || all.Query("page=2") == "page=2" {
+		t.Error(`a stored "*" does not redact every header and query parameter`)
+	}
 }
 
 // The metadata comes from a cassette, which is untrusted input.

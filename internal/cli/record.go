@@ -72,10 +72,7 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
 	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL")
-	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", func(v string) error {
-		opts.redactHeader = append(opts.redactHeader, v)
-		return nil
-	})
+	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", redactHeaderFlag(&opts.redactHeader))
 	fs.Func("redact", "redact the values this `jsonpath` selects in stored JSON bodies (repeatable)", func(v string) error {
 		p, err := redact.ParsePath(v)
 		if err != nil {
@@ -119,6 +116,15 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 		return opts, usageError(env.Stderr, err.Error()), false
 	}
 	return opts, 0, true
+}
+
+// redactHeaderFlag adds one --redact-header name to names, for record and
+// run alike (spec §9.2, §9.3).
+func redactHeaderFlag(names *[]string) func(string) error {
+	return func(v string) error {
+		*names = append(*names, v)
+		return nil
+	}
 }
 
 // mcpFlag parses one name=url value of --mcp into servers (spec §9.2).
