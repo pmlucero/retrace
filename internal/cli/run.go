@@ -68,6 +68,7 @@ type runOptions struct {
 	realtime     bool
 	listen       string
 	listenUnsafe bool
+	redactHeader []string    // added to the source's redaction rules
 	command      []string    // nil: the recorded one
 	anthropic    *url.URL    // the LLM upstream of swap-model
 	mcp          []mcpServer // the --mcp overrides of live-tools
@@ -96,6 +97,10 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&opts.mcp))
 	fs.StringVar(&opts.onMiss, "on-miss", "strict", "divergence strategy")
 	fs.DurationVar(&opts.grace, "grace", 5*time.Second, "how long the agent has to exit after SIGTERM on a cassette miss")
+	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", func(v string) error {
+		opts.redactHeader = append(opts.redactHeader, v)
+		return nil
+	})
 	fs.BoolVar(&opts.realtime, "realtime", false, "replay SSE chunks with their recorded timing")
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
@@ -232,7 +237,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		return usageError(env.Stderr, fmt.Sprintf("session %q has no recorded command; give one after '--'", opts.source))
 	}
 
-	rules, err := redact.RulesFromMetadata(srcSession.Redaction)
+	rules, err := redact.RulesFromMetadata(srcSession.Redaction, opts.redactHeader...) // spec §4.4
 	if err != nil {
 		log.Error("cannot read the session's redaction rules", "session", opts.source, "error", err)
 		return ExitError
@@ -280,7 +285,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
 		Mode: mode, ModelOverride: modelOverride, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
 		Command: command, Cwd: cwd, OnMiss: strategy.Name(),
-		MCPServers: mcpServers, Redaction: srcSession.Redaction, RetraceVersion: Version(),
+		MCPServers: mcpServers, Redaction: rules.Metadata(), RetraceVersion: Version(),
 		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 	})
 	if err != nil {
