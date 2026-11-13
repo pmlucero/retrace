@@ -42,7 +42,7 @@ The security review before `v0.1.0` ([#100](https://github.com/pmlucero/retrace/
 - **`live-tools` sends the agent's MCP traffic to the recorded URLs.** With a cassette from someone else, give every server with `--mcp`, or the agent's MCP requests, including any auth header it adds, go to the URLs that cassette names.
 - **The proxy does not check `Origin` or `Host`.** It listens on loopback and adds no credentials of its own, so a web page that reaches it can at most add requests to the cassette or cause a divergence.
 - **JSON outputs keep control characters.** `show --json` and `diff --format json` escape only what JSON requires. They are for programs, which must escape the values themselves before showing them. The text outputs escape them.
-- **Reading an old cassette upgrades it.** `ls` and `show` apply pending schema migrations to a cassette with an older schema, in place.
+- **Opening an old cassette upgrades it.** Every command that opens a cassette (`ls`, `show`, `diff`, `reindex`, and `run` for its source cassette) applies pending schema migrations to a cassette with an older schema, in place (spec §7.6).
 - **SQLite file-format robustness is the driver's.** retrace checks the schema of a cassette it opens (spec §7.6), but a corrupt database file is handled by `modernc.org/sqlite`, a translation of upstream SQLite.
 
 ### Dependencies
