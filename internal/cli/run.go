@@ -229,13 +229,16 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 
-	command, cwd, usage, err := replayCommand(opts, srcSession)
-	switch {
-	case err != nil:
-		log.Error("cannot choose the agent command", "error", err)
-		return ExitError
-	case usage != "":
-		return usageError(env.Stderr, usage) // before any cassette is created (spec §9.3)
+	command, recorded, err := replayCommand(opts, srcSession)
+	if err != nil {
+		return usageError(env.Stderr, err.Error()) // before any cassette is created (spec §9.3)
+	}
+	cwd := srcSession.Cwd
+	if !recorded {
+		if cwd, err = os.Getwd(); err != nil {
+			log.Error("reading the working directory", "error", err)
+			return ExitError
+		}
 	}
 
 	rules, err := redact.RulesFromMetadata(srcSession.Redaction, opts.redactHeader...) // spec §4.4
