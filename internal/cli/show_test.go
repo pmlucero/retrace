@@ -179,6 +179,8 @@ func TestShowArguments(t *testing.T) {
 		{"cut by runes", `"` + strings.Repeat("é", 70) + `"`, `"` + strings.Repeat("é", 59) + "…"},
 		{"not JSON", `{"a":`, `{"a":`},
 		{"invalid UTF-8", "\"\xff\"", "\"�\""},
+		{"C1 and bidi in a JSON string", "{\"a\": \"\u009b\u202e\"}", `{"a":"\u009b\u202e"}`},
+		{"control characters in stored bytes that are not JSON", "\x1b]0;t\x07{", `\x1b]0;t\a{`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := showArguments(json.RawMessage(tc.raw)); got != tc.want {
@@ -225,6 +227,30 @@ func TestShowEscapesUntrustedText(t *testing.T) {
 			t.Errorf("output lacks %s:\n%s", want, out)
 		}
 	}
+}
+
+// The ARGUMENTS column escapes what the cassette stores: control and bidi
+// characters inside valid JSON strings (C1 and U+202E may appear raw there),
+// and stored bytes that are not JSON. The TOOL column is escaped as well.
+func TestShowEscapesUntrustedArguments(t *testing.T) {
+	utcDisplay(t)
+	dir := t.TempDir()
+	seedSession(t, dir,
+		cassette.Session{ID: "s", Mode: "record", Status: "recording", CreatedAt: lsT0, RetraceVersion: "v0.1.0-dev"},
+		nil,
+		toolCall(1, "search\u009b2J\u202eorders", "{\"q\": \"\u009b31m\u202eopen\"}"),
+		toolCall(2, "evil\x1b]0;pwned\x07", "\x1b]0;pwned\x07\x1b[2J{\"a\":"),
+		toolCall(3, "t", "{\"\u202ekey\": \"\\u001b is escaped JSON\"}"),
+	)
+	r := runShowCmd(dir, "s")
+	if r.code != ExitOK {
+		t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
+	}
+	out := r.stdout.String()
+	if strings.ContainsFunc(out, func(r rune) bool { return r != '\n' && unsafeRune(r) }) {
+		t.Errorf("output holds raw control or bidi characters:\n%q", out)
+	}
+	checkGolden(t, "show/untrusted.txt", out)
 }
 
 // AC-27, spec §7.6: after a reindex of a diverged session the seqs are

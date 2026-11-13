@@ -1,0 +1,6 @@
+retrace: replay evil\x1b]0;t\a.exact.1 diverged from evil\x1b]0;t\a
+  first miss: mcp:\x1b]0;pwned\ashop tools/call evil\x1b[2J\u009b31m\u202etool
+    $.params.arguments['\x1b[1A\rspoofed']: 1 → 2
+    $.params.arguments['\u202ekey']: "\u009b\u202eopen" → \x1b]0;t\a
+  misses: 1
+  compare: retrace diff evil\x1b]0;t\a evil\x1b]0;t\a.exact.1

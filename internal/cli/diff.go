@@ -344,7 +344,8 @@ func stopText(s *diff.Stop) string {
 }
 
 // diffValue formats a value as the divergence report does (spec §6.4,
-// §8.4), made safe to print.
+// §8.4), made safe to print. It escapes after the cut, so the cut never
+// splits an escape; the limit counts the characters before escaping.
 func diffValue(v []byte) string {
 	return printable(reportValue(v))
 }

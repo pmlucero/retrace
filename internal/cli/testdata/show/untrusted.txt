@@ -1,0 +1,16 @@
+session      s
+mode         record
+status       recording
+created      2026-10-23 09:30:00
+command      agent
+cwd
+recorded by  retrace v0.1.0-dev
+steps        0
+tool calls   3
+tokens       0 in / 0 out
+cost (est.)  $0.00
+
+SEQ  TIME   SOURCE → TARGET   KIND       TOOL                        ARGUMENTS                               STATUS
+1    +1.0s  agent → mcp:shop  tool_call  search\u009b2J\u202eorders  {"q":"\u009b31m\u202eopen"}             ok
+2    +2.0s  agent → mcp:shop  tool_call  evil\x1b]0;pwned\a          \x1b]0;pwned\a\x1b[2J{"a":              ok
+3    +3.0s  agent → mcp:shop  tool_call  t                           {"\u202ekey":"\u001b is escaped JSON"}  ok
