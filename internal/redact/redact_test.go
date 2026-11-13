@@ -189,6 +189,19 @@ func TestRulesFromMetadataKeepsUnknownPatterns(t *testing.T) {
 	if got := string(r.Metadata()); !strings.Contains(got, `"*-future"`) {
 		t.Errorf("Metadata() = %s, want the stored pattern kept", got)
 	}
+
+	// --redact-header '*-tenant' is a pattern in a recording and in its
+	// replays alike.
+	rec := NewRules([]string{"*-Tenant"}, nil)
+	back, err := RulesFromMetadata(rec.Metadata())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rules := range []*Rules{rec, back} {
+		if !rules.RedactsHeader("X-Tenant") || rules.RedactsHeader("X-Tenants") {
+			t.Errorf("rules %s: want *-tenant applied as a pattern", rules.Metadata())
+		}
+	}
 }
 
 // The metadata comes from a cassette, which is untrusted input.
