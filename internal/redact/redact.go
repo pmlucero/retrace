@@ -35,24 +35,33 @@ var urlHeaders = map[string]bool{"location": true, "content-location": true, "re
 type Rules struct {
 	headers  map[string]bool // lower-case
 	suffixes map[string]bool // the patterns without their "*", lower-case
+	lengths  []int           // the distinct lengths of suffixes, ascending
 	body     []Path
 }
 
 // NewRules returns the default header rules plus extra header names
-// (--redact-header) and body rules (--redact). A name that starts with "*"
-// is a pattern, as in the stored metadata (spec §7.2), so a recording and
-// its replays read it the same way.
+// (--redact-header) and body rules (--redact).
 func NewRules(extraHeaders []string, body []Path) *Rules {
 	r := &Rules{headers: map[string]bool{}, suffixes: map[string]bool{}, body: body}
-	for _, n := range slices.Concat(DefaultHeaders, DefaultPatterns, extraHeaders) {
-		n = strings.ToLower(n)
-		if suffix, ok := strings.CutPrefix(n, "*"); ok {
-			r.suffixes[suffix] = true
-		} else {
-			r.headers[n] = true
-		}
+	for _, n := range slices.Concat(DefaultHeaders, extraHeaders) {
+		r.headers[strings.ToLower(n)] = true
+	}
+	for _, p := range DefaultPatterns {
+		r.addPattern(p)
 	}
 	return r
+}
+
+// addPattern adds the pattern "*<suffix>".
+func (r *Rules) addPattern(p string) {
+	suffix := strings.ToLower(strings.TrimPrefix(p, "*"))
+	if r.suffixes[suffix] {
+		return
+	}
+	r.suffixes[suffix] = true
+	if i, found := slices.BinarySearch(r.lengths, len(suffix)); !found {
+		r.lengths = slices.Insert(r.lengths, i, len(suffix))
+	}
 }
 
 // HeaderNames returns the redacted header names and suffix patterns, sorted,
@@ -101,10 +110,23 @@ func RulesFromMetadata(stored json.RawMessage, extraHeaders ...string) (*Rules, 
 		}
 		body[i] = p
 	}
+	headers := slices.Clone(extraHeaders)
+	var patterns []string
+	for _, h := range m.Headers {
+		if strings.HasPrefix(h, "*") {
+			patterns = append(patterns, h)
+		} else {
+			headers = append(headers, h)
+		}
+	}
+	r := NewRules(headers, body)
 	// Stored patterns are kept, including one this binary does not know
 	// that a newer one wrote: a replay never stores a value its source
 	// redacted (spec §4.4).
-	return NewRules(slices.Concat(m.Headers, extraHeaders), body), nil
+	for _, p := range patterns {
+		r.addPattern(p)
+	}
+	return r, nil
 }
 
 // RedactsHeader reports whether the header called name is redacted.
@@ -113,10 +135,13 @@ func (r *Rules) RedactsHeader(name string) bool {
 	if r.headers[name] {
 		return true
 	}
-	// Looking up each suffix of name costs the same however many patterns
-	// a cassette stores.
-	for i := range len(name) + 1 {
-		if r.suffixes[name[i:]] {
+	// One lookup per distinct pattern length that fits in name, so neither
+	// many stored patterns nor a long name make it slow.
+	for _, n := range r.lengths {
+		if n > len(name) {
+			break
+		}
+		if r.suffixes[name[len(name)-n:]] {
 			return true
 		}
 	}
@@ -150,7 +175,9 @@ func (r *Rules) Headers(hdr http.Header) http.Header {
 }
 
 // linkValue applies urlValue to each URI reference inside <…> of a Link
-// header value. An unterminated reference runs to the end of the value.
+// header value. An unterminated reference runs to the end of the value. It
+// does not parse quoted parameters, so a "<" inside one starts a reference
+// too: that redacts more, never less.
 func (r *Rules) linkValue(v string) string {
 	var b strings.Builder
 	for {
