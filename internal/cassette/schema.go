@@ -38,17 +38,8 @@ func checkSchema(ctx context.Context, db *sql.DB) error {
 		if err := rows.Scan(&name, &stmt); err != nil {
 			return fmt.Errorf("reading schema: %w", err)
 		}
-		// Classified by the SQL, not by the type column: SQLite builds each
-		// object from its SQL, and a crafted file can set type to anything.
-		switch createKeyword(stmt.String) {
-		case "VIEW":
-			return fmt.Errorf("%w: view %q", ErrUnsafeSchema, name)
-		case "VIRTUAL":
-			return fmt.Errorf("%w: virtual table %q", ErrUnsafeSchema, name)
-		case "TRIGGER":
-			if allowed[name] != stmt.String {
-				return fmt.Errorf("%w: trigger %q is not one retrace creates", ErrUnsafeSchema, name)
-			}
+		if err := checkObject(name, stmt, allowed); err != nil {
+			return err
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -62,6 +53,31 @@ func checkSchema(ctx context.Context, db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+// checkObject rejects a schema object that §7.6 does not allow. It is an
+// allow-list, so an object kind it does not know is rejected too. Objects are
+// classified by their SQL, not by sqlite_schema.type: SQLite builds each
+// object from its SQL, and a crafted file can set type to anything.
+func checkObject(name string, stmt sql.NullString, allowed map[string]map[string]bool) error {
+	if !stmt.Valid {
+		return nil // an index SQLite creates for a UNIQUE or PRIMARY KEY constraint
+	}
+	switch createKeyword(stmt.String) {
+	case "TABLE", "INDEX", "UNIQUE":
+		return nil
+	case "TRIGGER":
+		if allowed[name][stmt.String] {
+			return nil
+		}
+		return fmt.Errorf("%w: trigger %q is not one retrace creates", ErrUnsafeSchema, name)
+	case "VIEW":
+		return fmt.Errorf("%w: view %q", ErrUnsafeSchema, name)
+	case "VIRTUAL":
+		return fmt.Errorf("%w: virtual table %q", ErrUnsafeSchema, name)
+	default:
+		return fmt.Errorf("%w: object %q of an unknown kind", ErrUnsafeSchema, name)
+	}
 }
 
 // checkColumns rejects table when it is missing or has a generated column,
@@ -95,39 +111,54 @@ func checkColumns(ctx context.Context, db *sql.DB, table string) error {
 }
 
 // migrationTriggers returns the triggers the migrations create, by name, with
-// the SQL text SQLite stores for them. It runs the migrations on an
-// in-memory database once.
-var migrationTriggers = sync.OnceValues(func() (map[string]string, error) {
-	ctx := context.Background()
+// every SQL text SQLite stores for them at any schema version. A cassette at
+// an older version may hold a trigger a later migration drops or rewrites,
+// and it must still open so that the migrations can bring it forward. It runs
+// the migrations once on an in-memory database.
+var migrationTriggers = sync.OnceValues(func() (map[string]map[string]bool, error) {
+	return triggersOf(context.Background(), migrations)
+})
+
+// triggersOf runs migs on an in-memory database and returns, by name, every
+// SQL text a trigger has after any of them.
+func triggersOf(ctx context.Context, migs []string) (map[string]map[string]bool, error) {
 	db, err := sql.Open("sqlite", ":memory:")
 	if err != nil {
 		return nil, fmt.Errorf("listing the migrations' triggers: %w", err)
 	}
 	defer db.Close()
 	db.SetMaxOpenConns(1) // each connection has its own in-memory database
-	for _, m := range migrations {
+	out := map[string]map[string]bool{}
+	for _, m := range migs {
 		if _, err := db.ExecContext(ctx, m); err != nil {
 			return nil, fmt.Errorf("listing the migrations' triggers: %w", err)
 		}
+		if err := addTriggers(ctx, db, out); err != nil {
+			return nil, fmt.Errorf("listing the migrations' triggers: %w", err)
+		}
 	}
+	return out, nil
+}
+
+// addTriggers adds the triggers in db to set.
+func addTriggers(ctx context.Context, db *sql.DB, set map[string]map[string]bool) error {
 	rows, err := db.QueryContext(ctx, "SELECT name, sql FROM sqlite_schema WHERE type = 'trigger'")
 	if err != nil {
-		return nil, fmt.Errorf("listing the migrations' triggers: %w", err)
+		return err
 	}
 	defer rows.Close()
-	out := map[string]string{}
 	for rows.Next() {
 		var name, stmt string
 		if err := rows.Scan(&name, &stmt); err != nil {
-			return nil, fmt.Errorf("listing the migrations' triggers: %w", err)
+			return err
 		}
-		out[name] = stmt
+		if set[name] == nil {
+			set[name] = map[string]bool{}
+		}
+		set[name][stmt] = true
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("listing the migrations' triggers: %w", err)
-	}
-	return out, nil
-})
+	return rows.Err()
+}
 
 // createKeyword returns the upper-cased keyword after CREATE (and after TEMP
 // or TEMPORARY) in a schema statement, skipping whitespace and comments: TABLE,

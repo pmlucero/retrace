@@ -5,8 +5,10 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -146,11 +148,61 @@ func TestCreateKeyword(t *testing.T) {
 		{"CREATE TEMPORARY TRIGGER t", "TRIGGER"},
 		{"CREATE UNIQUE INDEX i ON t (a)", "UNIQUE"},
 		{"CREATE /* unterminated", ""},
+		{"CREATE -- unterminated", ""},
 		{"DROP TABLE t", ""},
 		{"", ""},
 	} {
 		if got := createKeyword(tc.sql); got != tc.want {
 			t.Errorf("createKeyword(%q) = %q, want %q", tc.sql, got, tc.want)
+		}
+	}
+}
+
+// A trigger a later migration rewrites keeps its old text allowed, so a
+// cassette at the older version still opens and migrates (spec §7.6).
+func TestTriggersOfKeepsEveryVersion(t *testing.T) {
+	v1 := "CREATE TABLE t (a);\nCREATE TRIGGER t_ins BEFORE INSERT ON t BEGIN SELECT 1; END;"
+	v2 := "DROP TRIGGER t_ins;\nCREATE TRIGGER t_ins BEFORE INSERT ON t BEGIN SELECT 2; END;"
+	got, err := triggersOf(context.Background(), []string{v1, v2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]map[string]bool{"t_ins": {
+		"CREATE TRIGGER t_ins BEFORE INSERT ON t BEGIN SELECT 1; END": true,
+		"CREATE TRIGGER t_ins BEFORE INSERT ON t BEGIN SELECT 2; END": true,
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("triggersOf = %v, want %v", got, want)
+	}
+}
+
+// AC-35: checkObject allows only what spec §7.6 allows, and rejects an
+// object kind it does not know.
+func TestCheckObject(t *testing.T) {
+	allowed := map[string]map[string]bool{"tr": {"CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END": true}}
+	for _, tc := range []struct {
+		name, sql string
+		null      bool
+		want      string // "" when allowed
+	}{
+		{"autoindex", "", true, ""},
+		{"t", "CREATE TABLE t (a)", false, ""},
+		{"i", "CREATE INDEX i ON t (a)", false, ""},
+		{"u", "CREATE UNIQUE INDEX u ON t (a)", false, ""},
+		{"tr", "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 1; END", false, ""},
+		{"tr", "CREATE TRIGGER tr AFTER INSERT ON t BEGIN SELECT 2; END", false, `trigger "tr"`},
+		{"other", "CREATE TRIGGER other AFTER INSERT ON t BEGIN SELECT 1; END", false, `trigger "other"`},
+		{"v", "CREATE VIEW v AS SELECT 1", false, `view "v"`},
+		{"x", "CREATE VIRTUAL TABLE x USING fts5(a)", false, `virtual table "x"`},
+		{"w", "CREATE WIDGET w", false, `object "w" of an unknown kind`},
+		{"e", "", false, `object "e" of an unknown kind`},
+	} {
+		err := checkObject(tc.name, sql.NullString{String: tc.sql, Valid: !tc.null}, allowed)
+		switch {
+		case tc.want == "" && err != nil:
+			t.Errorf("checkObject(%q, %q) = %v, want allowed", tc.name, tc.sql, err)
+		case tc.want != "" && (!errors.Is(err, ErrUnsafeSchema) || !strings.Contains(fmt.Sprint(err), tc.want)):
+			t.Errorf("checkObject(%q, %q) = %v, want ErrUnsafeSchema mentioning %s", tc.name, tc.sql, err, tc.want)
 		}
 	}
 }
