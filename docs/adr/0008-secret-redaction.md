@@ -1,6 +1,6 @@
 # 0008. Secret redaction in cassettes
 
-- Status: Accepted
+- Status: Superseded by 0011
 - Date: 2026-10-23
 
 ## Context

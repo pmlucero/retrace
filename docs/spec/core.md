@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.25
-- Last updated: 2026-11-11
+- Version: 0.26
+- Last updated: 2026-11-12
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -85,7 +85,7 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 - `POST /llm/anthropic/v1/messages` is recorded with full semantics, both streaming and non-streaming ([ADR 0003](../adr/0003-anthropic-messages-api-with-sse.md)).
 - For streaming responses, each SSE event is forwarded to the agent **as soon as it is received** and stored as a chunk with its offset from the start of the response, that is, from when the response headers arrive. Recording MUST NOT add buffering to the forwarded stream.
 - Responses reach the agent without `Content-Encoding`: retrace accepts a compressed response from the upstream and decodes it. What is stored is exactly what the agent received.
-- Any other path under `/llm/anthropic/` is forwarded and recorded as an opaque interaction.
+- Any other path under `/llm/anthropic/` is forwarded and recorded as an opaque interaction, unless it is rejected (§3.6).
 
 ### 3.4 MCP channel
 
@@ -93,6 +93,7 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 - A request for `/mcp/<name>` is forwarded to exactly the URL registered for `<name>`, and a request for `/mcp/<name>/<rest>` to that URL's path followed by `/<rest>`. retrace MUST NOT add a trailing slash, because many servers treat `/mcp` and `/mcp/` as different endpoints. For example, with `--mcp orders=http://127.0.0.1:9001/mcp`, `/mcp/orders` is forwarded to `http://127.0.0.1:9001/mcp` and `/mcp/orders/x` to `http://127.0.0.1:9001/mcp/x`. A registered URL with no path gets `/`.
   - The registered URL's path and `/<rest>` are joined with a single `/`, so `http://127.0.0.1:9001/mcp/` and `/mcp/orders/x` give `/mcp/x`. The request's query string is forwarded, after any query in the registered URL.
   - The forwarding rule does not change the stored `path` (§7.2), which is `/` for a request for `/mcp/<name>` or `/mcp/<name>/`.
+  - A `<rest>` with a dot segment is rejected (§3.6), so a request cannot leave the registered path.
 - A `POST` body MAY be a single JSON-RPC message or a batch. Each JSON-RPC request in it is matched to its response, whether the response comes as JSON or inside an SSE stream.
 - The protocol version and server info from `initialize` are stored in the session metadata (§7.2).
   - They are read from the recorded exchanges when the session ends. A cassette left by a retrace that was killed has the servers without them. `reindex` never changes `mcp_servers`.
@@ -100,12 +101,15 @@ The agent's MCP client configuration MUST use the `RETRACE_MCP_*_URL` values. Th
 
 ### 3.5 Redaction
 
-Header and body redaction are applied before anything is written to disk, as specified in [ADR 0008](../adr/0008-secret-redaction.md).
+Header and body redaction are applied before anything is written to disk, as specified in [ADR 0011](../adr/0011-secret-redaction-defaults.md).
 
-Credentials can also travel in URLs, so the same rule covers every URL retrace stores (the registered MCP server URLs and each interaction's `path`). The upstream always receives the original URL.
+- A header is redacted when its name, compared case-insensitively, is on the deny-list: `authorization`, `proxy-authorization`, `x-api-key`, `cookie`, `set-cookie`, `apikey`, `auth`, `key`, `password`, `secret`, `sig`, `signature`, `token`, any name matching `*-token`, `*-secret`, `*-key`, `*-auth`, `*-password`, `*-signature`, `*-credential` or `*apikey`, and any name given with `--redact-header`. Its value becomes `[REDACTED:<sha256-prefix-8>]`.
+
+Credentials can also travel in URLs, so the same rule covers every URL retrace stores: the registered MCP server URLs, each interaction's `path`, and the values of the URL-carrying headers `Location`, `Content-Location`, `Referer` and `Link` (each URI reference inside `<…>`), in request and response headers, in record and in every replay mode. Only what is stored is redacted: a forwarded request or response keeps its original URLs.
 
 - Userinfo (`https://user:pass@host`) is replaced with `REDACTED`.
-- A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is a redacted header name, ends in one of the header suffixes (`-token`, `-secret`, `-key`), or is one of `key`, `token`, `secret`, `password`, `apikey`, `auth`, `sig` or `signature`. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the query is kept as it was.
+- A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is on the header deny-list. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the URL is kept as it was. So `X-Amz-Signature`, `X-Amz-Credential` and `access_token` are redacted.
+- A URL-carrying header that is itself on the deny-list is masked whole, as any other redacted header.
 
 **Body redaction** (`--redact <jsonpath>`, repeatable) is opt-in.
 
@@ -113,14 +117,24 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - Rules apply to every JSON body retrace stores, on both channels: request bodies, non-streamed response bodies, and the `data` of each SSE event. A body that is not JSON is stored as it is.
 - Each matched value, whatever its type, is replaced by the string `[REDACTED:<sha256-prefix-8>]`. A string is hashed as it is, so it gets the same marker as the same value in a header. Any other value is hashed over its JSON text. A value selected by several rules, or nested inside another selected value, is masked once, over its original content.
 - A body with no match is stored byte for byte. A body with a match is re-encoded compactly, keeping member order and number formats. In an SSE event, a `data` field split over several lines is written back as one `data:` line when something in it is masked. The other lines and their endings are kept.
-- When body rules are set, a body nested more than 1000 levels deep cannot be redacted safely, so it is not stored, and the interaction's `error` says why. The same applies to an SSE event that cannot be redacted (the rest of the stream is not stored either), and to a body or SSE event larger than the proxy's in-memory limit for one body or event. In each case the interaction's recording is incomplete (§7.3), so replaying it is a cassette miss (§5).
+- When body rules are set, a body nested more than 1000 levels deep cannot be redacted safely, so it is not stored, and the interaction's `error` says why. The same applies to an SSE event that cannot be redacted (the rest of the stream is not stored either), and to a response body or SSE event larger than the proxy's in-memory limit for one body or event (64 MiB). A larger request body never gets this far: it is rejected (§3.6). In each case the interaction's recording is incomplete (§7.3), so replaying it is a cassette miss (§5).
 - Redaction runs on the forwarding path. It parses each stored JSON body once, which takes milliseconds for a megabyte, against model latencies of hundreds of milliseconds.
 - The agent and the upstream always receive the original bodies. Only what is written to the cassette is redacted.
 - The rules are stored in the session's `redaction` metadata (§7.2). M3 applies them to incoming requests before fingerprinting them (§5).
 
+### 3.6 Rejected requests
+
+Some requests are answered by retrace itself, before they are forwarded or matched. These rules apply in record and in every replay mode, on both routes.
+
+- A request whose path has a `.` or `..` segment, anywhere in it, or an invalid percent-encoding (such as `%zz`) is answered with HTTP `400`. The check reads the whole request path as the agent sent it, without the query, before routing and before any path cleaning or redirect by the HTTP router, so the answer is `400` in every mode, never a redirect. The path is percent-decoded once and then split on `/` and `\`, so `%2e%2e`, `..%2f` and `..\` count too. The route is a boundary: without this check, `/mcp/orders/../admin` would reach a path on the MCP server's host outside the registered URL.
+  - A request line with an invalid percent-encoding can be refused by the HTTP server with `400` before retrace's handler sees it. The body and logging rules below then do not apply, and the request is still neither forwarded nor recorded.
+- A request whose body is larger than 64 MiB (2^26 bytes) is answered with HTTP `413`. A `Content-Length` above the limit is rejected before the body is read, and a body without one is read only up to the limit, so a local client cannot make retrace hold an unbounded body in memory. 64 MiB is the proxy's limit for one stored response body or SSE event (§3.5), and is well above what the Anthropic Messages API accepts in one request. It is not configurable in the MVP.
+- The response body says why the request was rejected, starting with `retrace:`. On the LLM route it has the Anthropic API's error shape, `{"type":"error","error":{"type":...,"message":...}}`, with type `invalid_request_error` for `400` and `request_too_large` for `413`, so SDK clients show a readable error. On the MCP route and outside both routes it is plain text. The route of a rejected request, for its body and its warning, is the prefix of the raw path as the agent sent it, so `/mcp/../llm/anthropic/v1/messages` is on the MCP route.
+- A rejected request is not forwarded and not recorded. retrace logs a warning with the route, if any, and the reason, but not the request's path or query, which may carry a credential that is never redacted because it is not recorded. The agent gets the same answer in every mode, so the recording and its replays stay consistent without storing it. It is not a cassette miss.
+
 ## 4. Replay modes
 
-`retrace run <id>` re-launches the agent (by default with the recorded command and working directory) against a proxy that serves the channels as follows:
+`retrace run <id>` re-launches the agent (the command given after `--`, or the recorded command and working directory with `--recorded-command`, §9.3) against a proxy that serves the channels as follows:
 
 | Mode | LLM channel | MCP channel | Network needed | Typical question |
 |---|---|---|---|---|
@@ -156,8 +170,9 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 ### 4.4 Common replay behavior
 
 - A replay produces a new session with `parent_session_id` set to the source session and `mode` set accordingly.
+- Requests are checked as in record mode before they are matched or forwarded (§3.6).
 - Interactions answered from the cassette are stored in the new cassette with `provenance = replayed` and a reference to the source interaction. MCP requests answered without matching (§5 step 3) are also `replayed`, with no source interaction. Forwarded ones get `provenance = live`.
-- The new session uses the source session's redaction rules (`redaction`, §7.2) and copies them. They apply to everything the replay stores, forwarded interactions included, as in record mode (§3.5).
+- The new session uses the source session's redaction rules (`redaction`, §7.2): its body rules and header names, plus the current default deny-list (§3.5) and any `--redact-header` names (§9.3). It stores those combined rules. They apply to what the replay receives and stores, as in record mode (§3.5): the agent's requests, and the responses of forwarded interactions. Values copied from the source cassette (the responses answered from it, and `mcp_servers` in `exact` and `swap-model`, §9.3) are stored as the source stored them, so they follow the source's rules, which are a subset of the combined ones. A replay therefore never stores a value its source redacted.
 - At the end of a replay, recorded interactions that were never consumed are reported as a warning (count and first few), not as an error. Only channels answered from the cassette count: the LLM in `exact` and `live-tools`, and MCP in `exact` and `swap-model`. MCP interactions that replay answers without matching (§5 step 3) are never reported as unconsumed.
 - A response answered from the cassette, in any mode and on either channel, carries the recorded status and headers, except hop-by-hop headers (RFC 9110 §7.6.1, plus any listed in `Connection`) and `Content-Length`. A non-streamed body gets the `Content-Length` of the body as served, which may differ from the original because of redaction and, for MCP, the id rewrite of §5 step 3. An interaction recorded with a transport error has neither status nor headers, and is served as in §5 step 2.
 
@@ -241,6 +256,7 @@ retrace: replay 20261023-checkout.swap-model.1 diverged from 20261023-checkout
 
 - The first-miss line names the upstream and the request: for MCP, the JSON-RPC method, plus the tool name for `tools/call` (`batch` for a batch); for the LLM, the HTTP method and path.
 - Each diff entry (§5 step 4) gives its path and `expected → received`. Values are compact JSON. A missing side is `(missing)`, and a value longer than 80 characters is cut and ends with `…`. A truncated diff ends with a line that says more paths differ.
+- Text from the cassette is escaped as in §10.
 - When there is no diff, the report says why: the matching recording is incomplete (record the session again), the request could not be redacted, no recorded request was left to compare against, or the two canonical forms are equal.
 - `misses` counts the misses of the session.
 - The layout above is illustrative. Its content is normative.
@@ -387,6 +403,13 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
 ### 7.6 Schema versioning
 
 - `PRAGMA user_version` holds the schema version. retrace refuses to write to a cassette with a newer schema version, and migrates older ones forward when opening them for read.
+- A cassette is untrusted input, and SQL stored in its schema runs when the file is read or written: a recursive view named `events`, for example, would hang `ls`. So before reading or migrating a cassette, retrace checks its schema objects (`sqlite_schema`):
+  - `session`, `interactions`, `events`, `blobs` and `chunks` MUST be ordinary tables, not views or virtual tables.
+  - None of their columns may be generated (`PRAGMA table_xinfo` reports them), because reading a generated column evaluates its expression, and `trusted_schema(0)` does not stop innocuous functions such as `printf`.
+  - The file MUST NOT hold any view, any virtual table, or any trigger other than those retrace's migrations create, compared by name and SQL text.
+  - Other tables and indexes are allowed. Reading never evaluates them: an index runs SQL only when its table is written, and `trusted_schema(0)` limits the functions it can call to those SQLite marks innocuous. A crafted index can at worst slow down a write to the cassette, such as `reindex`, or make it fail (a `UNIQUE` index), which leaves the cassette as it was because the write is one transaction.
+  - The check applies to a cassette with a newer schema version too, against the objects of retrace's own schema. When such a cassette fails it, the error says that its schema is newer than this retrace, since a later migration may have added the object.
+  - A file that fails it is a cassette that cannot be read: `ls` skips it with a warning (§9.5), and the other commands fail as they do for a corrupt cassette.
 - `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver (§9.8). Interactions are never modified.
   - It replaces the events in one transaction, so a failure leaves them as they were. It is the only operation that removes events, as [ADR 0009](../adr/0009-append-only-event-log.md) foresees.
   - Events that are not derived from interactions (`divergence`) are kept, and placed among the rebuilt events by `started_at`.
@@ -487,6 +510,11 @@ Exit codes: `0` identical trajectories, `1` divergence found, `2` error. These f
 
 Global flags MUST precede the command: `retrace [global flags] <command> [command flags] [arguments]`. Flags after the command name belong to that command, so a global flag placed there is a usage error (exit `2`). That error SHOULD say that global flags go before the command.
 
+`--dir` need not exist.
+
+- The commands that create a cassette (`record` and `run`) create a missing `--dir`, with any missing parents, with mode `0700`, when they create the cassette. An existing directory is used as it is.
+- The other commands never create it. For them a missing `--dir` holds no sessions: `ls` lists none, and a command that names a session reports that it does not exist.
+
 Each global flag's value is resolved with the precedence flag > environment variable > default. When an invalid value comes from an environment variable, the error message MUST name the variable. `NO_COLOR` follows the [no-color.org](https://no-color.org) convention: any non-empty value disables color, and no value is invalid. `--no-color` can only disable color. It never re-enables color that `NO_COLOR` disabled.
 
 ### 9.2 `retrace record`
@@ -513,7 +541,8 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 retrace run <id> [--model <model>] [--tools frozen|live] [--as <new-id>]
                  [--on-miss strict] [--realtime] [--grace <duration>]
                  [--anthropic-upstream <url>] [--mcp <name>=<url>]...
-                 [--listen <addr>] [-- <agent command...>]
+                 [--redact-header <name>]... [--listen <addr>]
+                 (--recorded-command | -- <agent command...>)
 ```
 
 The mode is derived from the flags:
@@ -531,15 +560,20 @@ The mode is derived from the flags:
   - As in `record` (§9.2), existence is decided by the cassette file. If another session takes the default id before the cassette is created, the next `n` is tried. If that `n` does not fit the id format or reaches 2^63 − 1, `run` fails with exit `1` and asks for `--as`.
   - If the default does not fit the id format (§9.2), or its `n` reaches 2^63 − 1, it is a usage error that asks for `--as`.
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
-- `-- <cmd>`: overrides the recorded command, and the agent runs in retrace's working directory. Without it, the recorded command and cwd are used. A source session with no recorded command (an empty `command`) and no `-- <cmd>` is a usage error (exit `2`), reported before the new session's cassette is created.
+- `-- <cmd>`: the agent command. The agent runs in retrace's working directory.
+- `--recorded-command`: runs the source session's recorded command (`command`, §7.2) in its recorded working directory (`cwd`). A source with no recorded command (an empty `command`) is a usage error (exit `2`).
+- `run` MUST NOT run the recorded command unless `--recorded-command` is given ([ADR 0013](../adr/0013-explicit-replay-command.md)). A cassette may come from someone else, so it is untrusted input, and its `command` is code that would run with the user's privileges (the shareable bug reports of the [vision](../vision.md), §2).
+  - Without `-- <cmd>` or `--recorded-command`, `run` fails with a usage error (exit `2`) that prints the stored argv and cwd, so the user can review them before choosing. Each argv element and the cwd are printed as quoted strings, with control and bidirectional control characters escaped, so the text cannot drive the terminal or hide part of the command. When the source has no recorded command, the error says so and asks for `-- <cmd>`, since `--recorded-command` would not help.
+  - Giving both `-- <cmd>` and `--recorded-command` is a usage error (exit `2`).
 - `--model`: the model for `swap-model` (§4.2). An empty value is a usage error.
 - `--anthropic-upstream`: the Anthropic API base URL in `swap-model`, with the same default and validation as in `record` (§9.2). In other modes the LLM channel is not forwarded, so the flag is a usage error.
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs (§4.3), with the same syntax as in `record` (§9.2).
   - Its name MUST be one of the source's `mcp_servers` (§7.2). Another name is a usage error, because the agent would have no `RETRACE_MCP_<NAME>_URL` for it.
   - In other modes MCP is served from the cassette, so the flag is a usage error.
+- `--redact-header`: adds a header name to the source session's redaction rules (§3.5), as in `record`. Repeatable. The new session stores the combined rules. Headers are not fingerprinted (§5), so matching does not change. `run` has no `--redact`: body rules change fingerprints, so a replay uses the source's.
 - `--grace`: how long the agent has to exit after `SIGTERM` on a divergence (§6.2), as a Go duration (`5s`, `500ms`). Default `5s`. A negative value is a usage error.
 - MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. In `exact` and `swap-model`, where every MCP answer comes from the cassette, its `mcp_servers` is a copy of the source's. In `live-tools`, each server keeps its name, its `url` is the one actually used (after `--mcp`, redacted as in §3.5), and `protocol_version` and `server_info` are read from the replay's own exchanges as in §3.4.
-- Errors in the flags and arguments (exit `2`), including a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): the empty command, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
+- Errors in the flags and arguments (exit `2`), including both `-- <cmd>` and `--recorded-command`, and a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): neither `-- <cmd>` nor `--recorded-command` (the error prints the stored argv and cwd), `--recorded-command` with an empty command, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
 ### 9.4 `retrace diff`
@@ -559,7 +593,7 @@ retrace ls [--json]
 Lists the cassettes in `--dir`, newest first, with these columns: `ID`, `CREATED`, `MODE`, `PARENT`, `STATUS`, `STEPS`, `TOKENS`, `COST (est.)`, `DURATION`.
 
 - The values are the totals of §8.2. `TOKENS` is `in/out`, abbreviated (e.g. `41.2k/3.9k`). `DURATION` is empty while a session has not ended.
-- A file in `--dir` that ends in `.cassette` but cannot be opened or read (e.g. a newer schema, a corrupt database or a missing session row) is skipped with a warning on stderr, and `ls` still exits `0`.
+- A file in `--dir` that ends in `.cassette` but cannot be opened or read (e.g. a newer schema, a corrupt database, a missing session row, or a schema that fails the checks of §7.6) is skipped with a warning on stderr, and `ls` still exits `0`.
 - `--json` emits one JSON array with an object per session, newest first, with the same information unabbreviated.
 
 When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+gaps` (e.g. `completed+gaps`), because its steps and totals come from an incomplete log. `--json` carries `dropped_events` for each session.
@@ -570,7 +604,7 @@ When a session has `dropped_events > 0` (§7.7), its `STATUS` is followed by `+g
 retrace show <id> [--json] [--raw <interaction-id>]
 ```
 
-- The default output is the session summary (metadata and totals, §8.2) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status. The relative time counts from the session's `created_at`. Arguments are compact JSON, cut after 60 characters with `…`.
+- The default output is the session summary (metadata and totals, §8.2) followed by a timeline of events: `seq`, relative time, `source → target`, kind, tool, arguments (truncated), status. The relative time counts from the session's `created_at`. Arguments are compact JSON, cut after 60 characters with `…`. Text from the cassette, here and in `--raw`, is escaped as in §10.
 - When `dropped_events > 0` (§7.7), the summary warns that the event log is incomplete and gives the count, and the timeline shows a marker line where `seq` values are missing, with how many events are missing there. `--json` emits only the events that exist; consumers find gaps from `seq`.
 - `--json`: emits events as JSONL, one event per line, as a stable format. Each line is an object with one member per column of the `events` table (§7.4), named as the column, with `null` for a null value. `arguments` and `result` are the stored JSON values. A stored value that is not valid JSON, which a valid cassette never holds, is emitted as a JSON string, with invalid UTF-8 replaced by U+FFFD. A stored number that is not finite, such as a `cost_usd` of `+Inf`, is emitted as `null`, so that one bad value does not stop the stream either. `started_at` is RFC 3339, in UTC for a valid cassette (§7.1), with the trailing zeros of the fraction left out (`2026-10-23T09:30:02Z`, `2026-10-23T09:30:02.5Z`), unlike the stored form of §7.1. Consumers parse it as RFC 3339 and do not assume six fractional digits.
 - `--raw`: dumps one interaction (headers, bodies, SSE chunks with offsets), as stored, after redaction. A body or chunk that is not valid UTF-8 is shown as `<n bytes, not UTF-8>`. `--raw` with `--json` is a usage error.
@@ -595,10 +629,14 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 
 ## 10. Security and privacy
 
-- Auth headers are redacted before storage, and body redaction is opt-in ([ADR 0008](../adr/0008-secret-redaction.md)).
+- Credentials in headers and URLs are redacted before storage, and body redaction is opt-in (§3.5, [ADR 0011](../adr/0011-secret-redaction-defaults.md)).
 - The proxy binds to loopback by default.
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
+- A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
+- **Escaped text output.** Every text output escapes each control character (C0 and C1) and each bidirectional control character that comes from a cassette. That covers `ls`, `show`, `show --raw`, `diff` in text format and the divergence report of §6.4, and also the warnings, errors and log messages of any command that include a value read from a cassette, such as a stored MCP URL (§4.3) or command (§9.3). The one exception is the multi-line text of `show --raw` (bodies and SSE chunks), which keeps line feeds and tabs so it keeps its layout. They cannot drive the terminal.
+  - The length limits of §6.4 (80 characters) and §9.6 (60 characters) count characters before escaping. An escaped value can therefore print wider than the limit, but a cut never splits an escape.
+  - Text output is for people. The JSON outputs (`show --json`, `diff --format json`) are the faithful form of the cassette's values.
 
 ## 11. Acceptance criteria
 
@@ -611,8 +649,9 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-03** A streaming `/v1/messages` exchange is recorded with every SSE event and its offset. The agent receives the first chunk before the upstream finishes (no buffering).
 - **AC-04** MCP `initialize`, `tools/list` and `tools/call` exchanges over Streamable HTTP are recorded, for both JSON and SSE responses, against two distinct MCP servers in the same session.
 - **AC-05** Events are derived with all §7.4 fields populated where applicable, including tokens and estimated cost for each `model_response`, and correct `source`/`target`.
-- **AC-06** `authorization`, `x-api-key` and `*-token` header values never appear in the cassette file (verified by scanning the raw file bytes).
+- **AC-06** Credentials never appear in the cassette file, verified by scanning the raw file bytes: the LLM `x-api-key`, an MCP `Authorization` header, a `*-token` header, a token in a query string, a credential in the query or userinfo of a `Location` URL, and a `Set-Cookie` response header. The scan covers the cassette of a recording and the cassette of a replay that forwards requests (`swap-model` and `live-tools`). In the replay, the scan also covers a header named only with `run --redact-header`.
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
+- **AC-34** In record mode and in exact mode, a request for `/mcp/<name>/../x`, for `/mcp/../llm/anthropic/v1/messages`, or with `%2e%2e` in place of `..`, gets HTTP `400` (never a redirect), and a request whose body is larger than 64 MiB gets HTTP `413`, with or without a `Content-Length`. On the LLM route the body has the Anthropic error shape with type `invalid_request_error` or `request_too_large`. None of them reaches the upstream or is stored in the cassette, and the logged warning does not contain the request's path or query (checked with a token in the query).
 - **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
 - **AC-25** `record --redact '$..email'` stores no `email` value from request bodies, response bodies or SSE events (verified by scanning the raw file bytes), while the agent and the upstream receive the original bodies.
 - **AC-26** When the cassette writer drops events during `record` (forced with failing event writes or a stalled writer), the ended session has `dropped_events` equal to the number of dropped events, including events dropped at the end of the log, the missing `seq` values are exactly those of the other dropped events, and `reindex` restores the events of complete interactions and sets `dropped_events` to `0`.
@@ -629,7 +668,8 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-32** In exact mode, a `POST` with only client notifications or responses gets `202`, `GET` gets `405` and `DELETE` gets `200`. None of them consumes a recorded interaction, each is stored with `provenance = replayed` and no source interaction, and recorded ones of these kinds are not reported as unconsumed.
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. This holds even when the agent then exits with a non-zero code or retrace receives a signal, and in both cases `agent_exit_code` keeps the agent's code. The incomplete interaction is not reported as unconsumed.
 - **AC-29** In exact mode, an LLM or MCP request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same events as the source (for an LLM request, the same `model_response`).
-- **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run` of a source with no recorded command and no `-- <cmd>` exits `2`. None of them creates a new cassette.
+- **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run --recorded-command` of a source with no recorded command exits `2`. None of them creates a new cassette.
+- **AC-33** `run <id>` with neither `-- <cmd>` nor `--recorded-command` exits `2`, starts no process, creates no cassette, and prints the recorded argv and cwd with control characters escaped. For a source with no recorded command, the error says so and asks for `-- <cmd>` without suggesting `--recorded-command`. `run` with both exits `2`. `run <id> --recorded-command` runs the recorded command in the recorded working directory.
 
 ### Swap-model and strict
 
@@ -648,6 +688,8 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-20** `diff` of a session with a diverging swap-model replay reports the correct step, event, tool and argument diff, and exits `1`.
 - **AC-21** `diff --format json` output validates against a JSON schema committed in the repo.
 - **AC-22** `ls` and `show` (text and `--json`) display the fields listed in §9.5 and §9.6.
+- **AC-35** A cassette whose `events` is a view, that holds a virtual table or a trigger retrace's migrations do not create, or whose `events` table has a generated column, is rejected before it is read: `ls` skips it with a warning and exits `0`, `show` and `run` exit `1`, and the file is not modified.
+- **AC-36** A cassette whose event `tool` and `arguments`, stored MCP URL and an interaction body hold ESC (`\x1b`), a C1 control (U+009B) and a bidi control (U+202E): `ls`, `show`, `show --raw`, `diff` text and the divergence report print none of them unescaped (§10), and neither does the usage error of `run --tools live` for a stored URL that also holds a redaction marker (§4.3). `show --raw` keeps the body's LF and TAB, a truncated `show` argument never ends inside an escape, and `show --json` emits the original values.
 - **AC-27** For a session with `dropped_events > 0`, `ls` shows `+gaps` after its status and `dropped_events` in `--json`, `show` warns with the count and marks each gap in its timeline, and `diff` warns in text output and reports `dropped_events` in `--format json`.
 
 ### Demo (manual)
