@@ -21,8 +21,8 @@ builds:
     env:
       # ADR 0001: a static binary with no cgo, so cross-compilation needs no C toolchain.
       - CGO_ENABLED=0
-    # goos and goarch are also read by .github/scripts/govulncheck.sh, which
-    # scans each platform; keep them one-line lists.
+    # goos and goarch are also read by .github/scripts/govulncheck.sh and
+    # .github/scripts/notices.sh, which cover each platform; keep them one-line lists.
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     flags:
@@ -107,4 +107,4 @@ release:
 
         gh attestation verify <archive> --repo pmlucero/retrace
 
-    Without the GitHub CLI, check its SHA-256 sum: `sha256sum --check --ignore-missing checksums.txt`.
+    Without the GitHub CLI, check its SHA-256 sum against `checksums.txt`: `sha256sum --check --ignore-missing checksums.txt` on Linux, `shasum -a 256 --check --ignore-missing checksums.txt` on macOS, or `Get-FileHash <archive>` in PowerShell on Windows.
