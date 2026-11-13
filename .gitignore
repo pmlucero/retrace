@@ -8,7 +8,7 @@
 *.out
 coverage.*
 /pr.diff
-/.coverage-report.md
+/.review-context/
 
 # Editors and OS
 *.swp
