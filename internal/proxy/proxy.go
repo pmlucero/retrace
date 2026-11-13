@@ -50,7 +50,7 @@ type Config struct {
 	// MaxBodyBytes caps how much of one response, or of one SSE event, is
 	// held in memory to be recorded. Larger ones are still forwarded, and the
 	// interaction is recorded with an error instead. Zero selects
-	// cassette.DefaultQueueBytes: the writer would drop anything larger anyway.
+	// MaxRequestBytes, the 64 MiB of spec §3.5.
 	MaxBodyBytes int64
 }
 
@@ -76,7 +76,7 @@ func New(cfg Config) *Proxy {
 	}
 	maxBody := cfg.MaxBodyBytes
 	if maxBody <= 0 {
-		maxBody = cassette.DefaultQueueBytes
+		maxBody = MaxRequestBytes
 	}
 	p := &Proxy{writer: cfg.Writer, redact: cfg.Redact, log: log, maxBody: maxBody}
 	for _, r := range cfg.Routes {

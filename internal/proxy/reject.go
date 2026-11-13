@@ -8,15 +8,12 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-
-	"github.com/pmlucero/retrace/internal/cassette"
 )
 
 // MaxRequestBytes is the largest request body retrace accepts, 64 MiB (spec
-// §3.6). It is the proxy's limit for one stored response body or SSE event
-// (spec §3.5), which is the cassette writer's limit for one record, and is not
-// configurable in the MVP.
-const MaxRequestBytes = cassette.DefaultQueueBytes
+// §3.6). It is also the default limit for one stored response body or SSE
+// event (spec §3.5, Config.MaxBodyBytes), and is not configurable in the MVP.
+const MaxRequestBytes = 64 << 20
 
 // The routes a rejected request can be on, as its log warning names them.
 const (
