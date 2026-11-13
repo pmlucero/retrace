@@ -3,16 +3,20 @@ package proxy
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"strings"
+
+	"github.com/pmlucero/retrace/internal/cassette"
 )
 
-// MaxRequestBytes is the largest request body retrace accepts (spec §3.6).
-// It is the proxy's limit for one stored response body or SSE event (spec
-// §3.5), and is not configurable in the MVP.
-const MaxRequestBytes = 64 << 20
+// MaxRequestBytes is the largest request body retrace accepts, 64 MiB (spec
+// §3.6). It is the proxy's limit for one stored response body or SSE event
+// (spec §3.5), which is the cassette writer's limit for one record, and is not
+// configurable in the MVP.
+const MaxRequestBytes = cassette.DefaultQueueBytes
 
 // The routes a rejected request can be on, as its log warning names them.
 const (
@@ -20,10 +24,9 @@ const (
 	routeMCP = "mcp"
 )
 
-const (
-	reasonDotSegment = "the request path has a dot segment (. or ..), which could leave its route"
-	reasonTooLarge   = "the request body is larger than 64 MiB (67108864 bytes)"
-)
+const reasonDotSegment = "the request path has a dot segment (. or ..), which could leave its route"
+
+var reasonTooLarge = fmt.Sprintf("the request body is larger than %d MiB (%d bytes)", MaxRequestBytes>>20, MaxRequestBytes)
 
 // Guard answers 400 to a request whose path has a dot segment, and passes
 // every other request to next (spec §3.6). It must run before any router:
@@ -91,6 +94,8 @@ func ReadBody(w http.ResponseWriter, r *http.Request, log *slog.Logger, channel 
 		reject(w, log, channel, http.StatusRequestEntityTooLarge, reasonTooLarge)
 		return nil, false
 	case err != nil:
+		// Not a rejection of spec §3.6: the agent sent a broken body or left,
+		// so plain text on every route, as before the limit existed.
 		http.Error(w, "retrace: reading request body: "+err.Error(), http.StatusBadRequest)
 		return nil, false
 	}

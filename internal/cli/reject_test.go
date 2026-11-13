@@ -23,7 +23,7 @@ const rejectAgentEnv = "RETRACE_TEST_REJECT_AGENT"
 
 // rejectToken is in the query of every request the proxy must reject: the
 // log must not hold it (spec §3.6).
-const rejectToken = "AC34-SECRET-QUERY-TOKEN"
+const rejectToken = "AC34-SECRET-QUERY-TOKEN" //nolint:gosec // G101: a fake value the log must not hold
 
 // rejectCase is a request of the reject agent, and the answer it must get.
 type rejectCase struct {

@@ -9,12 +9,13 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/iotest"
 )
 
 // AC-34: the path check of spec §3.6, on the path as the HTTP server decodes
 // it (percent-decoded once, without the query).
 func TestGuardRejectsDotSegments(t *testing.T) {
-	const token = "AC34-QUERY-TOKEN"
+	const token = "AC34-QUERY-TOKEN" //nolint:gosec // G101: a fake value the log must not hold
 	tests := []struct {
 		target    string
 		wantCode  int
@@ -50,7 +51,7 @@ func TestGuardRejectsDotSegments(t *testing.T) {
 				target += "?token=" + token
 			}
 			rec := httptest.NewRecorder()
-			Guard(next, log).ServeHTTP(rec, httptest.NewRequest(http.MethodPost, target, nil))
+			Guard(next, log).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, nil))
 
 			if rec.Code != tt.wantCode {
 				t.Fatalf("status %d, want %d", rec.Code, tt.wantCode)
@@ -86,7 +87,7 @@ func TestReadBodyLimit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			body := &countingReader{r: io.LimitReader(zeros{}, tt.size)}
-			r := httptest.NewRequest(http.MethodPost, "/v1/messages", body)
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/messages", body)
 			r.ContentLength = -1
 			if tt.withLen {
 				r.ContentLength = tt.size
@@ -116,6 +117,31 @@ func TestReadBodyLimit(t *testing.T) {
 			checkRejection(t, rec, tt.channel, "request_too_large")
 			checkRejectionLog(t, logs.String(), tt.channel, "", "")
 		})
+	}
+}
+
+// A body that cannot be read is not a rejection of spec §3.6: it gets the
+// plain-text 400 it got before the limit, and no rejection warning.
+func TestReadBodyFailure(t *testing.T) {
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/messages",
+		io.MultiReader(strings.NewReader("{"), iotest.ErrReader(io.ErrUnexpectedEOF)))
+	var logs bytes.Buffer
+	rec := httptest.NewRecorder()
+	if _, ok := ReadBody(rec, r, slog.New(slog.NewTextHandler(&logs, nil)), routeLLM); ok {
+		t.Fatal("read a broken body")
+	}
+	if rec.Code != http.StatusBadRequest || !strings.HasPrefix(rec.Body.String(), "retrace: reading request body: ") {
+		t.Errorf("answer %d %q, want 400 with the read error", rec.Code, rec.Body)
+	}
+	if logs.Len() != 0 {
+		t.Errorf("logged %q, want no rejection warning", logs.String())
+	}
+}
+
+// The limit and the message the agent gets agree (spec §3.6).
+func TestTooLargeReasonNamesTheLimit(t *testing.T) {
+	if MaxRequestBytes != 1<<26 || !strings.Contains(reasonTooLarge, "64 MiB (67108864 bytes)") {
+		t.Errorf("limit %d, reason %q; want 64 MiB in both", MaxRequestBytes, reasonTooLarge)
 	}
 }
 
