@@ -119,9 +119,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "retrace: reading request body: "+err.Error(), http.StatusBadRequest)
+	body, ok := ReadBody(w, r, p.log, rt.Channel) // spec §3.6
+	if !ok {
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
