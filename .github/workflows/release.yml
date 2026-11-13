@@ -86,7 +86,7 @@ jobs:
           ls -l dist/*.tar.gz dist/*.zip dist/checksums.txt
           # Entry times come from the commit (reproducible archives).
           tar -tvzf dist/retrace_*_linux_amd64.tar.gz
-          tar -tzf dist/retrace_*_linux_amd64.tar.gz | grep -qx THIRD_PARTY_NOTICES.txt
+          tar -tzf dist/retrace_*_linux_amd64.tar.gz | grep -x THIRD_PARTY_NOTICES.txt
           cat dist/checksums.txt
           (cd dist && sha256sum --check checksums.txt)
 
@@ -100,8 +100,6 @@ jobs:
       # Sign the build provenance attestation (OIDC) and store it (ADR 0012).
       id-token: write
       attestations: write
-    # The version injection is checked by the snapshot job on the PR that changed
-    # it.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -145,8 +143,20 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The release is still a draft, and immutable once published (ADR 0012),
+      # so the snapshot job's checks run again here before publishing.
+      - name: Check the version the binary reports
+        run: |
+          out="$(dist/retrace_linux_amd64_v1/retrace --version)"
+          echo "$out"
+          if [ "$out" != "retrace $GITHUB_REF_NAME" ]; then
+            echo "::error::unexpected --version output: $out"
+            exit 1
+          fi
       - name: Check the third-party notices cover the linked modules
-        run: sh .github/scripts/notices.sh check
+        run: |
+          sh .github/scripts/notices.sh check
+          tar -tzf dist/retrace_*_linux_amd64.tar.gz | grep -x THIRD_PARTY_NOTICES.txt
       # Each archive listed in checksums.txt becomes a subject. Users verify
       # with `gh attestation verify <archive> --repo pmlucero/retrace`.
       - name: Attest the build provenance of the archives

@@ -17,6 +17,10 @@
 # in the release job before the release is published.
 set -eu
 
+# Byte order for `sort` and for the shell's glob expansion: the file goes into
+# every archive, and archives must be the same bytes on any machine.
+export LC_ALL=C
+
 # .goreleaser.yaml and ./cmd/retrace are relative to the repository root.
 cd "$(dirname "$0")/../.."
 
@@ -28,8 +32,19 @@ if [ "${1:-}" = check ]; then
 	for bin in dist/retrace_*/retrace dist/retrace_*/retrace.exe; do
 		[ -f "$bin" ] || continue
 		found=1
-		# The `dep <path> <version> <sum>` lines of the embedded build info.
-		for mod in $(go version -m "$bin" | awk '$1 == "dep" { print $2 "@" $3 }'); do
+		# The `dep <path> <version> <sum>` lines of the embedded build info. A
+		# failure inside `for ... in $(...)` would pass unseen, so capture first
+		# and fail closed on a binary without them.
+		if ! info="$(go version -m "$bin")"; then
+			echo "notices.sh: cannot read the build info of $bin" >&2
+			exit 1
+		fi
+		deps="$(printf '%s\n' "$info" | awk '$1 == "dep" { print $2 "@" $3 }')"
+		if [ -z "$deps" ]; then
+			echo "notices.sh: no dep lines in the build info of $bin" >&2
+			exit 1
+		fi
+		for mod in $deps; do
 			if ! grep -Fqx "${mod%@*} ${mod#*@}" "$out"; then
 				echo "notices.sh: $out misses ${mod%@*} ${mod#*@}, linked into $bin" >&2
 				status=1
@@ -59,14 +74,16 @@ fi
 # with the release's build configuration (CGO_ENABLED=0, ADR 0001). <dir> is
 # where the module's files are, a replacement's if go.mod replaces it.
 mods="$(mktemp)"
-trap 'rm -f "$mods" "$out.tmp"' EXIT
+trap 'rm -f "$mods" "$mods.raw" "$out.tmp"' EXIT
 for os in $goos; do
 	for arch in $goarch; do
+		# Not in a pipeline, so `set -e` stops on a failing `go list`.
 		GOOS="$os" GOARCH="$arch" CGO_ENABLED=0 go list -deps \
 			-f '{{with .Module}}{{if not .Main}}{{.Path}} {{.Version}} {{.Dir}}{{end}}{{end}}' \
-			./cmd/retrace
+			./cmd/retrace >>"$mods.raw"
 	done
-done | sort -u >"$mods"
+done
+sort -u "$mods.raw" >"$mods"
 
 rule='================================================================================'
 
@@ -100,6 +117,12 @@ section() {
 	echo
 	section "Go standard library $(go env GOVERSION)" "$(go env GOROOT)"
 	while read -r path version dir; do
+		# A replace with a local directory has no version, which shifts the
+		# fields; there is none today, and it must not pass unnoticed.
+		if [ -z "$dir" ]; then
+			echo "notices.sh: unexpected module line \"$path $version\" (a local replace?)" >&2
+			exit 1
+		fi
 		section "$path $version" "$dir"
 	done <"$mods"
 } >"$out.tmp"

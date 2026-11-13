@@ -95,8 +95,16 @@ release:
   # A tag with a pre-release suffix (v0.2.0-rc.1) is published as a pre-release.
   prerelease: auto
   # Releases are immutable once published (ADR 0012), so GoReleaser uploads to
-  # a draft, and release.yml publishes it after the attestation and the
-  # notices check.
+  # a draft, and release.yml publishes it after its checks and the attestation.
   draft: true
   # A re-run after a failed attestation or check replaces the draft it left.
   replace_existing_draft: true
+  # ADR 0012: the release notes show how to verify a download.
+  footer: |
+    ## Verify
+
+    Check that an archive was built by this repository's release workflow:
+
+        gh attestation verify <archive> --repo pmlucero/retrace
+
+    Without the GitHub CLI, check its SHA-256 sum: `sha256sum --check --ignore-missing checksums.txt`.
