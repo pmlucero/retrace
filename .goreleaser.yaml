@@ -107,4 +107,4 @@ release:
 
         gh attestation verify <archive> --repo pmlucero/retrace
 
-    Without the GitHub CLI, check its SHA-256 sum against `checksums.txt`: `sha256sum --check --ignore-missing checksums.txt` on Linux, `shasum -a 256 --check --ignore-missing checksums.txt` on macOS, or `Get-FileHash <archive>` in PowerShell on Windows.
+    Without the GitHub CLI, check its SHA-256 sum against `checksums.txt`: `sha256sum --check --ignore-missing checksums.txt` on Linux, `shasum -a 256 --check --ignore-missing checksums.txt` on macOS, or, in PowerShell on Windows, compare `(Get-FileHash <archive>).Hash` with the archive's line in `checksums.txt` (the case can differ).
