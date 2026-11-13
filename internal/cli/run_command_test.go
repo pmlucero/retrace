@@ -107,7 +107,8 @@ func TestRunRefusesASourceWithoutACommand(t *testing.T) {
 			if r.code != ExitUsage || !strings.Contains(stderr, "no recorded command") || !strings.Contains(stderr, "'--'") {
 				t.Errorf("exit %d, stderr %q; want a usage error that asks for '--'", r.code, stderr)
 			}
-			if tt.args[len(tt.args)-1] != "--recorded-command" && strings.Contains(stderr, "--recorded-command") {
+			// In neither case: the flag was not given, or it was and cannot help.
+			if strings.Contains(stderr, "--recorded-command") {
 				t.Errorf("stderr suggests --recorded-command, which cannot help:\n%s", stderr)
 			}
 			assertDirHolds(t, dir, "s.cassette")
@@ -127,8 +128,11 @@ func TestRunRecordedCommandRunsInTheRecordedCwd(t *testing.T) {
 		t.Fatalf("exit %d\n%s", r.code, r.stderr)
 	}
 	got := r.stdout.String()
-	want, _ := filepath.EvalSymlinks(cwd)
-	if g, _ := filepath.EvalSymlinks(got); g != want {
+	want, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, err := filepath.EvalSymlinks(got); err != nil || g != want {
 		t.Errorf("agent ran in %q, want %q", got, want)
 	}
 	if s, _ := sessionOf(t, dir, "s.exact.1"); s.Cwd != cwd {
