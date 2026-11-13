@@ -33,14 +33,15 @@ var urlHeaders = map[string]bool{"location": true, "content-location": true, "re
 
 // Rules decides what is redacted.
 type Rules struct {
-	headers map[string]bool // lower-case
-	body    []Path
+	headers  map[string]bool // lower-case
+	patterns []string        // "*<suffix>", lower-case
+	body     []Path
 }
 
 // NewRules returns the default header rules plus extra header names
 // (--redact-header) and body rules (--redact).
 func NewRules(extraHeaders []string, body []Path) *Rules {
-	r := &Rules{headers: map[string]bool{}, body: body}
+	r := &Rules{headers: map[string]bool{}, patterns: slices.Clone(DefaultPatterns), body: body}
 	for _, n := range slices.Concat(DefaultHeaders, extraHeaders) {
 		r.headers[strings.ToLower(n)] = true
 	}
@@ -50,11 +51,11 @@ func NewRules(extraHeaders []string, body []Path) *Rules {
 // HeaderNames returns the redacted header names and suffix patterns, sorted,
 // for the cassette's redaction metadata (spec §7.2).
 func (r *Rules) HeaderNames() []string {
-	out := make([]string, 0, len(r.headers)+len(DefaultPatterns))
+	out := make([]string, 0, len(r.headers)+len(r.patterns))
 	for n := range r.headers {
 		out = append(out, n)
 	}
-	out = append(out, DefaultPatterns...)
+	out = append(out, r.patterns...)
 	slices.Sort(out)
 	return out
 }
@@ -83,10 +84,11 @@ func RulesFromMetadata(stored json.RawMessage, extraHeaders ...string) (*Rules, 
 	if err := json.Unmarshal(stored, &m); err != nil {
 		return nil, fmt.Errorf("reading redaction rules: %w", err)
 	}
-	var headers []string
+	var headers, patterns []string
 	for _, h := range m.Headers {
-		// The patterns are always applied.
-		if !strings.HasPrefix(h, "*") {
+		if strings.HasPrefix(h, "*") {
+			patterns = append(patterns, strings.ToLower(h))
+		} else {
 			headers = append(headers, h)
 		}
 	}
@@ -99,7 +101,15 @@ func RulesFromMetadata(stored json.RawMessage, extraHeaders ...string) (*Rules, 
 		}
 		body[i] = p
 	}
-	return NewRules(headers, body), nil
+	r := NewRules(headers, body)
+	// A pattern this binary does not know, stored by a newer one, is kept:
+	// a replay never stores a value its source redacted (spec §4.4).
+	for _, p := range patterns {
+		if !slices.Contains(r.patterns, p) {
+			r.patterns = append(r.patterns, p)
+		}
+	}
+	return r, nil
 }
 
 // RedactsHeader reports whether the header called name is redacted.
@@ -108,7 +118,7 @@ func (r *Rules) RedactsHeader(name string) bool {
 	if r.headers[name] {
 		return true
 	}
-	for _, p := range DefaultPatterns {
+	for _, p := range r.patterns {
 		if strings.HasSuffix(name, p[1:]) {
 			return true
 		}

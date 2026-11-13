@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +19,8 @@ import (
 
 // The credentials the secret agent and its upstreams exchange. AC-06 looks
 // for each of them in the cassette files.
+//
+//nolint:gosec // G101: fake credentials that AC-06 looks for
 const (
 	secretAgentEnv = "RETRACE_TEST_SECRET_AGENT"
 
@@ -106,9 +110,17 @@ func newSecretUpstream(t *testing.T) *secretUpstream {
 	return u
 }
 
+// marker is what redaction stores in place of v (spec §3.5).
+func marker(v string) string {
+	sum := sha256.Sum256([]byte(v))
+	return "[REDACTED:" + hex.EncodeToString(sum[:4]) + "]"
+}
+
 // scanCassette fails the test if any credential appears in the raw bytes of
-// session id's cassette, in any form SQLite might store it.
-func scanCassette(t *testing.T, dir, id string, secrets ...string) {
+// session id's cassette, in any form SQLite might store it, or if the marker
+// of a value in masked is missing: a value that was never stored would pass
+// the scan too.
+func scanCassette(t *testing.T, dir, id string, secrets, masked []string) {
 	t.Helper()
 	raw, err := os.ReadFile(cassette.Path(dir, id)) //nolint:gosec // G304: a cassette this test created
 	if err != nil {
@@ -117,6 +129,11 @@ func scanCassette(t *testing.T, dir, id string, secrets ...string) {
 	for _, s := range secrets {
 		if bytes.Contains(raw, []byte(s)) {
 			t.Errorf("%s: %q appears in the cassette file", id, s)
+		}
+	}
+	for _, v := range masked {
+		if !bytes.Contains(raw, []byte(marker(v))) {
+			t.Errorf("%s: the marker of %q is not in the cassette file", id, v)
 		}
 	}
 }
@@ -129,6 +146,9 @@ func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 	t.Setenv(secretAgentEnv, "1")
 	dir := t.TempDir()
 	secrets := []string{agentAPIKey, sessionToken, queryToken, mcpAuth, locationPass, locationToken, setCookie, runOnly}
+	// What each cassette stores masked: header values whole, query values
+	// alone. The Location userinfo becomes REDACTED, with no hash.
+	masked := []string{agentAPIKey, sessionToken, queryToken, "Bearer " + mcpAuth, locationToken, "session=" + setCookie + "; HttpOnly"}
 
 	llm, tools := newSecretUpstream(t), newSecretUpstream(t)
 	r := runRecordCmd(t, dir, append([]string{"--session", "s", "--listen", "127.0.0.1:0",
@@ -136,7 +156,7 @@ func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 	if r.code != ExitOK {
 		t.Fatalf("record: exit %d\n%s", r.code, r.stderr)
 	}
-	scanCassette(t, dir, "s", secrets...)
+	scanCassette(t, dir, "s", secrets, masked)
 
 	for _, tc := range []struct {
 		mode string
@@ -160,7 +180,7 @@ func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 			if !strings.Contains(string(s.Redaction), `"`+strings.ToLower(runOnlyHeader)+`"`) {
 				t.Errorf("stored redaction = %s, want it to include %s (spec §4.4)", s.Redaction, runOnlyHeader)
 			}
-			scanCassette(t, dir, id, secrets...)
+			scanCassette(t, dir, id, secrets, append(masked, runOnly))
 		})
 	}
 }

@@ -85,7 +85,7 @@ func TestRulesHeadersRedactURLValues(t *testing.T) {
 		"Content-Location": {"https://user:pw@files.example.com/a.txt"},
 		"Referer":          {"https://b.s3.amazonaws.com/k?X-Amz-Credential=cred1&X-Amz-Signature=sig1&X-Amz-Expires=60"},
 		"Link": {`<https://api.example.com/items?page=2&token=tok2>; rel="next", </items?page=1>; rel="prev"`,
-			`<https://u:p@h/x>; rel=alternate`},
+			`<https://u:p@h/x>; rel=alternate`, `<https://h/x?token=t`},
 		"X-Next": {"https://h/x?token=custom-header-not-a-url-header"},
 		"Plain":  {"/relative/path?page=3"},
 	}
@@ -96,7 +96,7 @@ func TestRulesHeadersRedactURLValues(t *testing.T) {
 		"Content-Location": {"https://REDACTED@files.example.com/a.txt"},
 		"Referer":          {"https://b.s3.amazonaws.com/k?X-Amz-Credential=" + mask("cred1") + "&X-Amz-Signature=" + mask("sig1") + "&X-Amz-Expires=60"},
 		"Link": {`<https://api.example.com/items?page=2&token=` + mask("tok2") + `>; rel="next", </items?page=1>; rel="prev"`,
-			`<https://REDACTED@h/x>; rel=alternate`},
+			`<https://REDACTED@h/x>; rel=alternate`, `<https://h/x?token=` + mask("t")},
 		"X-Next":         in["X-Next"],
 		"Plain":          in["Plain"],
 		"Location-Plain": in["Location-Plain"],
@@ -174,6 +174,20 @@ func TestRulesFromMetadataAddsCurrentDefaults(t *testing.T) {
 		`"apikey","auth","authorization","cookie","key","password","proxy-authorization","secret","set-cookie","sig","signature","token","x-api-key","x-run-only","x-tenant"]}`
 	if got := string(r.Metadata()); got != want {
 		t.Errorf("Metadata() = %s, want %s", got, want)
+	}
+}
+
+// spec §4.4: a pattern stored by a newer binary is applied and kept.
+func TestRulesFromMetadataKeepsUnknownPatterns(t *testing.T) {
+	r, err := RulesFromMetadata([]byte(`{"body":[],"headers":["*-Future"]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.RedactsHeader("X-Future") || r.Query("x_future=v") == "x_future=v" {
+		t.Error("the stored *-future pattern is not applied")
+	}
+	if got := string(r.Metadata()); !strings.Contains(got, `"*-future"`) {
+		t.Errorf("Metadata() = %s, want the stored pattern kept", got)
 	}
 }
 
