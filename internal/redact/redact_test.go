@@ -113,6 +113,24 @@ func TestRulesHeadersRedactURLValues(t *testing.T) {
 	if got := r.Headers(http.Header{"Location": {"https://h/%zz?token=t"}}).Get("Location"); got != mask("https://h/%zz?token=t") {
 		t.Errorf("unparsable Location = %q, want it masked whole", got)
 	}
+	// The fragment, as the OAuth implicit flow and a single-page app's
+	// route carry a token there.
+	frag := http.Header{
+		"Location": {"https://app.example/cb#access_token=tok3&state=s"},
+		"Referer":  {"https://app.example/#/cb?access_token=tok4"},
+		"Link":     {`<https://h/x#id_token=tok5>; rel=next`},
+	}
+	fragWant := map[string]string{
+		"Location": "https://app.example/cb#access_token=" + mask("tok3") + "&state=s",
+		"Referer":  "https://app.example/#/cb?access_token=" + mask("tok4"),
+		"Link":     `<https://h/x#id_token=` + mask("tok5") + `>; rel=next`,
+	}
+	fragOut := r.Headers(frag)
+	for name, w := range fragWant {
+		if got := fragOut.Get(name); got != w {
+			t.Errorf("%s = %q, want %q", name, got, w)
+		}
+	}
 	// A URL-carrying header on the deny-list is masked whole.
 	if got := NewRules([]string{"Referer"}, nil).Headers(http.Header{"Referer": {"https://h/"}}).Get("Referer"); got != mask("https://h/") {
 		t.Errorf("Referer on the deny-list = %q, want it masked whole", got)
@@ -240,6 +258,43 @@ func TestRulesQueryAndURL(t *testing.T) {
 	if u.User.Username() != "user" || u.RawQuery != "token=s3cr3t&region=eu" {
 		t.Error("URL changed its input; the upstream needs the real URL")
 	}
+
+	u, _ = url.Parse("https://mcp.example.com/mcp#/cb?token=s3cr3t&tab=1")
+	if got, want := r.URL(u), "https://mcp.example.com/mcp#/cb?token="+m+"&tab=1"; got != want {
+		t.Errorf("URL = %q, want %q", got, want)
+	}
+	if u.Fragment != "/cb?token=s3cr3t&tab=1" {
+		t.Error("URL changed its input's fragment")
+	}
+}
+
+// spec §3.5: the fragment gets the query rule, split on "&" and on "?"
+func TestRulesFragment(t *testing.T) {
+	r := NewRules(nil, nil)
+	m := mask("s3cr3t")
+	for _, tt := range []struct{ in, want string }{
+		{"", ""},
+		{"section-2", "section-2"},
+		{"access_token=s3cr3t&state=s", "access_token=" + m + "&state=s"},
+		{"access_token=s3cr3t&state=/orders?tab=1", "access_token=" + m + "&state=/orders?tab=1"},
+		{"/cb?access_token=s3cr3t", "/cb?access_token=" + m},
+		{"/cb?state=s&id_token=s3cr3t&token", "/cb?state=s&id_token=" + m + "&token"},
+		// A raw "?" ends the value: only what comes before it is masked.
+		{"access_token=s3cr3t?tab=1", "access_token=" + m + "?tab=1"},
+		{"access%5Ftoken=s3cr3t", "access%5Ftoken=" + m},
+		{"monkey=1?tokens=2", "monkey=1?tokens=2"},
+	} {
+		if got := r.Fragment(tt.in); got != tt.want {
+			t.Errorf("Fragment(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+// AC-38: a literal --redact-header name is redacted, case-insensitively.
+func TestRulesLiteralExtraHeader(t *testing.T) {
+	if !NewRules([]string{"x-custom"}, nil).RedactsHeader("X-Custom") {
+		t.Error("RedactsHeader(X-Custom) = false with --redact-header x-custom")
+	}
 }
 
 // Spec §4.3: a stored URL that holds a redaction marker needs --mcp.
@@ -272,6 +327,10 @@ func TestHasMarker(t *testing.T) {
 		{"https://h/mcp?k=[REDACTED:0a1b2c3g]", false},
 		{"https://h/mcp?[REDACTED:0a1b2c3d]", false},
 		{"https://h/mcp", false},
+		{"https://h/mcp#token=[REDACTED:0a1b2c3d]", true},
+		{"https://h/mcp#/cb?a=1&k=[REDACTED:0a1b2c3d]", true},
+		{"https://h/mcp#k=%5BREDACTED:0a1b2c3d%5D", true},
+		{"https://h/mcp#[REDACTED:0a1b2c3d]", false},
 	} {
 		u, err := url.Parse(tc.raw)
 		if err != nil {

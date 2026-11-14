@@ -205,7 +205,7 @@ func (r *Rules) urlValue(ref string) string {
 	if err != nil {
 		return mask(ref)
 	}
-	if u.User == nil && r.Query(u.RawQuery) == u.RawQuery {
+	if u.User == nil && r.Query(u.RawQuery) == u.RawQuery && r.Fragment(u.EscapedFragment()) == u.EscapedFragment() {
 		return ref
 	}
 	return r.URL(u)
@@ -219,43 +219,85 @@ func (r *Rules) Query(rawQuery string) string {
 	}
 	parts := strings.Split(rawQuery, "&")
 	for i, part := range parts {
-		name, value, hasValue := strings.Cut(part, "=")
-		key, err := url.QueryUnescape(name)
-		if err != nil {
-			key = name
-		}
-		if hasValue && r.redactsQuery(key) {
-			parts[i] = name + "=" + mask(value)
-		}
+		parts[i] = r.element(part)
 	}
 	return strings.Join(parts, "&")
+}
+
+// Fragment returns rawFragment with the values of credential elements
+// masked, keeping everything else byte for byte. It is split on "&" and on
+// "?", so a route (#/cb?access_token=…) and a value that holds a raw "?" are
+// covered: such a value is masked only up to the "?" (spec §3.5).
+func (r *Rules) Fragment(rawFragment string) string {
+	var b strings.Builder
+	for {
+		i := strings.IndexAny(rawFragment, "&?")
+		if i < 0 {
+			b.WriteString(r.element(rawFragment))
+			return b.String()
+		}
+		b.WriteString(r.element(rawFragment[:i]))
+		b.WriteByte(rawFragment[i])
+		rawFragment = rawFragment[i+1:]
+	}
+}
+
+// element masks the value of one name=value query or fragment element whose
+// name is on the deny-list.
+func (r *Rules) element(part string) string {
+	name, value, hasValue := strings.Cut(part, "=")
+	key, err := url.QueryUnescape(name)
+	if err != nil {
+		key = name
+	}
+	if hasValue && r.redactsQuery(key) {
+		return name + "=" + mask(value)
+	}
+	return part
 }
 
 func (r *Rules) redactsQuery(name string) bool {
 	return r.RedactsHeader(strings.ReplaceAll(name, "_", "-"))
 }
 
-// URL returns u as a string with its userinfo replaced by REDACTED and its
-// credential query parameters masked.
+// URL returns u as a string with its userinfo replaced by REDACTED and the
+// values of its credential query parameters and fragment elements masked.
 func (r *Rules) URL(u *url.URL) string {
 	c := *u
 	if c.User != nil {
 		c.User = url.User("REDACTED")
 	}
 	c.RawQuery = r.Query(c.RawQuery)
+	if raw := c.EscapedFragment(); raw != "" {
+		red := r.Fragment(raw)
+		// Fragment only replaces values that EscapedFragment produced with
+		// markers, so red is valid escaped text and unescapes.
+		if frag, err := url.PathUnescape(red); err == nil {
+			c.Fragment, c.RawFragment = frag, red
+		} else {
+			c.Fragment, c.RawFragment = mask(raw), ""
+		}
+	}
 	return c.String()
 }
 
 // HasMarker reports whether u holds what URL writes in place of a
-// credential: userinfo equal to REDACTED, or a query value of the form
-// [REDACTED:<8 hex digits>], escaped or not. Such a stored URL is not the
-// one that was recorded (spec §4.3). A real URL of that form is reported
-// too: it cannot be told apart.
+// credential: userinfo equal to REDACTED, or a query or fragment value of
+// the form [REDACTED:<8 hex digits>], escaped or not. Such a stored URL is
+// not the one that was recorded (spec §4.3). A real URL of that form is
+// reported too: it cannot be told apart.
 func HasMarker(u *url.URL) bool {
 	if u.User != nil && u.User.String() == "REDACTED" {
 		return true
 	}
-	for part := range strings.SplitSeq(u.RawQuery, "&") {
+	return hasMarkerValue(strings.Split(u.RawQuery, "&")) ||
+		hasMarkerValue(strings.FieldsFunc(u.EscapedFragment(), func(c rune) bool { return c == '&' || c == '?' }))
+}
+
+// hasMarkerValue reports whether one of the name=value elements has a
+// marker for its value.
+func hasMarkerValue(elements []string) bool {
+	for _, part := range elements {
 		_, value, ok := strings.Cut(part, "=")
 		if !ok {
 			continue
