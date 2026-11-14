@@ -3,6 +3,7 @@ package cli
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -22,9 +23,22 @@ func replayCommand(opts runOptions, src cassette.Session) (command []string, rec
 		// --recorded-command would not help, so it is not suggested.
 		return nil, false, fmt.Errorf("session %q has no recorded command; give the agent command after '--'", opts.source)
 	case opts.recorded:
+		if !isDir(src.Cwd) {
+			return nil, false, fmt.Errorf("the recorded working directory %s of session %q does not exist "+
+				"or is not a directory; give the agent command after '--'", strconv.Quote(src.Cwd), opts.source)
+		}
 		return src.Command, true, nil
 	}
 	return nil, false, errors.New(unchosenCommand(opts.source, src))
+}
+
+// isDir reports whether path is a directory, following symbolic links. A
+// path that cannot be inspected, for lack of permission for example, counts
+// as missing (spec §9.3). It can still disappear before the agent starts;
+// the start then fails as for any agent that cannot be started (spec §3.1).
+func isDir(path string) bool {
+	fi, err := os.Stat(path)
+	return err == nil && fi.IsDir()
 }
 
 // unchosenCommand is the usage error of a run with neither '--' nor

@@ -139,3 +139,86 @@ func TestRunRecordedCommandRunsInTheRecordedCwd(t *testing.T) {
 		t.Errorf("replay cwd %q, want %q", s.Cwd, cwd)
 	}
 }
+
+// AC-33: --recorded-command with a recorded cwd that is missing or not a
+// directory is a usage error that names it, escaped. It comes before the
+// check that an --as id exists, and nothing is created or started.
+func TestRunRecordedCommandRefusesABadCwd(t *testing.T) {
+	t.Setenv(cwdAgentEnv, "1")
+	missing := func(t *testing.T) string { return filepath.Join(t.TempDir(), "gone\x1b[2J") }
+	tests := []struct {
+		name string
+		cwd  func(t *testing.T) string
+		args []string
+	}{
+		{"missing", missing, nil},
+		{"a file", func(t *testing.T) string {
+			f := filepath.Join(t.TempDir(), "file\a")
+			if err := os.WriteFile(f, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			return f
+		}, nil},
+		{"a symlink to a missing dir", func(t *testing.T) string {
+			l := filepath.Join(t.TempDir(), "link\a")
+			if err := os.Symlink(filepath.Join(t.TempDir(), "gone"), l); err != nil {
+				t.Fatal(err)
+			}
+			return l
+		}, nil},
+		// The cwd check comes before the --as one (spec §9.3).
+		{"existing --as", missing, []string{"--as", "taken"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			cwd := tt.cwd(t)
+			writeSource(t, dir, "s", cwdAgentCommand(), cwd)
+			writeSource(t, dir, "taken", nil, "")
+
+			args := append([]string{"s", "--recorded-command", "--listen", "127.0.0.1:0"}, tt.args...)
+			r := runRunCmd(t, dir, args...)
+			if r.code != ExitUsage {
+				t.Fatalf("exit %d, want %d\n%s", r.code, ExitUsage, r.stderr)
+			}
+			stderr := r.stderr.String()
+			for _, want := range []string{strconv.Quote(cwd), "'--'"} {
+				if !strings.Contains(stderr, want) {
+					t.Errorf("stderr lacks %q:\n%s", want, stderr)
+				}
+			}
+			if strings.ContainsFunc(stderr, func(r rune) bool { return r != '\n' && unsafeRune(r) }) {
+				t.Errorf("stderr holds an unescaped control character: %q", stderr)
+			}
+			if out := r.stdout.String(); out != "" {
+				t.Errorf("the recorded command ran: %q", out)
+			}
+			assertDirHolds(t, dir, "s.cassette", "taken.cassette")
+		})
+	}
+}
+
+// AC-33: the cwd check follows symbolic links, so a symlink to a directory
+// is accepted, and the agent runs there.
+func TestRunRecordedCommandFollowsACwdSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(cwdAgentEnv, "1")
+	writeSource(t, dir, "s", cwdAgentCommand(), link)
+
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
+	if r.code != ExitOK {
+		t.Fatalf("exit %d\n%s", r.code, r.stderr)
+	}
+	want, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g, err := filepath.EvalSymlinks(r.stdout.String()); err != nil || g != want {
+		t.Errorf("agent ran in %q, want %q", r.stdout.String(), want)
+	}
+}
