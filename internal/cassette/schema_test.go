@@ -104,7 +104,7 @@ func TestOpenRejectsUnsafeSchemas(t *testing.T) {
 					t.Errorf("err = %v, want ErrUnsafeSchema mentioning %s", err, tc.want)
 				}
 				newer := tc.version > len(migrations)
-				if errors.Is(err, ErrNewerSchema) != newer || strings.Contains(err.Error(), "newer") != newer {
+				if errors.Is(err, ErrNewerSchema) != newer || strings.Contains(err.Error(), ErrNewerSchema.Error()) != newer {
 					t.Errorf("err = %v, want it to say the schema is newer: %v", err, newer)
 				}
 			}
