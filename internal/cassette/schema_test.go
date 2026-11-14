@@ -300,7 +300,7 @@ func TestMigrationTriggersArePinned(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want, err := os.ReadFile(path)
+	want, err := os.ReadFile(path) //nolint:gosec // G304: a golden file of this test
 	if err != nil {
 		t.Fatalf("%v (rerun with -update to create it)", err)
 	}
