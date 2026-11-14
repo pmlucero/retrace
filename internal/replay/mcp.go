@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/match"
 	"github.com/pmlucero/retrace/internal/mcp"
+	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
@@ -89,9 +89,8 @@ func (h *MCPHandler) Diverged() <-chan struct{} { return h.rc.divergence.Done() 
 // ServeHTTP answers r from the cassette, or as a cassette miss.
 func (h *MCPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.rc.clock.Now()
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "retrace: reading request body: "+err.Error(), http.StatusBadRequest)
+	body, ok := proxy.ReadBody(w, r, h.rc.log, mcpChannel) // spec §3.6
+	if !ok {
 		return
 	}
 	// Redaction comes before fingerprinting (spec §5 step 1), so a request

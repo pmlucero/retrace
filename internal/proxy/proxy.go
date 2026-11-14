@@ -50,7 +50,7 @@ type Config struct {
 	// MaxBodyBytes caps how much of one response, or of one SSE event, is
 	// held in memory to be recorded. Larger ones are still forwarded, and the
 	// interaction is recorded with an error instead. Zero selects
-	// cassette.DefaultQueueBytes: the writer would drop anything larger anyway.
+	// MaxRequestBytes, the 64 MiB of spec §3.5.
 	MaxBodyBytes int64
 }
 
@@ -76,7 +76,9 @@ func New(cfg Config) *Proxy {
 	}
 	maxBody := cfg.MaxBodyBytes
 	if maxBody <= 0 {
-		maxBody = cassette.DefaultQueueBytes
+		// Not a mistake: spec §3.6 makes the request limit the same 64 MiB
+		// as this one for a stored response body or SSE event (spec §3.5).
+		maxBody = MaxRequestBytes
 	}
 	p := &Proxy{writer: cfg.Writer, redact: cfg.Redact, log: log, maxBody: maxBody}
 	for _, r := range cfg.Routes {
@@ -112,6 +114,12 @@ func New(cfg Config) *Proxy {
 
 // ServeHTTP routes r by path prefix, then forwards and records it.
 func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Guard answers these first in a session; checking again here keeps the
+	// route a boundary however the Proxy is mounted (spec §3.4, §3.6).
+	if hasDotSegment(r.URL.Path) {
+		reject(w, p.log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
+		return
+	}
 	rt, rest, ok := p.match(r.URL.Path)
 	if !ok {
 		http.Error(w, fmt.Sprintf("retrace: no route for %s", r.URL.Path), http.StatusNotFound)
@@ -119,9 +127,8 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "retrace: reading request body: "+err.Error(), http.StatusBadRequest)
+	body, ok := ReadBody(w, r, p.log, rt.Channel) // spec §3.6
+	if !ok {
 		return
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
