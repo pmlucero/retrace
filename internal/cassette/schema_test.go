@@ -124,6 +124,40 @@ func TestOpenRejectsUnsafeSchemas(t *testing.T) {
 	}
 }
 
+// AC-35: a crafted file whose sqlite_schema.type disagrees with an object's
+// SQL does not open. The SQLite retrace embeds refuses such a schema as
+// malformed, and checkObject classifies by the SQL anyway, so the type column
+// cannot hide a view or a trigger either way.
+func TestOpenRejectsAMisleadingSchemaType(t *testing.T) {
+	for _, tc := range []struct{ name, create, object, typ string }{
+		{"view stored as type table", "CREATE VIEW v AS SELECT 1", "v", "table"},
+		{"trigger stored as type index", "CREATE TRIGGER evil AFTER INSERT ON blobs BEGIN SELECT 1; END", "evil", "index"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := craftCassette(t, len(migrations),
+				tc.create,
+				"PRAGMA writable_schema = ON",
+				"UPDATE sqlite_schema SET type = '"+tc.typ+"' WHERE name = '"+tc.object+"'",
+			)
+			before, err := os.ReadFile(path) //nolint:gosec // G304: a file of this test
+			if err != nil {
+				t.Fatal(err)
+			}
+			if c, err := Open(context.Background(), path); err == nil {
+				_ = c.Close()
+				t.Fatal("opened a cassette whose schema type disagrees with its SQL")
+			}
+			after, err := os.ReadFile(path) //nolint:gosec // G304: a file of this test
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Error("opening the rejected cassette modified it")
+			}
+		})
+	}
+}
+
 // Other tables and indexes run no SQL when the cassette is read (spec §7.6).
 func TestOpenAllowsExtraTablesAndIndexes(t *testing.T) {
 	path := craftCassette(t, len(migrations),
