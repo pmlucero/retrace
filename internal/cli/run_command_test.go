@@ -221,4 +221,8 @@ func TestRunRecordedCommandFollowsACwdSymlink(t *testing.T) {
 	if g, err := filepath.EvalSymlinks(r.stdout.String()); err != nil || g != want {
 		t.Errorf("agent ran in %q, want %q", r.stdout.String(), want)
 	}
+	// The replay stores the cwd as recorded, not its resolved target.
+	if s, _ := sessionOf(t, dir, "s.exact.1"); s.Cwd != link {
+		t.Errorf("replay cwd %q, want %q", s.Cwd, link)
+	}
 }
