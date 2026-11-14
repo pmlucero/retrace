@@ -22,7 +22,10 @@ var migrationFiles embed.FS
 // TestMigrationTriggersArePinned guards the trigger texts. For the same reason,
 // avoid a later migration that renames a table or column a trigger refers to:
 // SQLite rewrites the trigger's stored text then, so cassettes migrated by
-// another build could hold a text this one does not accept.
+// another build could hold a text this one does not accept. Adding a trigger
+// or a view in a new migration also makes every earlier build refuse to read
+// cassettes at that version (spec §7.6), so prefer constraints or application
+// logic where that read compatibility matters.
 var migrations = mustLoadMigrations(migrationFiles)
 
 func mustLoadMigrations(fsys fs.FS) []string {
