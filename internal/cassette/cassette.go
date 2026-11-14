@@ -205,7 +205,7 @@ func Open(ctx context.Context, path string) (*Cassette, error) {
 	// Before anything else reads the file or a migration writes it (spec §7.6).
 	if err := checkSchema(ctx, c.db); err != nil {
 		_ = c.db.Close()
-		if c.schema > len(migrations) {
+		if c.schema > len(migrations) && errors.Is(err, ErrUnsafeSchema) {
 			// A later migration may have added the object.
 			return nil, fmt.Errorf("opening %s (schema v%d, supported v%d): %w: %w", path, c.schema, len(migrations), ErrNewerSchema, err)
 		}

@@ -127,14 +127,16 @@ func TestOpenRejectsUnsafeSchemas(t *testing.T) {
 // AC-35: a crafted file whose sqlite_schema.type disagrees with an object's
 // SQL does not open. The SQLite retrace embeds refuses such a schema as
 // malformed, and checkObject classifies by the SQL anyway, so the type column
-// cannot hide a view or a trigger either way.
+// cannot hide a view or a trigger either way. The cassettes have a newer
+// schema: a malformed schema is not a failed check, so the error must not say
+// the schema is newer.
 func TestOpenRejectsAMisleadingSchemaType(t *testing.T) {
 	for _, tc := range []struct{ name, create, object, typ string }{
 		{"view stored as type table", "CREATE VIEW v AS SELECT 1", "v", "table"},
 		{"trigger stored as type index", "CREATE TRIGGER evil AFTER INSERT ON blobs BEGIN SELECT 1; END", "evil", "index"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := craftCassette(t, len(migrations),
+			path := craftCassette(t, len(migrations)+1,
 				tc.create,
 				"PRAGMA writable_schema = ON",
 				"UPDATE sqlite_schema SET type = '"+tc.typ+"' WHERE name = '"+tc.object+"'",
@@ -143,9 +145,14 @@ func TestOpenRejectsAMisleadingSchemaType(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if c, err := Open(context.Background(), path); err == nil {
+			c, err := Open(context.Background(), path)
+			if err == nil {
 				_ = c.Close()
 				t.Fatal("opened a cassette whose schema type disagrees with its SQL")
+			}
+			// Not a failed check, so not reported as a newer schema either.
+			if errors.Is(err, ErrNewerSchema) {
+				t.Errorf("err = %v, want no ErrNewerSchema", err)
 			}
 			after, err := os.ReadFile(path) //nolint:gosec // G304: a file of this test
 			if err != nil {
