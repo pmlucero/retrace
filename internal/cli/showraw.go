@@ -155,7 +155,7 @@ func writeShowRaw(w io.Writer, raw rawInteraction) error {
 	return buf.Flush()
 }
 
-// writeHeaders writes stored headers, already redacted (ADR 0008), one
+// writeHeaders writes stored headers, already redacted (ADR 0011), one
 // "name: value" line per value, sorted by name. Headers that are not the
 // JSON object the proxy stores are written as they are.
 func writeHeaders(buf io.Writer, stored json.RawMessage) {
