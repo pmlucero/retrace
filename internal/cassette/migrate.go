@@ -19,7 +19,10 @@ var migrationFiles embed.FS
 // A shipped migration is immutable byte for byte. Open accepts a trigger only
 // with the exact SQL text the migrations store (spec §7.6), so editing one,
 // even its whitespace, would make existing cassettes unreadable.
-// TestMigrationTriggersArePinned guards the trigger texts.
+// TestMigrationTriggersArePinned guards the trigger texts. For the same reason,
+// avoid a later migration that renames a table or column a trigger refers to:
+// SQLite rewrites the trigger's stored text then, so cassettes migrated by
+// another build could hold a text this one does not accept.
 var migrations = mustLoadMigrations(migrationFiles)
 
 func mustLoadMigrations(fsys fs.FS) []string {

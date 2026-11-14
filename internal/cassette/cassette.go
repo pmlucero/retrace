@@ -188,7 +188,8 @@ func removeFiles(paths []string) error {
 // with ErrNewerSchema. A file with schema version 0 is not a cassette (v1 is
 // the initial schema) and is rejected with ErrNotCassette, untouched. A file
 // whose schema objects would run stored SQL when read is rejected with
-// ErrUnsafeSchema before it is read or migrated, also untouched.
+// ErrUnsafeSchema before it is read or migrated, and its content is left as it
+// was (SQLite may still fold a leftover -wal into the file when it closes).
 func Open(ctx context.Context, path string) (*Cassette, error) {
 	if _, err := os.Stat(path); err != nil {
 		return nil, fmt.Errorf("opening %s: %w", path, err)
