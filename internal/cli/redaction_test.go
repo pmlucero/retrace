@@ -168,7 +168,7 @@ func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			before := tc.live.runOnlySeen.Load()
-			r := runRunCmd(t, dir, append([]string{"s", "--listen", "127.0.0.1:0", "--redact-header", runOnlyHeader}, tc.args...)...)
+			r := runRunCmd(t, dir, append([]string{"s", "--recorded-command", "--listen", "127.0.0.1:0", "--redact-header", runOnlyHeader}, tc.args...)...)
 			if r.code != ExitOK {
 				t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 			}
