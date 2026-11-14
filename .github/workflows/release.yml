@@ -163,7 +163,18 @@ jobs:
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-checksums: dist/checksums.txt
+      # This step, not `make_latest` in .goreleaser.yaml (it has no effect on a
+      # draft), decides Latest. Publishing a draft makes it Latest by default
+      # (pre-releases never are).
+      # A patch from a release/* branch must not take Latest from a newer
+      # release on main, and an immutable release cannot be fixed afterwards.
       - name: Publish the draft release
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+        run: |
+          latest=
+          if ! git branch -r --contains "$GITHUB_SHA" --format='%(refname:short)' \
+            | grep -x origin/main >/dev/null; then
+            latest=--latest=false
+          fi
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false $latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
