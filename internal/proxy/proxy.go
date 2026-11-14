@@ -76,6 +76,8 @@ func New(cfg Config) *Proxy {
 	}
 	maxBody := cfg.MaxBodyBytes
 	if maxBody <= 0 {
+		// Not a mistake: spec §3.6 makes the request limit the same 64 MiB
+		// as this one for a stored response body or SSE event (spec §3.5).
 		maxBody = MaxRequestBytes
 	}
 	p := &Proxy{writer: cfg.Writer, redact: cfg.Redact, log: log, maxBody: maxBody}
