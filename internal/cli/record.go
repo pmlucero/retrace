@@ -72,7 +72,7 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
 	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL")
-	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", redactHeaderFlag(&opts.redactHeader))
+	fs.Func("redact-header", "also redact the request or response header with this literal `name` (repeatable)", redactHeaderFlag(&opts.redactHeader))
 	fs.Func("redact", "redact the values this `jsonpath` selects in stored JSON bodies (repeatable)", func(v string) error {
 		p, err := redact.ParsePath(v)
 		if err != nil {

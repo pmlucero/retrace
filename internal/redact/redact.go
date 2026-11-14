@@ -31,6 +31,10 @@ var (
 // (ADR 0011). Link, which holds URI references inside <…>, is handled apart.
 var urlHeaders = map[string]bool{"location": true, "content-location": true, "referer": true}
 
+// fragmentSeparators split a fragment into elements, for Fragment and
+// HasMarker alike (spec §3.5).
+const fragmentSeparators = "&?"
+
 // Rules decides what is redacted.
 type Rules struct {
 	headers  map[string]bool // lower-case
@@ -231,7 +235,7 @@ func (r *Rules) Query(rawQuery string) string {
 func (r *Rules) Fragment(rawFragment string) string {
 	var b strings.Builder
 	for {
-		i := strings.IndexAny(rawFragment, "&?")
+		i := strings.IndexAny(rawFragment, fragmentSeparators)
 		if i < 0 {
 			b.WriteString(r.element(rawFragment))
 			return b.String()
@@ -291,7 +295,7 @@ func HasMarker(u *url.URL) bool {
 		return true
 	}
 	return hasMarkerValue(strings.Split(u.RawQuery, "&")) ||
-		hasMarkerValue(strings.FieldsFunc(u.EscapedFragment(), func(c rune) bool { return c == '&' || c == '?' }))
+		hasMarkerValue(strings.FieldsFunc(u.EscapedFragment(), func(c rune) bool { return strings.ContainsRune(fragmentSeparators, c) }))
 }
 
 // hasMarkerValue reports whether one of the name=value elements has a

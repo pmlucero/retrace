@@ -146,8 +146,8 @@ func scanCassette(t *testing.T, dir, id string, secrets, masked []string) {
 
 // AC-06: no credential reaches the cassette of a recording, nor that of a
 // replay that forwards requests, in headers, queries or URL-carrying
-// response headers, fragments included. The replay also redacts a header named only with run
-// --redact-header.
+// response headers, fragments included. The replay also redacts a header
+// named only with run --redact-header.
 func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 	t.Setenv(secretAgentEnv, "1")
 	dir := t.TempDir()

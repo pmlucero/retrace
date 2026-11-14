@@ -282,6 +282,8 @@ func TestRulesFragment(t *testing.T) {
 		// A raw "?" ends the value: only what comes before it is masked.
 		{"access_token=s3cr3t?tab=1", "access_token=" + m + "?tab=1"},
 		{"access%5Ftoken=s3cr3t", "access%5Ftoken=" + m},
+		// A name that does not unescape is checked as written.
+		{"%zz-token=s3cr3t", "%zz-token=" + m},
 		{"monkey=1?tokens=2", "monkey=1?tokens=2"},
 	} {
 		if got := r.Fragment(tt.in); got != tt.want {
