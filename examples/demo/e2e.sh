@@ -119,7 +119,7 @@ rt show "$ID"
 # An exact replay opens no upstream connection, so the servers and the fake
 # play no part in it.
 log "Exact replay (expect 0)"
-expect 0 rt run "$ID" --as "$ID.exact" --listen 127.0.0.1:0
+expect 0 rt run "$ID" --as "$ID.exact" --listen 127.0.0.1:0 --recorded-command
 
 log "Diff with the exact replay (expect 0, AC-19)"
 expect 0 rt diff "$ID" "$ID.exact"
@@ -129,7 +129,7 @@ expect 0 rt diff "$ID" "$ID.exact"
 # (spec §6.2, AC-15).
 log "Swap-model replay with claude-sonnet-5-5 (expect 3)"
 expect 3 rt run "$ID" --as "$ID.swap" --listen 127.0.0.1:0 \
-	--model claude-sonnet-5-5 --anthropic-upstream "$FAKE"
+	--model claude-sonnet-5-5 --anthropic-upstream "$FAKE" --recorded-command
 rt show "$ID.swap"
 
 log "Diff with the swap-model replay (expect 1, AC-20)"

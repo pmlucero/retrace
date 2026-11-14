@@ -55,7 +55,7 @@ func TestRunOpensNoOutboundConnections(t *testing.T) {
 
 	replaying.Store(true)
 	failOutboundDials(t)
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
@@ -92,7 +92,7 @@ func TestRunReplaysARecordedTransportError(t *testing.T) {
 		t.Fatalf("recorded agent output %q, want a 502 from retrace, then a 200", want)
 	}
 
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d, want %d\n%s", r.code, ExitOK, r.stderr)
 	}
@@ -153,7 +153,7 @@ func TestRunRealtimeKeepsTheRecordedOffsets(t *testing.T) {
 	want := recordAgainst(t, dir, "s", 1, up.URL)
 	up.Close()
 
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0", "--realtime")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0", "--realtime")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}

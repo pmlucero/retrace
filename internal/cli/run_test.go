@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -138,7 +137,7 @@ func TestRunReplaysARecordingOffline(t *testing.T) {
 		t.Fatalf("recorded agent output %q, want two different answers", want)
 	}
 
-	r := runRunCmd(t, dir, "checkout", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "checkout", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
@@ -161,7 +160,7 @@ func TestRunReplaysARecordingOffline(t *testing.T) {
 	}
 
 	// The next replay gets the next id.
-	if r := runRunCmd(t, dir, "checkout", "--listen", "127.0.0.1:0"); r.code != ExitOK {
+	if r := runRunCmd(t, dir, "checkout", "--recorded-command", "--listen", "127.0.0.1:0"); r.code != ExitOK {
 		t.Fatalf("second run: exit %d\n%s", r.code, r.stderr)
 	}
 	if _, err := os.Stat(cassette.Path(dir, "checkout.exact.2")); err != nil {
@@ -176,7 +175,7 @@ func TestRunEndsDivergedOnACassetteMiss(t *testing.T) {
 
 	t.Setenv(replayPromptEnv, "Weather in Rome?")
 	t.Setenv(agentIgnoreTermEnv, "1") // so it prints what it got
-	r := runRunCmd(t, dir, "s", "--as", "rome", "--grace", "30s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--as", "rome", "--grace", "30s", "--listen", "127.0.0.1:0")
 	if r.code != ExitDiverged {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
@@ -218,7 +217,7 @@ func TestRunWarnsAboutUnconsumedInteractions(t *testing.T) {
 	recordForReplay(t, dir, "s", 3)
 
 	t.Setenv(replayCountEnv, "1")
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("exit %d\n%s", r.code, r.stderr)
 	}
@@ -241,37 +240,9 @@ func TestRunOverridesTheCommand(t *testing.T) {
 		t.Errorf("session command %q in %q, want %q in %q", s.Command, s.Cwd, cmd, wd)
 	}
 	// AC-30: an existing --as id is not replaced.
-	r = runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0", "--as", "mine")
+	r = runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0", "--as", "mine")
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), "already exists") {
 		t.Errorf("run --as an existing id: exit %d\n%s", r.code, r.stderr)
-	}
-}
-
-// AC-30: a source without a command is refused before any cassette exists.
-func TestRunRefusesASourceWithoutACommand(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	c, err := cassette.Create(ctx, cassette.Path(dir, "s"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = c.Write(ctx, func(tx *cassette.Tx) error {
-		return tx.InsertSession(ctx, cassette.Session{ID: "s", Mode: "record", Status: "completed", OnMiss: "strict",
-			Redaction: json.RawMessage(`{"headers":[],"body":[]}`)})
-	})
-	if cerr := c.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
-	if r.code != ExitUsage || !strings.Contains(r.stderr.String(), "no recorded command") {
-		t.Errorf("exit %d, stderr %q; want a usage error", r.code, r.stderr)
-	}
-	if files, _ := filepath.Glob(filepath.Join(dir, "*.cassette")); len(files) != 1 {
-		t.Errorf("cassettes = %v, want only the source", files)
 	}
 }
 
@@ -285,7 +256,7 @@ func TestRunBusyPortLeavesNothingBehind(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	r := runRunCmd(t, dir, "s", "--listen", ln.Addr().String())
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", ln.Addr().String())
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), "cannot start the proxy") {
 		t.Errorf("exit %d, stderr %q; want %d", r.code, r.stderr, ExitError)
 	}
@@ -301,7 +272,7 @@ func TestRunFailedSessionInsertLeavesNothingBehind(t *testing.T) {
 	recordForReplay(t, dir, "s", 1)
 
 	failSessionInsert(t)
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), errInsertFailed.Error()) {
 		t.Errorf("exit %d, stderr %q; want %d and the insert's error", r.code, r.stderr, ExitError)
 	}
@@ -314,7 +285,7 @@ func TestRunUnreadableDirIsARuntimeError(t *testing.T) {
 	if err := os.WriteFile(dir, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), "cannot choose the replay's id") {
 		t.Errorf("exit %d, stderr %q; want %d", r.code, r.stderr, ExitError)
 	}
@@ -344,6 +315,8 @@ func TestRunUsageErrors(t *testing.T) {
 		{"invalid id", []string{"../x"}, "invalid session id"},
 		{"invalid --as", []string{"s", "--as", ".x"}, "invalid session id"},
 		{"empty command", []string{"s", "--"}, "no agent command"},
+		// AC-33, before the source is opened: it does not exist here.
+		{"both commands", []string{"s", "--recorded-command", "--", "true"}, "not both"},
 		{"empty model", []string{"s", "--model", ""}, "--model: want a model name"},
 		{"upstream without model", []string{"s", "--anthropic-upstream", "http://127.0.0.1:1"}, "only used with --model"},
 		{"invalid upstream", []string{"s", "--model", "m", "--anthropic-upstream", "api.anthropic.com"}, "not an http or https URL"},

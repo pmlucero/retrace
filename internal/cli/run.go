@@ -42,11 +42,14 @@ var runCommand = command{
 	run:     runRun,
 }
 
-const runUsage = `Usage: retrace run <id> [flags] [-- <agent command...>]
+const runUsage = `Usage: retrace run <id> [flags] (--recorded-command | -- <agent command...>)
 
-Runs the agent of session <id> again, by default with its recorded command
-and working directory, and answers its requests from the cassette. The
-replay is recorded as a new session.
+Runs an agent against the cassette of session <id>, and answers its requests
+from the cassette. The replay is recorded as a new session. The agent is the
+command after '--', run in the current directory, or with --recorded-command
+the command that the session recorded, run in its recorded directory. The
+recorded command never runs unless asked for: a cassette from someone else
+can run any program. Without either, run prints it so that you can review it.
 
 Without --model or --tools live it is an exact replay. With --model it is a
 swap-model replay: LLM requests are forwarded to --anthropic-upstream with
@@ -68,7 +71,9 @@ type runOptions struct {
 	realtime     bool
 	listen       string
 	listenUnsafe bool
-	command      []string    // nil: the recorded one
+	redactHeader []string    // added to the source's redaction rules
+	command      []string    // the command after "--", nil without one
+	recorded     bool        // --recorded-command: run the source's recorded command
 	anthropic    *url.URL    // the LLM upstream of swap-model
 	mcp          []mcpServer // the --mcp overrides of live-tools
 }
@@ -96,9 +101,11 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&opts.mcp))
 	fs.StringVar(&opts.onMiss, "on-miss", "strict", "divergence strategy")
 	fs.DurationVar(&opts.grace, "grace", 5*time.Second, "how long the agent has to exit after SIGTERM on a cassette miss")
+	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", redactHeaderFlag(&opts.redactHeader))
 	fs.BoolVar(&opts.realtime, "realtime", false, "replay SSE chunks with their recorded timing")
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
+	fs.BoolVar(&opts.recorded, "recorded-command", false, "run the session's recorded command in its recorded directory")
 	upstream := fs.String("anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL (swap-model)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), runUsage)
@@ -140,6 +147,9 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	}
 	if opts.command != nil && len(opts.command) == 0 {
 		return opts, usageError(env.Stderr, "no agent command after '--'"), false
+	}
+	if opts.command != nil && opts.recorded {
+		return opts, usageError(env.Stderr, "give the agent command after '--' or --recorded-command, not both"), false
 	}
 	switch {
 	case opts.tools != "frozen" && opts.tools != "live":
@@ -219,20 +229,19 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 
-	command, cwd := srcSession.Command, srcSession.Cwd
-	if opts.command != nil {
+	command, recorded, err := replayCommand(opts, srcSession)
+	if err != nil {
+		return usageError(env.Stderr, err.Error()) // before any cassette is created (spec §9.3)
+	}
+	cwd := srcSession.Cwd
+	if !recorded {
 		if cwd, err = os.Getwd(); err != nil {
 			log.Error("reading the working directory", "error", err)
 			return ExitError
 		}
-		command = opts.command
-	}
-	if len(command) == 0 {
-		// Before any cassette is created (spec §9.3).
-		return usageError(env.Stderr, fmt.Sprintf("session %q has no recorded command; give one after '--'", opts.source))
 	}
 
-	rules, err := redact.RulesFromMetadata(srcSession.Redaction)
+	rules, err := redact.RulesFromMetadata(srcSession.Redaction, opts.redactHeader...) // spec §4.4
 	if err != nil {
 		log.Error("cannot read the session's redaction rules", "session", opts.source, "error", err)
 		return ExitError
@@ -280,7 +289,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
 		Mode: mode, ModelOverride: modelOverride, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
 		Command: command, Cwd: cwd, OnMiss: strategy.Name(),
-		MCPServers: mcpServers, Redaction: srcSession.Redaction, RetraceVersion: Version(),
+		MCPServers: mcpServers, Redaction: rules.Metadata(), RetraceVersion: Version(),
 		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
 	})
 	if err != nil {

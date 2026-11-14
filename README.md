@@ -60,14 +60,16 @@ When a replay hits something that was never recorded, retrace stops by default (
 retrace record --session checkout --mcp orders=http://localhost:9001/mcp \
                --mcp email=http://localhost:9002/mcp -- python agent.py
 
-# Replay it offline, exactly
-retrace run checkout
+# Replay it offline, exactly. run never starts the recorded command unless
+# asked (it may be someone else's): give the agent after '--', or use
+# --recorded-command for the one the session recorded
+retrace run checkout --recorded-command
 
 # Same tool results, different model
-retrace run checkout --model <other-model> --tools frozen
+retrace run checkout --model <other-model> --tools frozen -- python agent.py
 
 # Same model decisions, real tools
-retrace run checkout --tools live --mcp orders=http://localhost:9001/mcp
+retrace run checkout --tools live --mcp orders=http://localhost:9001/mcp -- python agent.py
 
 # Where did the trajectories diverge?
 retrace diff checkout checkout.swap-model.1

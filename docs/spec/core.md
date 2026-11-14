@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.26
-- Last updated: 2026-11-12
+- Version: 0.27
+- Last updated: 2026-11-14
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -109,6 +109,7 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 - Userinfo (`https://user:pass@host`) is replaced with `REDACTED`.
 - A query parameter is redacted when its name, lower-cased and with `_` read as `-`, is on the header deny-list. Its value becomes `[REDACTED:<sha256-prefix-8>]`, and the rest of the URL is kept as it was. So `X-Amz-Signature`, `X-Amz-Credential` and `access_token` are redacted.
+- The fragment gets the same rule as the query, element by element: it is split on `&` and on `?`, and in each `name=value` element whose name is on the deny-list the value is masked. The rest of the fragment is kept as it was, including elements without `=`. Splitting on `?` covers a single-page app's route (`#/cb?access_token=…`) and a token followed by a `state` that holds a path (`#access_token=…&state=/orders?tab=1`). A deny-listed value that itself holds a raw `?` is masked only up to it. The OAuth implicit flow returns its token this way (`Location: https://app.example/cb#access_token=…&state=…`).
 - A URL-carrying header that is itself on the deny-list is masked whole, as any other redacted header.
 
 **Body redaction** (`--redact <jsonpath>`, repeatable) is opt-in.
@@ -126,11 +127,23 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 Some requests are answered by retrace itself, before they are forwarded or matched. These rules apply in record and in every replay mode, on both routes.
 
+- A request whose host does not name the address retrace listens on is answered with HTTP `403`. The host is the `Host` header, or the authority of the request target when the request line carries an absolute URI. It names the listen address when its host part, without the port, compared case-insensitively and without any other normalization (so `localhost.` is not `localhost`), is one of these:
+  - `localhost`, the host given with `--listen`, or the host of the URLs of §3.2, each in the form a `Host` header carries (an IPv6 address in brackets). An empty host, as in `--listen :4790`, is never accepted. Browsers resolve `localhost` to loopback without DNS, so it cannot carry DNS rebinding.
+  - Any IP literal (`127.0.0.1` and `[::1]` included): an IPv4 address in dotted-decimal form with four decimal parts from 0 to 255 and no leading zeros (`10.0.0.5`), or an IPv6 address in brackets without a zone (`[fd00::1]`, an IPv4-mapped one such as `[::ffff:10.0.0.5]` included). An agent in a container or on another machine may reach retrace through an address retrace cannot know, such as a NAT or a container gateway, and DNS rebinding needs a host name, so an IP literal cannot carry it. Any other name is rejected: the agent uses an IP literal or the `--listen` host instead.
+  - Known limitation: Docker Desktop forwards `host.docker.internal` to the host's loopback, so an agent in a container can reach a loopback-bound retrace, but under a name that is rejected. The agent uses the IP address that name resolves to instead, which needs no `--listen-unsafe`.
+  - The port is not compared. DNS rebinding is stopped by the host name alone, and a port forward (`ssh -L 9000:localhost:4790`, `docker run -p 8080:4790`) gives the agent another port than the one retrace listens on. An HTTP/1.0 request without a `Host` header has an empty host and is rejected.
+  - Without this check, a web page could reach the proxy through DNS rebinding, under a host name that resolves to the listen address, read recorded responses to requests it can reproduce (such as an MCP `tools/list`), and, in record and in `live-tools`, call tools on registered MCP servers that do not authenticate the caller. The forwarded request carries the upstream's `Host` (ADR 0002), so an MCP server that checks `Host` against rebinding cannot do it for retrace.
+- A request with an `Origin` or `Sec-Fetch-Site` header, whatever its value (`null` included), is answered with HTTP `403`. Browsers send `Origin` on cross-origin requests and on every `POST`, but not on a cross-origin `GET` they make without CORS, such as for an `<img>` tag. Current browsers send `Sec-Fetch-Site`, which a page cannot remove, on every request to a loopback address, including such a `GET`. The HTTP clients agents use (the Anthropic SDKs, MCP client libraries) send neither header. Other `Sec-Fetch-*` headers are not checked: Node's built-in `fetch` sends `Sec-Fetch-Mode: cors` on every request, and agents built on it MUST keep working. The MCP Streamable HTTP transport asks local servers to validate `Origin` for the same reason as the host check.
+  - Without this check, a web page could still send requests with the right host: it could not read the responses to a `GET` made without CORS, but it could add interactions to a recording or make a strict replay diverge (§6.2).
+  - Known limitation: an agent that runs in a browser or in a desktop application's web view sends these headers, so retrace cannot record or replay it in the MVP. The same holds for any other runtime that sends `Origin` or `Sec-Fetch-Site`.
+  - Known limitation: an older browser that does not send `Sec-Fetch-Site` can still send a `GET` without CORS, and without reading the response, to a loopback listen address.
+  - Known limitation: browsers send `Sec-Fetch-Site` only to secure origins, which loopback addresses are and a non-loopback `http` address is not. With `--listen-unsafe`, a page can still send a `GET` without CORS, and without reading the response, to an IP-literal listen address.
 - A request whose path has a `.` or `..` segment, anywhere in it, or an invalid percent-encoding (such as `%zz`) is answered with HTTP `400`. The check reads the whole request path as the agent sent it, without the query, before routing and before any path cleaning or redirect by the HTTP router, so the answer is `400` in every mode, never a redirect. The path is percent-decoded once and then split on `/` and `\`, so `%2e%2e`, `..%2f` and `..\` count too. The route is a boundary: without this check, `/mcp/orders/../admin` would reach a path on the MCP server's host outside the registered URL.
-  - A request line with an invalid percent-encoding can be refused by the HTTP server with `400` before retrace's handler sees it. The body and logging rules below then do not apply, and the request is still neither forwarded nor recorded.
+  - The HTTP server can refuse a malformed request with `400` before retrace's handler sees it and runs any of these checks: a request line with an invalid percent-encoding, or an HTTP/1.1 request with no `Host` header or with several. The body and logging rules below then do not apply, and the request is still neither forwarded nor recorded.
 - A request whose body is larger than 64 MiB (2^26 bytes) is answered with HTTP `413`. A `Content-Length` above the limit is rejected before the body is read, and a body without one is read only up to the limit, so a local client cannot make retrace hold an unbounded body in memory. 64 MiB is the proxy's limit for one stored response body or SSE event (§3.5), and is well above what the Anthropic Messages API accepts in one request. It is not configurable in the MVP.
-- The response body says why the request was rejected, starting with `retrace:`. On the LLM route it has the Anthropic API's error shape, `{"type":"error","error":{"type":...,"message":...}}`, with type `invalid_request_error` for `400` and `request_too_large` for `413`, so SDK clients show a readable error. On the MCP route and outside both routes it is plain text. The route of a rejected request, for its body and its warning, is the prefix of the raw path as the agent sent it, so `/mcp/../llm/anthropic/v1/messages` is on the MCP route.
-- A rejected request is not forwarded and not recorded. retrace logs a warning with the route, if any, and the reason, but not the request's path or query, which may carry a credential that is never redacted because it is not recorded. The agent gets the same answer in every mode, so the recording and its replays stay consistent without storing it. It is not a cassette miss.
+- retrace's checks run in this order, and the first that fails decides the answer: the host, the browser headers (`Origin` and `Sec-Fetch-Site`), the path, then the body size. So a request with a wrong host gets `403` even when its path has a dot segment or its `Content-Length` is above the limit, and its body is never read.
+- The response body says why the request was rejected, starting with `retrace:`. On the LLM route it has the Anthropic API's error shape, `{"type":"error","error":{"type":...,"message":...}}`, with type `permission_error` for `403`, `invalid_request_error` for `400` and `request_too_large` for `413`, so SDK clients show a readable error. On the MCP route and outside both routes it is plain text. The route of a rejected request, for its body and its warning, is the prefix of the raw path as the agent sent it, so `/mcp/../llm/anthropic/v1/messages` is on the MCP route.
+- A rejected request is not forwarded and not recorded. retrace logs a warning with the route, if any, and the reason, but not the request's path or query, which may carry a credential that is never redacted because it is not recorded. Neither the response body nor the warning includes the rejected host or header value. The agent gets the same answer in every mode, so the recording and its replays stay consistent without storing it. It is not a cassette miss.
 
 ## 4. Replay modes
 
@@ -163,7 +176,7 @@ Some requests are answered by retrace itself, before they are forwarded or match
 - LLM requests are answered from the cassette via matching.
 - MCP requests are forwarded to the real servers: the recorded URLs, unless overridden with `--mcp`.
   - Each server is reached at its `--mcp` URL when one is given, and otherwise at the `url` stored in the source's `mcp_servers` (§7.2).
-  - A stored URL that holds a redaction marker (§3.5) is not the URL that was recorded, so that server needs `--mcp`. Without it, `run` fails with a usage error (exit `2`) that names the server. A marker is userinfo equal to `REDACTED`, or a query value of the form `[REDACTED:<8 hex digits>]`. A real URL that happens to have that form also needs `--mcp`.
+  - A stored URL that holds a redaction marker (§3.5) is not the URL that was recorded, so that server needs `--mcp`. Without it, `run` fails with a usage error (exit `2`) that names the server. A marker is userinfo equal to `REDACTED`, or a query or fragment value of the form `[REDACTED:<8 hex digits>]`. A real URL that happens to have that form also needs `--mcp`.
   - Every MCP request is forwarded as in record mode (§3.4), including `GET` streams, `DELETE` and messages that hold only notifications or responses. §5 step 3 does not apply: request ids and `Mcp-Session-Id` headers pass through unchanged, and the interactions are recorded with `provenance = live`.
 - If a live tool returns a different result, the next LLM request's `messages` differ and its fingerprint misses. That is a divergence, handled by the same strategy (§6). No separate tool-result comparison is needed.
 
@@ -290,7 +303,7 @@ All timestamps are RFC 3339 UTC strings with microsecond precision. Durations ar
 | `model_override` | TEXT NULL | `--model` value in `swap-model` |
 | `on_miss` | TEXT | Divergence strategy name |
 | `mcp_servers` | JSON | `[{name, url, protocol_version, server_info}]`. `protocol_version` and `server_info` are absent, not `null`, when no `initialize` exchange qualifies (§3.4). `server_info` is the `serverInfo` object of the recorded result (after redaction, §3.5), and is also absent when the chosen result has no `serverInfo` object |
-| `redaction` | JSON | Active header and body redaction rules |
+| `redaction` | JSON | Active header and body redaction rules: `{"body": [...], "headers": [...]}`. `body` holds the `--redact` JSONPaths (§3.5). `headers` holds the whole header deny-list in effect: the default names, the names added with `--redact-header`, and the suffix patterns written with a leading `*` (`*-token`) |
 | `retrace_version` | TEXT | Version of the binary that wrote the cassette |
 | `deriver_version` | INTEGER | Version of the event derivation logic |
 | `pricing_version` | TEXT | Version of the embedded price table (§7.5) |
@@ -520,7 +533,7 @@ Each global flag's value is resolved with the precedence flag > environment vari
 ### 9.2 `retrace record`
 
 ```text
-retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
+retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>] [--listen-unsafe]
                [--anthropic-upstream <url>] [--redact <jsonpath>]... [--redact-header <name>]...
                [--label <k>=<v>]... [--force] -- <agent command...>
 ```
@@ -532,7 +545,9 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
   - A generated id has the form `YYYYMMDD-HHMMSS-xxxx`: local time, then four random lowercase hexadecimal digits. If it already exists, a new random suffix is drawn.
 - `--force`: replaces the cassette of an existing session. The old cassette stays unchanged until the new one holds its session row (§7.2), and the new file then takes its place with an atomic rename. If `record` fails before that, for example because the session row cannot be written, the old session is left as it was. If a step right after the rename fails (removing the old cassette's SQLite log files, or reopening the new cassette), the new cassette is removed as well, and the id is left free.
 - `--mcp`: registers an MCP upstream. Repeatable.
-- `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`.
+- `--redact-header`: adds a header name to the deny-list (§3.5). Repeatable. The name is literal: a name that starts with `*` is a usage error (exit `2`) whose message says that `*` patterns are not accepted on the command line. A user who writes `*-x` expects a pattern and would silently get none. The stored redaction rules (§7.2) also mark patterns with a leading `*`, so a stored literal `*-x` could not be told apart from one.
+- `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`. Requests whose host does not name this address are rejected (§3.6).
+- `--listen-unsafe`: allows a non-loopback `--listen` address. The proxy has no authentication, so anyone who can reach that address can use it (§10).
 - `--anthropic-upstream`: the Anthropic API base URL. Default `https://api.anthropic.com`. A value that is not an absolute `http` or `https` URL is a usage error.
 
 ### 9.3 `retrace run`
@@ -541,7 +556,7 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>]
 retrace run <id> [--model <model>] [--tools frozen|live] [--as <new-id>]
                  [--on-miss strict] [--realtime] [--grace <duration>]
                  [--anthropic-upstream <url>] [--mcp <name>=<url>]...
-                 [--redact-header <name>]... [--listen <addr>]
+                 [--redact-header <name>]... [--listen <addr>] [--listen-unsafe]
                  (--recorded-command | -- <agent command...>)
 ```
 
@@ -561,7 +576,7 @@ The mode is derived from the flags:
   - If the default does not fit the id format (§9.2), or its `n` reaches 2^63 − 1, it is a usage error that asks for `--as`.
   - An `--as` id that already exists fails with exit `1`, as in `record` without `--force`. `run` has no `--force`.
 - `-- <cmd>`: the agent command. The agent runs in retrace's working directory.
-- `--recorded-command`: runs the source session's recorded command (`command`, §7.2) in its recorded working directory (`cwd`). A source with no recorded command (an empty `command`) is a usage error (exit `2`).
+- `--recorded-command`: runs the source session's recorded command (`command`, §7.2) in its recorded working directory (`cwd`). A source with no recorded command (an empty `command`) is a usage error (exit `2`). So is a recorded `cwd` that does not exist or is not a directory on this machine: the error names it, with control characters escaped (§10), and asks for `-- <cmd>`. Both are reported before the new session's cassette is created and before any process starts. The `cwd` check follows symbolic links, and a directory that cannot be inspected (for example for lack of permission) counts as missing. The directory can still disappear between the check and the start of the agent; the session then fails as any agent that cannot be started (§3.1).
 - `run` MUST NOT run the recorded command unless `--recorded-command` is given ([ADR 0013](../adr/0013-explicit-replay-command.md)). A cassette may come from someone else, so it is untrusted input, and its `command` is code that would run with the user's privileges (the shareable bug reports of the [vision](../vision.md), §2).
   - Without `-- <cmd>` or `--recorded-command`, `run` fails with a usage error (exit `2`) that prints the stored argv and cwd, so the user can review them before choosing. Each argv element and the cwd are printed as quoted strings, with control and bidirectional control characters escaped, so the text cannot drive the terminal or hide part of the command. When the source has no recorded command, the error says so and asks for `-- <cmd>`, since `--recorded-command` would not help.
   - Giving both `-- <cmd>` and `--recorded-command` is a usage error (exit `2`).
@@ -570,10 +585,11 @@ The mode is derived from the flags:
 - `--mcp`: in `live-tools`, overrides recorded MCP URLs (§4.3), with the same syntax as in `record` (§9.2).
   - Its name MUST be one of the source's `mcp_servers` (§7.2). Another name is a usage error, because the agent would have no `RETRACE_MCP_<NAME>_URL` for it.
   - In other modes MCP is served from the cassette, so the flag is a usage error.
-- `--redact-header`: adds a header name to the source session's redaction rules (§3.5), as in `record`. Repeatable. The new session stores the combined rules. Headers are not fingerprinted (§5), so matching does not change. `run` has no `--redact`: body rules change fingerprints, so a replay uses the source's.
+- `--redact-header`: adds a header name to the source session's redaction rules (§3.5), as in `record`, with the same rule for a leading `*` (§9.2). Repeatable. The new session stores the combined rules. Headers are not fingerprinted (§5), so matching does not change. `run` has no `--redact`: body rules change fingerprints, so a replay uses the source's.
+- `--listen` and `--listen-unsafe`: as in `record` (§9.2), including the host check of §3.6.
 - `--grace`: how long the agent has to exit after `SIGTERM` on a divergence (§6.2), as a Go duration (`5s`, `500ms`). Default `5s`. A negative value is a usage error.
 - MCP servers: a replay serves the MCP servers of the source session (`mcp_servers`, §7.2) under the same names, and gives the agent the same `RETRACE_MCP_<NAME>_URL` variables (§3.2), pointing at retrace. In `exact` and `swap-model`, where every MCP answer comes from the cassette, its `mcp_servers` is a copy of the source's. In `live-tools`, each server keeps its name, its `url` is the one actually used (after `--mcp`, redacted as in §3.5), and `protocol_version` and `server_info` are read from the replay's own exchanges as in §3.4.
-- Errors in the flags and arguments (exit `2`), including both `-- <cmd>` and `--recorded-command`, and a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): neither `-- <cmd>` nor `--recorded-command` (the error prints the stored argv and cwd), `--recorded-command` with an empty command, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
+- Errors in the flags and arguments (exit `2`), including both `-- <cmd>` and `--recorded-command`, and a default id that does not fit or whose `n` reaches 2^63 − 1, are reported before the source session is opened. The checks that need the source come after, and before the check that an `--as` id already exists (exit `1`): neither `-- <cmd>` nor `--recorded-command` (the error prints the stored argv and cwd), `--recorded-command` with an empty command or with a recorded `cwd` that does not exist or is not a directory, an `--mcp` name that is not in `mcp_servers`, and, in `live-tools`, a stored URL with a redaction marker and no `--mcp` (§4.3).
 - A replay that hit a cassette miss under `strict` ends with status `diverged` and exits `3` (§6.2), even when the agent then exits with a non-zero code or retrace is interrupted. `agent_exit_code` still stores the agent's code (§3.1), including `128 + signal number` when retrace's own signal ended it.
 
 ### 9.4 `retrace diff`
@@ -630,13 +646,14 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 ## 10. Security and privacy
 
 - Credentials in headers and URLs are redacted before storage, and body redaction is opt-in (§3.5, [ADR 0011](../adr/0011-secret-redaction-defaults.md)).
-- The proxy binds to loopback by default.
+- The proxy binds to loopback by default. It has no authentication, so a non-loopback address needs `--listen-unsafe` (§9.2).
+- The proxy answers only requests whose host names its listen address and that carry no `Origin` or `Sec-Fetch-Site` header (§3.6). A web page cannot reach it through DNS rebinding or a cross-origin request on a loopback address. With `--listen-unsafe`, a page can still send it a `GET` without reading the response (§3.6).
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
 - A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
 - **Escaped text output.** Every text output escapes each control character (C0 and C1) and each bidirectional control character that comes from a cassette. That covers `ls`, `show`, `show --raw`, `diff` in text format and the divergence report of §6.4, and also the warnings, errors and log messages of any command that include a value read from a cassette, such as a stored MCP URL (§4.3) or command (§9.3). The one exception is the multi-line text of `show --raw` (bodies and SSE chunks), which keeps line feeds and tabs so it keeps its layout. They cannot drive the terminal.
   - The length limits of §6.4 (80 characters) and §9.6 (60 characters) count characters before escaping. An escaped value can therefore print wider than the limit, but a cut never splits an escape.
-  - Text output is for people. The JSON outputs (`show --json`, `diff --format json`) are the faithful form of the cassette's values.
+  - Text output is for people. The JSON outputs (`ls --json`, `show --json`, `diff --format json`) are the faithful form of the cassette's values.
 
 ## 11. Acceptance criteria
 
@@ -649,9 +666,11 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-03** A streaming `/v1/messages` exchange is recorded with every SSE event and its offset. The agent receives the first chunk before the upstream finishes (no buffering).
 - **AC-04** MCP `initialize`, `tools/list` and `tools/call` exchanges over Streamable HTTP are recorded, for both JSON and SSE responses, against two distinct MCP servers in the same session.
 - **AC-05** Events are derived with all §7.4 fields populated where applicable, including tokens and estimated cost for each `model_response`, and correct `source`/`target`.
-- **AC-06** Credentials never appear in the cassette file, verified by scanning the raw file bytes: the LLM `x-api-key`, an MCP `Authorization` header, a `*-token` header, a token in a query string, a credential in the query or userinfo of a `Location` URL, and a `Set-Cookie` response header. The scan covers the cassette of a recording and the cassette of a replay that forwards requests (`swap-model` and `live-tools`). In the replay, the scan also covers a header named only with `run --redact-header`.
+- **AC-06** Credentials never appear in the cassette file, verified by scanning the raw file bytes: the LLM `x-api-key`, an MCP `Authorization` header, a `*-token` header, a token in a query string, a credential in the query, the fragment (`#access_token=…`, and `#access_token=…&state=/orders?tab=1`) or the userinfo of a `Location` URL, and a `Set-Cookie` response header. The scan covers the cassette of a recording and the cassette of a replay that forwards requests (`swap-model` and `live-tools`). In the replay, the scan also covers a header named only with `run --redact-header`.
 - **AC-07** Killing retrace with `SIGINT` mid-session leaves a readable cassette with status `interrupted`.
 - **AC-34** In record mode and in exact mode, a request for `/mcp/<name>/../x`, for `/mcp/../llm/anthropic/v1/messages`, or with `%2e%2e` in place of `..`, gets HTTP `400` (never a redirect), and a request whose body is larger than 64 MiB gets HTTP `413`, with or without a `Content-Length`. On the LLM route the body has the Anthropic error shape with type `invalid_request_error` or `request_too_large`. None of them reaches the upstream or is stored in the cassette, and the logged warning does not contain the request's path or query (checked with a token in the query).
+- **AC-37** In record mode and in exact mode, on both routes, a request with `Host: rebind.example:<port>` gets HTTP `403`, and so does a request with an `Origin` header (`http://localhost:<port>` and `null` included) or with `Sec-Fetch-Site: cross-site` and the right host, while a request with the right host and only `Sec-Fetch-Mode: cors`, as Node's `fetch` sends, is accepted. On a loopback listen address, `localhost:<port>`, `127.0.0.1:<port>` and `[::1]:<port>` are accepted, and so is `localhost:9000` (a port forward), while `localhost.:<port>` is rejected. With `--listen-unsafe` on a non-loopback address, `localhost:<port>` and an IP literal are accepted and another host name is rejected. `10.0.0.5:<port>` is also accepted on a loopback listen address. A request with a wrong host and a dot segment in its path gets `403`. On the LLM route the body has the Anthropic error shape with type `permission_error`. None of them reaches the upstream or is stored in the cassette, and the logged warning contains neither the request's path and query nor the rejected value.
+- **AC-38** `record --redact-header '*-x'` and `run <id> --redact-header '*-x'` exit `2`, start no process and create no cassette, and the error says that `*` patterns are not accepted on the command line. `record --redact-header x-custom` redacts `X-Custom` as before.
 - **AC-24** `record --session` with an invalid id (for example `../x`, `.hidden`, `a/b`, `NUL` or 129 characters) exits `2` and creates no file.
 - **AC-25** `record --redact '$..email'` stores no `email` value from request bodies, response bodies or SSE events (verified by scanning the raw file bytes), while the agent and the upstream receive the original bodies.
 - **AC-26** When the cassette writer drops events during `record` (forced with failing event writes or a stalled writer), the ended session has `dropped_events` equal to the number of dropped events, including events dropped at the end of the log, the missing `seq` values are exactly those of the other dropped events, and `reindex` restores the events of complete interactions and sets `dropped_events` to `0`.
@@ -669,7 +688,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-28** In exact mode, an LLM request that cannot be served from its queue (the queue is empty, or its head is an interaction whose recording is incomplete) gets HTTP `422` with error type `retrace_cassette_miss`, appends a `divergence` event (with `incomplete_interaction` set in the second case), and the replay ends with status `diverged` and exit `3`. This holds even when the agent then exits with a non-zero code or retrace receives a signal, and in both cases `agent_exit_code` keeps the agent's code. The incomplete interaction is not reported as unconsumed.
 - **AC-29** In exact mode, an LLM or MCP request whose queue head is an interaction recorded with a transport error and a complete recording gets HTTP `502` with a body starting `retrace: upstream request failed:`. The interaction is consumed, no `divergence` event is appended, the replay does not end `diverged` on its account, and the new interaction is stored with `provenance = replayed`, no status and the source's `error`, deriving the same events as the source (for an LLM request, the same `model_response`).
 - **AC-30** `run` with a source session that does not exist, or with an `--as` id that already exists, exits `1`; `run --recorded-command` of a source with no recorded command exits `2`. None of them creates a new cassette.
-- **AC-33** `run <id>` with neither `-- <cmd>` nor `--recorded-command` exits `2`, starts no process, creates no cassette, and prints the recorded argv and cwd with control characters escaped. For a source with no recorded command, the error says so and asks for `-- <cmd>` without suggesting `--recorded-command`. `run` with both exits `2`. `run <id> --recorded-command` runs the recorded command in the recorded working directory.
+- **AC-33** `run <id>` with neither `-- <cmd>` nor `--recorded-command` exits `2`, starts no process, creates no cassette, and prints the recorded argv and cwd with control characters escaped. For a source with no recorded command, the error says so and asks for `-- <cmd>` without suggesting `--recorded-command`. `run` with both exits `2`. `run <id> --recorded-command` runs the recorded command in the recorded working directory. When that directory does not exist, or is a file, `run --recorded-command` exits `2`, starts no process, creates no cassette, and the error names the directory with control characters escaped.
 
 ### Swap-model and strict
 
