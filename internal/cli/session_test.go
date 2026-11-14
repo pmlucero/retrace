@@ -23,7 +23,8 @@ import (
 const cwdAgentEnv = "RETRACE_TEST_CWD_AGENT"
 
 // TestHelperCwdAgent prints its working directory. It only runs as a
-// subprocess of TestRunSessionRunsTheAgentInCwd.
+// subprocess of TestRunSessionRunsTheAgentInCwd and of the run tests that
+// check whether, and where, the agent ran.
 func TestHelperCwdAgent(t *testing.T) {
 	if os.Getenv(cwdAgentEnv) == "" {
 		t.Skip("subprocess of the session tests")

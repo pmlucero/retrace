@@ -22,7 +22,7 @@ You can expect an acknowledgement within 7 days. Fixes are coordinated privately
 
 retrace is a local development tool. These areas are especially relevant:
 
-- **Credential leakage into cassettes.** For example, an auth header or token that bypasses redaction ([ADR 0008](docs/adr/0008-secret-redaction.md)).
+- **Credential leakage into cassettes.** For example, an auth header or token that bypasses redaction ([ADR 0011](docs/adr/0011-secret-redaction-defaults.md)).
 - **Network exposure of the proxy.** For example, binding beyond loopback without `--listen-unsafe`, or upstream requests in `exact` mode, which must make no outbound connections.
 - **Untrusted cassettes.** For example, a crafted cassette file that causes code execution, path traversal or resource exhaustion when opened with `run`, `show` or `diff`.
 
