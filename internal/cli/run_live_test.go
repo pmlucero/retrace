@@ -41,7 +41,7 @@ func TestRunLiveTools(t *testing.T) {
 
 	t.Run("same results", func(t *testing.T) {
 		mcpFlags := liveServers(t, lookupTool())
-		r := runRunCmd(t, dir, append([]string{"s", "--tools", "live", "--listen", "127.0.0.1:0"}, mcpFlags...)...)
+		r := runRunCmd(t, dir, append([]string{"s", "--recorded-command", "--tools", "live", "--listen", "127.0.0.1:0"}, mcpFlags...)...)
 		if r.code != ExitOK {
 			t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 		}
@@ -86,7 +86,7 @@ func TestRunLiveTools(t *testing.T) {
 		moved := mcptest.Tool{Name: "lookup", Handler: func(_ context.Context, args json.RawMessage) (string, error) {
 			return "moved " + string(args), nil
 		}}
-		r := runRunCmd(t, dir, append([]string{"s", "--tools", "live", "--as", "moved", "--listen", "127.0.0.1:0"},
+		r := runRunCmd(t, dir, append([]string{"s", "--recorded-command", "--tools", "live", "--as", "moved", "--listen", "127.0.0.1:0"},
 			liveServers(t, moved)...)...)
 		if r.code != ExitDiverged {
 			t.Fatalf("run: exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
@@ -136,7 +136,7 @@ func TestRunLiveToolsUsageErrors(t *testing.T) {
 		{"redacted URL", nil, "MCP server orders: the recorded URL https://REDACTED@orders.example.com/mcp was redacted"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			r := runRunCmd(t, dir, append([]string{"s", "--tools", "live", "--as", "x", "--listen", "127.0.0.1:0"}, tc.args...)...)
+			r := runRunCmd(t, dir, append([]string{"s", "--recorded-command", "--tools", "live", "--as", "x", "--listen", "127.0.0.1:0"}, tc.args...)...)
 			if r.code != ExitUsage || !strings.Contains(r.stderr.String(), tc.want) {
 				t.Errorf("exit %d, stderr %q; want %d and %q", r.code, r.stderr, ExitUsage, tc.want)
 			}

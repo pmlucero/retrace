@@ -74,7 +74,7 @@ func TestRunReplaysMCPOffline(t *testing.T) {
 	recorded := recordMCPForReplay(t, dir)
 	failOutboundDials(t)
 
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
@@ -118,7 +118,7 @@ func TestRunReplaysMCPInAnotherOrder(t *testing.T) {
 
 	t.Setenv(mcpReverseEnv, "1")
 	t.Setenv(mcpSwapEnv, "1")
-	r := runRunCmd(t, dir, "s", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
@@ -150,7 +150,7 @@ func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 
 	t.Setenv(mcpKeyEnv, "Z9")
 	t.Setenv(agentIgnoreTermEnv, "1") // so it reports every exchange
-	r := runRunCmd(t, dir, "s", "--as", "z9", "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--as", "z9", "--listen", "127.0.0.1:0")
 	if r.code != ExitDiverged {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
