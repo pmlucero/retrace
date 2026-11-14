@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
 )
@@ -40,7 +41,7 @@ func TestUnsafeCassetteIsRejected(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := runLsCmd(dir, "--json")
+	r := within(t, "ls", func() recordRun { return runLsCmd(dir, "--json") })
 	if r.code != ExitOK {
 		t.Fatalf("ls: exit code %d, stderr:\n%s", r.code, r.stderr)
 	}
@@ -52,11 +53,14 @@ func TestUnsafeCassetteIsRejected(t *testing.T) {
 		t.Errorf("ls does not warn about evil.cassette:\n%s", r.stderr)
 	}
 
-	if r := runShowCmd(dir, "evil"); r.code != ExitError {
-		t.Errorf("show: exit code %d, want %d; stderr:\n%s", r.code, ExitError, r.stderr)
+	// The cause, so that an unrelated failure does not pass.
+	const cause = "safety checks"
+	if r := within(t, "show", func() recordRun { return runShowCmd(dir, "evil") }); r.code != ExitError || !strings.Contains(r.stderr.String(), cause) {
+		t.Errorf("show: exit code %d, want %d and %q; stderr:\n%s", r.code, ExitError, cause, r.stderr)
 	}
-	if r := runRunCmd(t, dir, "evil", "--listen", "127.0.0.1:0"); r.code != ExitError || !strings.Contains(r.stderr.String(), "cannot open the cassette") {
-		t.Errorf("run: exit code %d, want %d and cannot open the cassette; stderr:\n%s", r.code, ExitError, r.stderr)
+	r = within(t, "run", func() recordRun { return runRunCmd(t, dir, "evil", "--listen", "127.0.0.1:0") })
+	if r.code != ExitError || !strings.Contains(r.stderr.String(), cause) {
+		t.Errorf("run: exit code %d, want %d and %q; stderr:\n%s", r.code, ExitError, cause, r.stderr)
 	}
 
 	after, err := os.ReadFile(path) //nolint:gosec // G304: a file of this test
@@ -65,5 +69,20 @@ func TestUnsafeCassetteIsRejected(t *testing.T) {
 	}
 	if !bytes.Equal(before, after) {
 		t.Error("a command modified the rejected cassette")
+	}
+}
+
+// within runs cmd and fails the test if it does not return in time, so a
+// command that reads the recursive view fails instead of hanging the suite.
+func within(t *testing.T, name string, cmd func() recordRun) recordRun {
+	t.Helper()
+	done := make(chan recordRun, 1)
+	go func() { done <- cmd() }()
+	select {
+	case r := <-done:
+		return r
+	case <-time.After(30 * time.Second):
+		t.Fatalf("%s hung on the recursive view", name)
+		return recordRun{}
 	}
 }

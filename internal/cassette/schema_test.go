@@ -5,10 +5,13 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"flag"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -268,5 +271,40 @@ func TestOpenRejectsAnUnsafeWALCassetteWithoutMigrating(t *testing.T) {
 	}
 	if version != 1 || views != 1 || sessions != 1 {
 		t.Errorf("after the rejection: user_version %d, views %d, sessions %d; want 1, 1, 1 (unchanged)", version, views, sessions)
+	}
+}
+
+var update = flag.Bool("update", false, "rewrite the golden files in testdata")
+
+// The stored text of every trigger the migrations create is pinned: Open
+// accepts a trigger only with that exact text (spec §7.6), so changing it in a
+// shipped migration, even its whitespace, would make every existing cassette
+// unreadable. This golden file may only grow, with a new migration.
+func TestMigrationTriggersArePinned(t *testing.T) {
+	triggers, err := migrationTriggers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var b strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(triggers)) {
+		for _, text := range slices.Sorted(maps.Keys(triggers[name])) {
+			fmt.Fprintf(&b, "-- trigger %s\n%s\n\n", name, text)
+		}
+	}
+	path := filepath.Join("testdata", "migration_triggers.golden")
+	if *update {
+		if err := os.MkdirAll("testdata", 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("%v (rerun with -update to create it)", err)
+	}
+	if b.String() != string(want) {
+		t.Errorf("migration triggers differ from %s: a shipped migration's trigger text changed, which makes existing cassettes unreadable\ngot:\n%s\nwant:\n%s", path, b.String(), want)
 	}
 }

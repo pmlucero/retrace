@@ -15,6 +15,11 @@ var migrationFiles embed.FS
 // migrations holds the forward-only schema migrations in order. Migration i
 // (0-based) upgrades a file from schema version i to i+1, so the current
 // schema version is len(migrations) (spec §7.6).
+//
+// A shipped migration is immutable byte for byte. Open accepts a trigger only
+// with the exact SQL text the migrations store (spec §7.6), so editing one,
+// even its whitespace, would make existing cassettes unreadable.
+// TestMigrationTriggersArePinned guards the trigger texts.
 var migrations = mustLoadMigrations(migrationFiles)
 
 func mustLoadMigrations(fsys fs.FS) []string {
