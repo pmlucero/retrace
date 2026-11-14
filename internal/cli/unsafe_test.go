@@ -82,6 +82,8 @@ func within(t *testing.T, name string, cmd func() recordRun) recordRun {
 	case r := <-done:
 		return r
 	case <-time.After(30 * time.Second):
+		// The hung goroutine is left running until the test binary exits.
+		// That is accepted: the test has already failed.
 		t.Fatalf("%s hung on the recursive view", name)
 		return recordRun{}
 	}

@@ -15,7 +15,9 @@ import (
 var ErrUnsafeSchema = errors.New("cassette schema fails retrace's safety checks")
 
 // expectedTables are the tables retrace reads, which must be ordinary tables
-// (spec §7.6).
+// (spec §7.6). The check runs before the migrations, so a table a later
+// migration adds must not be listed here, or every older cassette would be
+// rejected as missing it.
 var expectedTables = []string{"session", "interactions", "events", "blobs", "chunks"}
 
 // checkSchema rejects a cassette whose schema objects would run SQL stored in
