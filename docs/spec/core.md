@@ -645,7 +645,7 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 - A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
 - **Escaped text output.** Every text output escapes each control character (C0 and C1) and each bidirectional control character that comes from a cassette. That covers `ls`, `show`, `show --raw`, `diff` in text format and the divergence report of §6.4, and also the warnings, errors and log messages of any command that include a value read from a cassette, such as a stored MCP URL (§4.3) or command (§9.3). The one exception is the multi-line text of `show --raw` (bodies and SSE chunks), which keeps line feeds and tabs so it keeps its layout. They cannot drive the terminal.
   - The length limits of §6.4 (80 characters) and §9.6 (60 characters) count characters before escaping. An escaped value can therefore print wider than the limit, but a cut never splits an escape.
-  - Text output is for people. The JSON outputs (`show --json`, `diff --format json`) are the faithful form of the cassette's values.
+  - Text output is for people. The JSON outputs (`ls --json`, `show --json`, `diff --format json`) are the faithful form of the cassette's values.
 
 ## 11. Acceptance criteria
 
