@@ -29,6 +29,9 @@ const (
 	mcpAuth       = "MCP-AUTH-SECRET"       // the MCP Authorization header
 	locationPass  = "LOCATION-PASS-SECRET"  // userinfo of a response Location
 	locationToken = "LOCATION-TOKEN-SECRET" // a token in a response Location's query
+	fragmentToken = "FRAGMENT-TOKEN-SECRET" // a token in a response Location's fragment
+	routeToken    = "ROUTE-TOKEN-SECRET"    // a token in a fragment route, #/cb?access_token=…
+	rawQToken     = "RAWQ-TOKEN-SECRET"     // a fragment token followed by a raw "?"
 	setCookie     = "SET-COOKIE-SECRET"     // a response Set-Cookie
 	runOnly       = "RUN-ONLY-SECRET"       // a header redacted only with run --redact-header
 	runOnlyHeader = "X-Tenant-Ref"          // on no default deny-list
@@ -97,7 +100,10 @@ func newSecretUpstream(t *testing.T) *secretUpstream {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Add("Set-Cookie", "session="+setCookie+"; HttpOnly")
-		w.Header().Set("Location", "https://agent:"+locationPass+"@app.example.com/cb?access_token="+locationToken+"&state=s")
+		w.Header().Set("Location", "https://agent:"+locationPass+"@app.example.com/cb?access_token="+locationToken+"&state=s"+
+			"#access_token="+fragmentToken+"&state=/orders?tab=1")
+		w.Header().Set("Content-Location", "https://app.example.com/#/cb?access_token="+routeToken)
+		w.Header().Set("Referer", "https://app.example.com/#access_token="+rawQToken+"?tab=1")
 		if r.URL.Path == "/v1/messages" {
 			_, _ = io.WriteString(w, `{"type":"message","role":"assistant","model":"claude-sonnet-5-5",`+
 				`"content":[{"type":"text","text":"Hello."}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
@@ -140,15 +146,18 @@ func scanCassette(t *testing.T, dir, id string, secrets, masked []string) {
 
 // AC-06: no credential reaches the cassette of a recording, nor that of a
 // replay that forwards requests, in headers, queries or URL-carrying
-// response headers. The replay also redacts a header named only with run
-// --redact-header.
+// response headers, fragments included. The replay also redacts a header
+// named only with run --redact-header.
 func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 	t.Setenv(secretAgentEnv, "1")
 	dir := t.TempDir()
-	secrets := []string{agentAPIKey, sessionToken, queryToken, mcpAuth, locationPass, locationToken, setCookie, runOnly}
-	// What each cassette stores masked: header values whole, query values
-	// alone. The Location userinfo becomes REDACTED, with no hash.
-	masked := []string{agentAPIKey, sessionToken, queryToken, "Bearer " + mcpAuth, locationToken, "session=" + setCookie + "; HttpOnly"}
+	secrets := []string{agentAPIKey, sessionToken, queryToken, mcpAuth, locationPass, locationToken,
+		fragmentToken, routeToken, rawQToken, setCookie, runOnly}
+	// What each cassette stores masked: header values whole, query and
+	// fragment values alone, a fragment value only up to a raw "?". The
+	// Location userinfo becomes REDACTED, with no hash.
+	masked := []string{agentAPIKey, sessionToken, queryToken, "Bearer " + mcpAuth, locationToken,
+		fragmentToken, routeToken, rawQToken, "session=" + setCookie + "; HttpOnly"}
 
 	llm, tools := newSecretUpstream(t), newSecretUpstream(t)
 	r := runRecordCmd(t, dir, append([]string{"--session", "s", "--listen", "127.0.0.1:0",

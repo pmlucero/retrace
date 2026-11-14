@@ -72,7 +72,7 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
 	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL")
-	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", redactHeaderFlag(&opts.redactHeader))
+	fs.Func("redact-header", "also redact the request or response header with this literal `name` (repeatable)", redactHeaderFlag(&opts.redactHeader))
 	fs.Func("redact", "redact the values this `jsonpath` selects in stored JSON bodies (repeatable)", func(v string) error {
 		p, err := redact.ParsePath(v)
 		if err != nil {
@@ -119,9 +119,14 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 }
 
 // redactHeaderFlag adds one --redact-header name to names, for record and
-// run alike (spec §9.2, §9.3).
+// run alike (spec §9.2, §9.3). The name is literal: a leading "*" is
+// rejected, because a user who writes "*-x" expects a pattern, and the stored
+// rules (spec §7.2) could not tell a literal "*-x" from a pattern.
 func redactHeaderFlag(names *[]string) func(string) error {
 	return func(v string) error {
+		if strings.HasPrefix(v, "*") {
+			return fmt.Errorf("%q: header patterns are not accepted on the command line; give a literal header name", v)
+		}
 		*names = append(*names, v)
 		return nil
 	}

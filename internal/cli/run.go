@@ -101,7 +101,7 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&opts.mcp))
 	fs.StringVar(&opts.onMiss, "on-miss", "strict", "divergence strategy")
 	fs.DurationVar(&opts.grace, "grace", 5*time.Second, "how long the agent has to exit after SIGTERM on a cassette miss")
-	fs.Func("redact-header", "also redact this request or response `header` (repeatable)", redactHeaderFlag(&opts.redactHeader))
+	fs.Func("redact-header", "also redact the request or response header with this literal `name` (repeatable)", redactHeaderFlag(&opts.redactHeader))
 	fs.BoolVar(&opts.realtime, "realtime", false, "replay SSE chunks with their recorded timing")
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
