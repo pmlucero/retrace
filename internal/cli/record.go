@@ -119,9 +119,14 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 }
 
 // redactHeaderFlag adds one --redact-header name to names, for record and
-// run alike (spec §9.2, §9.3).
+// run alike (spec §9.2, §9.3). The name is literal: a leading "*" is
+// rejected, because a user who writes "*-x" expects a pattern, and the stored
+// rules (spec §7.2) could not tell a literal "*-x" from a pattern.
 func redactHeaderFlag(names *[]string) func(string) error {
 	return func(v string) error {
+		if strings.HasPrefix(v, "*") {
+			return fmt.Errorf("%q: header patterns are not accepted on the command line; give a literal header name", v)
+		}
 		*names = append(*names, v)
 		return nil
 	}
