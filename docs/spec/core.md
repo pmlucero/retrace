@@ -638,7 +638,8 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 ## 10. Security and privacy
 
 - Credentials in headers and URLs are redacted before storage, and body redaction is opt-in (§3.5, [ADR 0011](../adr/0011-secret-redaction-defaults.md)).
-- The proxy binds to loopback by default.
+- The proxy binds to loopback by default. It has no authentication, so a non-loopback address needs `--listen-unsafe` (§9.2).
+- The proxy answers only requests whose host names its listen address and that carry no `Origin` header (§3.6), so a web page cannot reach it through DNS rebinding or a cross-origin request.
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
 - A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
