@@ -322,6 +322,13 @@ var update = flag.Bool("update", false, "rewrite the golden files in testdata")
 // shipped migration, even its whitespace, would make every existing cassette
 // unreadable. This golden file may only grow, with a new migration.
 func TestMigrationTriggersArePinned(t *testing.T) {
+	// A CRLF checkout would embed other trigger bytes than an LF one, and
+	// convert the golden file too (.gitattributes pins LF).
+	for i, m := range migrations {
+		if strings.ContainsRune(m, '\r') {
+			t.Errorf("migration %04d has a carriage return: its trigger texts would differ between checkouts", i+1)
+		}
+	}
 	triggers, err := migrationTriggers()
 	if err != nil {
 		t.Fatal(err)

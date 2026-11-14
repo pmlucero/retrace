@@ -1,0 +1,4 @@
+# The schema check compares trigger SQL byte for byte with the embedded
+# migrations (spec §7.6), so their line endings must not depend on the checkout.
+internal/cassette/migrations/*.sql text eol=lf
+internal/cassette/testdata/*.golden text eol=lf
