@@ -107,12 +107,19 @@ jobs:
           persist-credentials: false
       # Releases are cut from main or a maintenance branch (CONTRIBUTING.md,
       # "Branches and releases"); a stray tag elsewhere must not publish.
+      # Its `on_main` output decides Latest when the draft is published.
       - name: Check the tag is on main or a release branch
+        id: branch
         run: |
-          if ! git branch -r --contains "$GITHUB_SHA" --format='%(refname:short)' \
-            | grep -Eq '^origin/(main|release/[0-9]+\.[0-9]+)$'; then
+          branches="$(git branch -r --contains "$GITHUB_SHA" --format='%(refname:short)')"
+          if ! printf '%s\n' "$branches" | grep -Eq '^origin/(main|release/[0-9]+\.[0-9]+)$'; then
             echo "::error::tag $GITHUB_REF_NAME is not on main or a release/* branch"
             exit 1
+          fi
+          if printf '%s\n' "$branches" | grep -qx origin/main; then
+            echo "on_main=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "on_main=false" >> "$GITHUB_OUTPUT"
           fi
       - name: Read the Go version from go.mod
         id: go
@@ -165,16 +172,17 @@ jobs:
           subject-checksums: dist/checksums.txt
       # This step, not `make_latest` in .goreleaser.yaml (it has no effect on a
       # draft), decides Latest. Publishing a draft makes it Latest by default
-      # (pre-releases never are).
-      # A patch from a release/* branch must not take Latest from a newer
-      # release on main, and an immutable release cannot be fixed afterwards.
+      # (pre-releases never are), so a patch from a release/* branch passes
+      # --latest=false and does not take Latest from a newer release on main.
+      # Immutability does not lock the flag: `gh release edit --latest` can
+      # still move it.
       - name: Publish the draft release
         run: |
           latest=
-          if ! git branch -r --contains "$GITHUB_SHA" --format='%(refname:short)' \
-            | grep -x origin/main >/dev/null; then
+          if [ "$ON_MAIN" != true ]; then
             latest=--latest=false
           fi
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false $latest
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ON_MAIN: ${{ steps.branch.outputs.on_main }}
