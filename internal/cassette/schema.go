@@ -30,6 +30,23 @@ func checkSchema(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
+	// Each step closes its rows before the next one queries: the cassette has
+	// a single connection, and a query waiting for it would hang.
+	if err := checkObjects(ctx, db, allowed); err != nil {
+		return err
+	}
+	// With no views or virtual tables left, what table_xinfo finds under an
+	// expected name is an ordinary table.
+	for _, table := range expectedTables {
+		if err := checkColumns(ctx, db, table); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkObjects runs checkObject on every row of sqlite_schema.
+func checkObjects(ctx context.Context, db *sql.DB, allowed map[string]map[string]bool) error {
 	rows, err := db.QueryContext(ctx, "SELECT name, sql FROM sqlite_schema")
 	if err != nil {
 		return fmt.Errorf("reading schema: %w", err)
@@ -47,13 +64,6 @@ func checkSchema(ctx context.Context, db *sql.DB) error {
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("reading schema: %w", err)
-	}
-	// With no views or virtual tables left, what table_xinfo finds under an
-	// expected name is an ordinary table.
-	for _, table := range expectedTables {
-		if err := checkColumns(ctx, db, table); err != nil {
-			return err
-		}
 	}
 	return nil
 }
