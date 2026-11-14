@@ -1,5 +1,5 @@
 // Package redact removes secrets before anything is written to a cassette
-// (ADR 0008, spec §3.5).
+// (ADR 0011, spec §3.5).
 package redact
 
 import (
@@ -13,44 +13,65 @@ import (
 	"strings"
 )
 
-// DefaultHeaders are always redacted, compared case-insensitively. Header
-// names ending in any of DefaultSuffixes are redacted too (ADR 0008).
+// DefaultHeaders are always redacted, compared case-insensitively. Names
+// ending in any of DefaultPatterns (written without their leading "*") are
+// redacted too. One list covers header names and query parameter names
+// (ADR 0011, spec §3.5).
 var (
-	DefaultHeaders  = []string{"authorization", "x-api-key", "proxy-authorization", "cookie", "set-cookie"}
-	DefaultSuffixes = []string{"-token", "-secret", "-key"}
+	DefaultHeaders = []string{
+		"authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie",
+		"apikey", "auth", "key", "password", "secret", "sig", "signature", "token",
+	}
+	DefaultPatterns = []string{
+		"*-token", "*-secret", "*-key", "*-auth", "*-password", "*-signature", "*-credential", "*apikey",
+	}
 )
 
-// queryNames are query parameter names that carry credentials although no
-// header has that name (spec §3.5).
-var queryNames = map[string]bool{
-	"key": true, "token": true, "secret": true, "password": true,
-	"apikey": true, "auth": true, "sig": true, "signature": true,
-}
+// urlHeaders carry URLs in their values, which get the URL rule of spec §3.5
+// (ADR 0011). Link, which holds URI references inside <…>, is handled apart.
+var urlHeaders = map[string]bool{"location": true, "content-location": true, "referer": true}
 
 // Rules decides what is redacted.
 type Rules struct {
-	headers map[string]bool // lower-case
-	body    []Path
+	headers  map[string]bool // lower-case
+	suffixes map[string]bool // the patterns without their "*", lower-case
+	lengths  []int           // the distinct lengths of suffixes, ascending
+	body     []Path
 }
 
 // NewRules returns the default header rules plus extra header names
 // (--redact-header) and body rules (--redact).
 func NewRules(extraHeaders []string, body []Path) *Rules {
-	r := &Rules{headers: map[string]bool{}, body: body}
+	r := &Rules{headers: map[string]bool{}, suffixes: map[string]bool{}, body: body}
 	for _, n := range slices.Concat(DefaultHeaders, extraHeaders) {
 		r.headers[strings.ToLower(n)] = true
 	}
+	for _, p := range DefaultPatterns {
+		r.addPattern(p)
+	}
 	return r
+}
+
+// addPattern adds the pattern "*<suffix>".
+func (r *Rules) addPattern(p string) {
+	suffix := strings.ToLower(strings.TrimPrefix(p, "*"))
+	if r.suffixes[suffix] {
+		return
+	}
+	r.suffixes[suffix] = true
+	if i, found := slices.BinarySearch(r.lengths, len(suffix)); !found {
+		r.lengths = slices.Insert(r.lengths, i, len(suffix))
+	}
 }
 
 // HeaderNames returns the redacted header names and suffix patterns, sorted,
 // for the cassette's redaction metadata (spec §7.2).
 func (r *Rules) HeaderNames() []string {
-	out := make([]string, 0, len(r.headers)+len(DefaultSuffixes))
+	out := make([]string, 0, len(r.headers)+len(r.suffixes))
 	for n := range r.headers {
 		out = append(out, n)
 	}
-	for _, s := range DefaultSuffixes {
+	for s := range r.suffixes {
 		out = append(out, "*"+s)
 	}
 	slices.Sort(out)
@@ -73,18 +94,13 @@ func (r *Rules) Metadata() json.RawMessage {
 
 // RulesFromMetadata rebuilds the rules that Metadata stored, so a replay
 // redacts requests as the recording did before fingerprinting them
-// (spec §3.5, §5). stored comes from a cassette, which is untrusted input.
-func RulesFromMetadata(stored json.RawMessage) (*Rules, error) {
+// (spec §3.5, §5). The current defaults and extraHeaders (run
+// --redact-header) are added to the stored names (spec §4.4). stored comes
+// from a cassette, which is untrusted input.
+func RulesFromMetadata(stored json.RawMessage, extraHeaders ...string) (*Rules, error) {
 	var m metadata
 	if err := json.Unmarshal(stored, &m); err != nil {
 		return nil, fmt.Errorf("reading redaction rules: %w", err)
-	}
-	var headers []string
-	for _, h := range m.Headers {
-		// The suffix patterns are always applied.
-		if suffix, ok := strings.CutPrefix(h, "*"); !ok || !slices.Contains(DefaultSuffixes, suffix) {
-			headers = append(headers, h)
-		}
 	}
 	body := make([]Path, len(m.Body))
 	for i, raw := range m.Body {
@@ -94,7 +110,24 @@ func RulesFromMetadata(stored json.RawMessage) (*Rules, error) {
 		}
 		body[i] = p
 	}
-	return NewRules(headers, body), nil
+	headers := slices.Clone(extraHeaders)
+	var patterns []string
+	for _, h := range m.Headers {
+		if strings.HasPrefix(h, "*") {
+			patterns = append(patterns, h)
+		} else {
+			headers = append(headers, h)
+		}
+	}
+	r := NewRules(headers, body)
+	// Stored patterns are kept, including one this binary does not know
+	// that a newer one wrote: a replay never stores a value its source
+	// redacted (spec §4.4). A bare "*" redacts every header and query
+	// parameter, which is the safe reading of what it claims.
+	for _, p := range patterns {
+		r.addPattern(p)
+	}
+	return r, nil
 }
 
 // RedactsHeader reports whether the header called name is redacted.
@@ -103,8 +136,13 @@ func (r *Rules) RedactsHeader(name string) bool {
 	if r.headers[name] {
 		return true
 	}
-	for _, s := range DefaultSuffixes {
-		if strings.HasSuffix(name, s) {
+	// One lookup per distinct pattern length that fits in name, so neither
+	// many stored patterns nor a long name make it slow.
+	for _, n := range r.lengths {
+		if n > len(name) {
+			break
+		}
+		if r.suffixes[name[len(name)-n:]] {
 			return true
 		}
 	}
@@ -113,22 +151,64 @@ func (r *Rules) RedactsHeader(name string) bool {
 
 // Headers returns a copy of hdr with every redacted value replaced by
 // [REDACTED:<first 8 hex digits of its SHA-256>]. The hash lets two sessions
-// be compared for using the same key without revealing it. hdr is unchanged:
-// the upstream still needs the real values.
+// be compared for using the same key without revealing it. The values of
+// URL-carrying headers get the URL rule instead (ADR 0011). hdr is
+// unchanged: the upstream and the agent still need the real values.
 func (r *Rules) Headers(hdr http.Header) http.Header {
 	out := make(http.Header, len(hdr))
 	for name, values := range hdr {
-		if !r.RedactsHeader(name) {
-			out[name] = slices.Clone(values)
-			continue
+		redactValue := func(v string) string { return v }
+		switch lower := strings.ToLower(name); {
+		case r.RedactsHeader(lower):
+			redactValue = mask
+		case lower == "link":
+			redactValue = r.linkValue
+		case urlHeaders[lower]:
+			redactValue = r.urlValue
 		}
 		red := make([]string, len(values))
 		for i, v := range values {
-			red[i] = mask(v)
+			red[i] = redactValue(v)
 		}
 		out[name] = red
 	}
 	return out
+}
+
+// linkValue applies urlValue to each URI reference inside <…> of a Link
+// header value. An unterminated reference runs to the end of the value. It
+// does not parse quoted parameters, so a "<" inside one starts a reference
+// too: that redacts more, never less.
+func (r *Rules) linkValue(v string) string {
+	var b strings.Builder
+	for {
+		before, rest, ok := strings.Cut(v, "<")
+		b.WriteString(before)
+		if !ok {
+			return b.String()
+		}
+		ref, after, closed := strings.Cut(rest, ">")
+		b.WriteString("<" + r.urlValue(ref))
+		if !closed {
+			return b.String()
+		}
+		b.WriteString(">")
+		v = after
+	}
+}
+
+// urlValue redacts the URI reference ref with the URL rule, keeping it byte
+// for byte when it holds nothing to redact. A reference that does not parse
+// cannot be checked, so it is masked whole.
+func (r *Rules) urlValue(ref string) string {
+	u, err := url.Parse(ref)
+	if err != nil {
+		return mask(ref)
+	}
+	if u.User == nil && r.Query(u.RawQuery) == u.RawQuery {
+		return ref
+	}
+	return r.URL(u)
 }
 
 // Query returns rawQuery with the values of credential parameters masked,
@@ -152,8 +232,7 @@ func (r *Rules) Query(rawQuery string) string {
 }
 
 func (r *Rules) redactsQuery(name string) bool {
-	name = strings.ReplaceAll(strings.ToLower(name), "_", "-")
-	return queryNames[name] || r.RedactsHeader(name)
+	return r.RedactsHeader(strings.ReplaceAll(name, "_", "-"))
 }
 
 // URL returns u as a string with its userinfo replaced by REDACTED and its

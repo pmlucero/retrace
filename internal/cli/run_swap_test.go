@@ -61,7 +61,7 @@ func TestRunSwapModel(t *testing.T) {
 	recorded := recordMCPForReplay(t, dir) // its upstreams are closed now
 	up := newSwapUpstream(t)
 
-	r := runRunCmd(t, dir, "s", "--model", "claude-opus-5-5", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--model", "claude-opus-5-5", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
@@ -138,7 +138,7 @@ func TestRunSwapModelDoesNotCountTheLLMAsUnconsumed(t *testing.T) {
 	dir := t.TempDir()
 	recordMCPForReplay(t, dir)
 	up := newSwapUpstream(t)
-	r := runRunCmd(t, dir, "s", "--model", "m", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
+	r := runRunCmd(t, dir, "s", "--recorded-command", "--model", "m", "--anthropic-upstream", up.URL, "--listen", "127.0.0.1:0")
 	if r.code != ExitOK {
 		t.Fatalf("run: exit %d\n%s", r.code, r.stderr)
 	}
