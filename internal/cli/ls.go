@@ -95,7 +95,7 @@ func listSessions(ctx context.Context, env *Env) ([]listed, error) {
 			continue
 		}
 		path := filepath.Join(env.Globals.Dir, entry.Name())
-		s, events, err := readSession(ctx, path, env)
+		s, events, err := readSession(ctx, path, env, (*cassette.Cassette).EventHeads)
 		if err != nil {
 			env.Logger.Warn("skipping a cassette that cannot be read", "file", path, "error", err)
 			continue
@@ -108,8 +108,10 @@ func listSessions(ctx context.Context, env *Env) ([]listed, error) {
 	return out, nil
 }
 
-// readSession reads the session row and the events of the cassette at path.
-func readSession(ctx context.Context, path string, env *Env) (cassette.Session, []cassette.Event, error) {
+// readSession reads the session row and, with readEvents, the events of the
+// cassette at path. Callers that only need the totals pass EventHeads.
+func readSession(ctx context.Context, path string, env *Env,
+	readEvents func(*cassette.Cassette, context.Context) ([]cassette.Event, error)) (cassette.Session, []cassette.Event, error) {
 	c, err := cassette.OpenForRead(ctx, path)
 	if err != nil {
 		return cassette.Session{}, nil, err
@@ -123,7 +125,7 @@ func readSession(ctx context.Context, path string, env *Env) (cassette.Session, 
 	if err != nil {
 		return cassette.Session{}, nil, err
 	}
-	events, err := c.Events(ctx)
+	events, err := readEvents(c, ctx)
 	if err != nil {
 		return cassette.Session{}, nil, err
 	}
