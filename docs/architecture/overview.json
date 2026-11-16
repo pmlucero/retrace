@@ -15,7 +15,7 @@
   },
   "components": [
     { "id": "cli", "type": "frontend", "label": "retrace CLI", "sublabel": "record · run · diff · ls · show", "pos": [40, 40], "size": [170, 64],
-      "sources": [ { "path": "internal/cli/cli.go", "line": 52, "end_line": 59, "label": "command dispatch" }, { "path": "docs/spec/core.md", "line": 534, "end_line": 552, "label": "record CLI" } ] },
+      "sources": [ { "path": "internal/cli/cli.go", "line": 53, "end_line": 59, "label": "command dispatch" }, { "path": "docs/spec/core.md", "line": 534, "end_line": 552, "label": "record CLI" } ] },
     { "id": "agent", "type": "external", "label": "Your agent", "sublabel": "child process, unchanged code", "pos": [40, 210], "size": [170, 64],
       "sources": [ { "path": "docs/spec/core.md", "line": 72, "end_line": 81, "label": "injected base URLs" } ] },
     { "id": "router", "type": "backend", "label": "Proxy router", "sublabel": "one local listener, by path", "pos": [420, 210], "size": [170, 64],
