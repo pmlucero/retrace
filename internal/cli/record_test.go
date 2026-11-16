@@ -475,6 +475,38 @@ func TestRecordUsageErrors(t *testing.T) {
 	}
 }
 
+// AC-38: --redact-header takes literal names only. A leading "*" is a usage
+// error, before any process starts or any cassette is created.
+func TestRedactHeaderRejectsPatterns(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args func(ran string) []string
+		run  func(t *testing.T, dir string, args ...string) recordRun
+	}{
+		{"record", func(ran string) []string {
+			return []string{"--session", "s", "--listen", "127.0.0.1:0", "--redact-header", "*-x", "--", "touch", ran}
+		}, runRecordCmd},
+		{"run", func(ran string) []string {
+			return []string{"s", "--listen", "127.0.0.1:0", "--redact-header", "*-x", "--", "touch", ran}
+		}, runRunCmd},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			ran := filepath.Join(t.TempDir(), "ran")
+			r := tc.run(t, dir, tc.args(ran)...)
+			if r.code != ExitUsage || !strings.Contains(r.stderr.String(), "patterns are not accepted on the command line") {
+				t.Errorf("exit %d, stderr %q; want %d and a message about patterns", r.code, r.stderr, ExitUsage)
+			}
+			if _, err := os.Stat(ran); err == nil {
+				t.Error("the agent command ran")
+			}
+			if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+				t.Errorf("the cassette directory holds %d entries, want none", len(entries))
+			}
+		})
+	}
+}
+
 // spec §10: record --help says what cassettes contain.
 func TestRecordHelpWarnsThatCassettesAreVerbatim(t *testing.T) {
 	r := runRecordCmd(t, t.TempDir(), "--help")
