@@ -140,7 +140,7 @@ func TestRunRecordedCommandRunsInTheRecordedCwd(t *testing.T) {
 	}
 }
 
-// AC-33: --recorded-command with a recorded cwd that is missing or not a
+// AC-33: --recorded-command with a recorded cwd that is relative, missing or not a
 // directory is a usage error that names it, escaped. It comes before the
 // check that an --as id exists, and nothing is created or started.
 func TestRunRecordedCommandRefusesABadCwd(t *testing.T) {
@@ -165,6 +165,18 @@ func TestRunRecordedCommandRefusesABadCwd(t *testing.T) {
 				t.Fatal(err)
 			}
 			return l
+		}, nil},
+		// A relative cwd is refused before it is looked up (spec §9.3), even
+		// when it exists relative to retrace's own working directory.
+		{"relative", func(*testing.T) string { return "sub/dir\a" }, nil},
+		{"dot", func(*testing.T) string { return "." }, nil},
+		{"empty", func(*testing.T) string { return "" }, nil},
+		{"relative that exists here", func(t *testing.T) string {
+			t.Chdir(t.TempDir())
+			if err := os.MkdirAll("sub/dir", 0o700); err != nil {
+				t.Fatal(err)
+			}
+			return "sub/dir"
 		}, nil},
 		// The cwd check comes before the --as one (spec §9.3).
 		{"existing --as", missing, []string{"--as", "taken"}},
