@@ -216,6 +216,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 	}
 	res, err := runSession(ctx, env, sessionConfig{
 		listener: ln,
+		listen:   opts.listen,
 		handler:  proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log}),
 		cassette: c,
 		writer:   w,

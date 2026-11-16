@@ -53,7 +53,9 @@ func TestGuardRejectsDotSegments(t *testing.T) {
 				target += "?token=" + token
 			}
 			rec := httptest.NewRecorder()
-			Guard(next, log).ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, nil))
+			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, target, nil)
+			r.Host = "127.0.0.1:4790"
+			Guard(next, log, "127.0.0.1").ServeHTTP(rec, r)
 
 			if rec.Code != tt.wantCode {
 				t.Fatalf("status %d, want %d", rec.Code, tt.wantCode)
@@ -237,4 +239,119 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
 	return n, err
+}
+
+// AC-37: the host and browser-header checks of spec §3.6, in the order host,
+// browser headers, path.
+func TestGuardHostAndBrowserHeaders(t *testing.T) {
+	const secret = "rebind.example"
+	tests := []struct {
+		name   string
+		listen []string // hosts given to Guard, without brackets
+		host   string
+		header http.Header
+		target string
+		want   int
+	}{
+		{"loopback localhost", []string{"127.0.0.1"}, "localhost:4790", nil, "", 200},
+		{"loopback ipv4", []string{"127.0.0.1"}, "127.0.0.1:4790", nil, "", 200},
+		{"loopback ipv6", []string{"::1"}, "[::1]:4790", nil, "", 200},
+		{"port forward", []string{"127.0.0.1"}, "localhost:9000", nil, "", 200},
+		{"no port", []string{"127.0.0.1"}, "localhost", nil, "", 200},
+		{"uppercase", []string{"127.0.0.1"}, "LocalHost:4790", nil, "", 200},
+		{"other ip on loopback", []string{"127.0.0.1"}, "10.0.0.5:4790", nil, "", 200},
+		{"ipv6 literal", []string{"127.0.0.1"}, "[fd00::1]:4790", nil, "", 200},
+		{"ipv4-mapped", []string{"127.0.0.1"}, "[::ffff:10.0.0.5]:4790", nil, "", 200},
+		{"listen host name", []string{"myhost.internal"}, "MyHost.internal:4790", nil, "", 200},
+		{"unsafe localhost", []string{"0.0.0.0"}, "localhost:4790", nil, "", 200},
+		{"rebinding name", []string{"127.0.0.1"}, secret + ":4790", nil, "", 403},
+		{"trailing dot", []string{"127.0.0.1"}, "localhost.:4790", nil, "", 403},
+		{"name on unsafe", []string{"0.0.0.0"}, secret + ":4790", nil, "", 403},
+		{"empty host", []string{"127.0.0.1"}, "", nil, "", 403},
+		{"empty listen host", []string{""}, "", nil, "", 403},
+		{"leading zeros", []string{"127.0.0.1"}, "010.0.0.5:4790", nil, "", 403},
+		{"short ipv4", []string{"127.0.0.1"}, "127.1:4790", nil, "", 403},
+		{"octet range", []string{"127.0.0.1"}, "256.0.0.1:4790", nil, "", 403},
+		{"ipv6 zone", []string{"127.0.0.1"}, "[fe80::1%25en0]:4790", nil, "", 403},
+		{"unbracketed ipv6", []string{"127.0.0.1"}, "::1", nil, "", 403},
+		{"bracketed ipv4", []string{"127.0.0.1"}, "[10.0.0.5]:4790", nil, "", 403},
+		{"userinfo", []string{"127.0.0.1"}, "user@localhost:4790", nil, "", 403},
+		{"docker internal", []string{"127.0.0.1"}, "host.docker.internal:4790", nil, "", 403},
+		{"origin", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Origin": {"http://localhost:4790"}}, "", 403},
+		{"origin null", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Origin": {"null"}}, "", 403},
+		{"origin empty", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Origin": {""}}, "", 403},
+		{"fetch site", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Sec-Fetch-Site": {"cross-site"}}, "", 403},
+		{"fetch site same-origin", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Sec-Fetch-Site": {"same-origin"}}, "", 403},
+		{"fetch mode only", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Sec-Fetch-Mode": {"cors"}}, "", 200},
+		{"wrong host and dot segment", []string{"127.0.0.1"}, secret, nil, "/mcp/orders/../x", 403},
+		{"origin and dot segment", []string{"127.0.0.1"}, "localhost", http.Header{"Origin": {"null"}}, "/mcp/orders/../x", 403},
+		{"right host and dot segment", []string{"127.0.0.1"}, "localhost", nil, "/mcp/orders/../x", 400},
+	}
+	for _, tt := range tests {
+		for _, route := range []struct{ name, path string }{{routeLLM, "/llm/anthropic/v1/messages"}, {routeMCP, "/mcp/orders/x"}} {
+			t.Run(tt.name+"/"+route.name, func(t *testing.T) {
+				var logs bytes.Buffer
+				log := slog.New(slog.NewTextHandler(&logs, nil))
+				var reached bool
+				next := http.HandlerFunc(func(http.ResponseWriter, *http.Request) { reached = true })
+				path := route.path
+				if tt.target != "" {
+					path = tt.target
+				}
+				r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, path+"?token=AC37-TOKEN", nil)
+				r.Host = tt.host
+				for k, v := range tt.header {
+					r.Header[k] = v
+				}
+				rec := httptest.NewRecorder()
+				Guard(next, log, tt.listen...).ServeHTTP(rec, r)
+
+				if rec.Code != tt.want && !(tt.want == 200 && rec.Code == 200) {
+					t.Fatalf("status %d, want %d", rec.Code, tt.want)
+				}
+				if tt.want == 200 {
+					if !reached || logs.Len() != 0 {
+						t.Errorf("reached = %v, logs %q; want the request passed on silently", reached, logs.String())
+					}
+					return
+				}
+				if reached {
+					t.Fatal("a rejected request reached the next handler")
+				}
+				wantRoute := routeOf(path)
+				if tt.want == 403 {
+					checkRejection(t, rec, wantRoute, "permission_error")
+				} else {
+					checkRejection(t, rec, wantRoute, "invalid_request_error")
+				}
+				leaks := []string{"AC37-TOKEN", "orders", "http://localhost", "user@"}
+				if tt.host != "" && tt.host != "localhost" {
+					leaks = append(leaks, tt.host)
+				}
+				if v := tt.header.Get("Origin"); v != "" {
+					leaks = append(leaks, v)
+				}
+				checkRejectionLog(t, logs.String(), wantRoute, leaks...)
+				for _, leak := range leaks[:1] {
+					if strings.Contains(rec.Body.String(), leak) {
+						t.Errorf("body %q contains %q", rec.Body, leak)
+					}
+				}
+			})
+		}
+	}
+}
+
+// AC-37: the body-size check comes after the host check, and the body of a
+// request with a wrong host is never read.
+func TestGuardHostBeforeBody(t *testing.T) {
+	body := &countingReader{r: io.LimitReader(zeros{}, MaxRequestBytes+1)}
+	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/llm/anthropic/v1/messages", body)
+	r.Host, r.ContentLength = "rebind.example", MaxRequestBytes+1
+	rec := httptest.NewRecorder()
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ReadBody(w, r, slog.New(slog.DiscardHandler), routeLLM) })
+	Guard(next, slog.New(slog.DiscardHandler), "127.0.0.1").ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden || body.n != 0 {
+		t.Errorf("status %d after reading %d bytes, want 403 and none", rec.Code, body.n)
+	}
 }

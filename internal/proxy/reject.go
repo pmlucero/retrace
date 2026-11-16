@@ -7,6 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/netip"
+	"slices"
 	"strings"
 )
 
@@ -21,28 +23,119 @@ const (
 	routeMCP = "mcp"
 )
 
+const (
+	reasonHost    = "the request's host does not name the address retrace listens on"
+	reasonBrowser = "the request has an Origin or Sec-Fetch-Site header, which a browser sends"
+)
+
 const reasonDotSegment = "the request path has a dot segment (. or ..), which could leave its route"
 
 var reasonTooLarge = fmt.Sprintf("the request body is larger than %d MiB (%d bytes)", MaxRequestBytes>>20, MaxRequestBytes)
 
-// Guard answers 400 to a request whose path has a dot segment, and passes
-// every other request to next (spec §3.6). It must run before any router:
-// http.ServeMux cleans such a path and answers with a redirect, and a
-// reverse proxy would forward it outside the route. A rejected request is
+// Guard answers a request retrace refuses before any router sees it, and
+// passes every other request to next (spec §3.6). The checks run in this
+// order, and the first that fails decides the answer: the host (403), the
+// browser headers Origin and Sec-Fetch-Site (403), a path with a dot segment
+// (400). The body-size check (413) is ReadBody's. A rejected request is
 // neither forwarded nor recorded.
 //
-// The path is the one the agent sent, without the query, percent-decoded
-// once, as the HTTP server leaves it in r.URL.Path. The server itself
-// refuses a request line with an invalid percent-encoding. log must not be
-// nil.
-func Guard(next http.Handler, log *slog.Logger) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if hasDotSegment(r.URL.Path) {
-			reject(w, log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
-			return
+// listenHosts are the host parts, without brackets, that name the address
+// retrace listens on (the --listen host and the host of the listener's
+// address). "localhost" and any IP literal are always accepted, and an empty
+// host never is. The port is not compared.
+//
+// Dot segments must be refused before routing: http.ServeMux cleans such a
+// path and answers with a redirect, and a reverse proxy would forward it
+// outside the route. The path is the one the agent sent, without the query,
+// percent-decoded once, as the HTTP server leaves it in r.URL.Path. The
+// server itself refuses a request line with an invalid percent-encoding. log
+// must not be nil.
+func Guard(next http.Handler, log *slog.Logger, listenHosts ...string) http.Handler {
+	names := make([]string, 0, len(listenHosts))
+	for _, h := range listenHosts {
+		if strings.Contains(h, ":") {
+			h = "[" + h + "]" // as a Host header carries an IPv6 address
 		}
-		next.ServeHTTP(w, r)
+		names = append(names, strings.ToLower(h))
+	}
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case !hostAllowed(r.Host, names):
+			reject(w, log, routeOf(r.URL.Path), http.StatusForbidden, reasonHost)
+		case hasBrowserHeader(r.Header):
+			reject(w, log, routeOf(r.URL.Path), http.StatusForbidden, reasonBrowser)
+		case hasDotSegment(r.URL.Path):
+			reject(w, log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
+		default:
+			next.ServeHTTP(w, r)
+		}
 	})
+}
+
+// hostAllowed reports whether hostport, a Host header or the authority of an
+// absolute request target, names this proxy (spec §3.6). names are the
+// lower-case listen hosts, IPv6 in brackets. Only the ASCII case is folded:
+// "localhost." is not "localhost".
+func hostAllowed(hostport string, names []string) bool {
+	host, ok := splitHost(hostport)
+	if !ok || host == "" {
+		return false
+	}
+	host = strings.ToLower(host)
+	if host == "localhost" || slices.Contains(names, host) {
+		return true
+	}
+	return isIPLiteral(host)
+}
+
+// splitHost returns the host part of hostport, an IPv6 address keeping its
+// brackets, and false when hostport is not a host with an optional numeric
+// port.
+func splitHost(hostport string) (string, bool) {
+	host, port := hostport, ""
+	if strings.HasPrefix(hostport, "[") {
+		end := strings.IndexByte(hostport, ']')
+		if end < 0 {
+			return "", false
+		}
+		host, port = hostport[:end+1], hostport[end+1:]
+		if port != "" && port[0] != ':' {
+			return "", false
+		}
+	} else if i := strings.IndexByte(hostport, ':'); i >= 0 {
+		host, port = hostport[:i], hostport[i:]
+	}
+	for _, c := range strings.TrimPrefix(port, ":") {
+		if c < '0' || c > '9' {
+			return "", false
+		}
+	}
+	return host, true
+}
+
+// isIPLiteral reports whether host is an IPv4 address in dotted-decimal form
+// without leading zeros, or an IPv6 address in brackets without a zone. Such a
+// host cannot carry DNS rebinding.
+func isIPLiteral(host string) bool {
+	if inner, ok := strings.CutPrefix(host, "["); ok {
+		inner, ok = strings.CutSuffix(inner, "]")
+		if !ok {
+			return false
+		}
+		a, err := netip.ParseAddr(inner)
+		return err == nil && a.Is6() && a.Zone() == ""
+	}
+	a, err := netip.ParseAddr(host)
+	return err == nil && a.Is4()
+}
+
+// hasBrowserHeader reports whether h has an Origin or a Sec-Fetch-Site
+// header, whatever its value. Other Sec-Fetch-* headers are not checked:
+// Node's fetch sends Sec-Fetch-Mode on every request.
+func hasBrowserHeader(h http.Header) bool {
+	_, origin := h["Origin"]
+	_, site := h["Sec-Fetch-Site"]
+	return origin || site
 }
 
 // hasDotSegment reports whether path has a "." or ".." segment, splitting it
@@ -112,7 +205,10 @@ func reject(w http.ResponseWriter, log *slog.Logger, route string, status int, r
 		return
 	}
 	typ := "invalid_request_error"
-	if status == http.StatusRequestEntityTooLarge {
+	switch status {
+	case http.StatusForbidden:
+		typ = "permission_error"
+	case http.StatusRequestEntityTooLarge:
 		typ = "request_too_large"
 	}
 	var body apiError

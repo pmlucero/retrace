@@ -51,6 +51,7 @@ func replaceSessionCassette(ctx context.Context, path string, s cassette.Session
 // local proxy, for recording or for replay.
 type sessionConfig struct {
 	listener net.Listener       // already listening on --listen
+	listen   string             // the --listen value, whose host also names the proxy
 	handler  http.Handler       // serves /llm/... and /mcp/<name>/...
 	cassette *cassette.Cassette // closed by runSession
 	writer   *cassette.Writer   // closed by runSession with the session's end
@@ -74,6 +75,18 @@ type sessionResult struct {
 	stats  cassette.WriterStats
 }
 
+// guardHosts returns the hosts that name the proxy's address: the host of
+// --listen and the host of the listener's address (spec §3.6).
+func guardHosts(cfg sessionConfig) []string {
+	var hosts []string
+	for _, addr := range []string{cfg.listen, cfg.listener.Addr().String()} {
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			hosts = append(hosts, host)
+		}
+	}
+	return hosts
+}
+
 // runSession serves cfg.handler on cfg.listener, runs the agent with the
 // injected environment (spec §3.2) until it exits, then finalizes the
 // cassette. It returns an error, already logged, only when the cassette may be
@@ -81,7 +94,7 @@ type sessionResult struct {
 func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult, error) {
 	log := env.Logger
 	// Rejected requests are answered before any routing, in every mode (spec §3.6).
-	srv := &http.Server{Handler: proxy.Guard(cfg.handler, log), ReadHeaderTimeout: 30 * time.Second}
+	srv := &http.Server{Handler: proxy.Guard(cfg.handler, log, guardHosts(cfg)...), ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		if err := srv.Serve(cfg.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("proxy stopped", "error", err)
