@@ -20,6 +20,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0011](0011-secret-redaction-defaults.md) | Secret redaction defaults | Accepted |
 | [0012](0012-release-integrity.md) | Release integrity | Accepted |
 | [0013](0013-explicit-replay-command.md) | Explicit agent command for replay | Accepted |
+| [0014](0014-redaction-fragments-and-literal-names.md) | Redaction of URL fragments and literal `--redact-header` names | Accepted |
 
 ## Statuses
 
