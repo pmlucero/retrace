@@ -54,6 +54,19 @@ Read these before changing anything non-trivial:
 - The subject is imperative and at most 72 characters. The body explains *why* and references `AC-xx` or `ADR NNNN` when relevant.
 - Never commit cassettes from real sessions, `.retrace/` directories or secrets.
 
+## Pull requests opened by agents
+
+Coding agents follow these rules for every PR, in addition to the sections above:
+
+- **Size:** at most about 10 files and 400 lines of non-test code, one concern per PR. Split a larger change before opening it.
+- **Local checks:** run the tests of the packages you touch with `-race`, plus `go vet ./...`, `gofmt` and `CGO_ENABLED=0 go build ./...`. CI runs the full suite. The local `golangci-lint` may be older than the Go version; rely on CI's.
+- **Attribution:** end each commit message with the `Co-Authored-By` line and the PR description with the generated-with line that the session gives you.
+- **Opening:** if `gh pr create` fails with a GraphQL error, use `gh api repos/pmlucero/retrace/pulls -f title=... -f head=... -f base=main -F body=@<file>`.
+- **Review rounds:** at most 2 automated reviews per PR, and 1 for docs, spec and ADR PRs. The review runs when the PR is opened. Request a second one, with a comment that starts with `@claude review`, only if the first had 🔴 or 🟠 findings. Apply 🟡 and ⚪ findings when they are trivial, and otherwise note them for an issue. If there are still majors after round 2, stop and report.
+- **Threads:** reply in every review thread with what was done and the commit SHA, or why not (`gh api repos/pmlucero/retrace/pulls/<n>/comments/<id>/replies -f body=...`), resolve it (GraphQL `resolveReviewThread`), and check that every thread is resolved. Findings that appear only in the summary get one mapping comment on the PR.
+- **Done:** the PR is ready only when CI passed, the review rounds above are done and every thread is resolved. Never merge: the maintainer merges.
+- **Scope:** if the spec is ambiguous or wrong, stop and report instead of guessing. Findings outside the PR's scope become issues, not extra work.
+
 ## Code review
 
 Reviews, human or automated, follow [docs/review-guidelines.md](docs/review-guidelines.md): grounded findings, severities, the review dimensions and the output format. When asked to review a change locally, use the same rubric. Every PR also gets an advisory review from `.github/workflows/claude-review.yml`. Comment `@claude review` on a PR to request another pass.
