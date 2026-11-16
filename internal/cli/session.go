@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/proxy"
 )
 
 // finishTimeout bounds each step of ending a session: waiting for in-flight
@@ -79,7 +80,8 @@ type sessionResult struct {
 // incomplete.
 func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult, error) {
 	log := env.Logger
-	srv := &http.Server{Handler: cfg.handler, ReadHeaderTimeout: 30 * time.Second}
+	// Rejected requests are answered before any routing, in every mode (spec §3.6).
+	srv := &http.Server{Handler: proxy.Guard(cfg.handler, log), ReadHeaderTimeout: 30 * time.Second}
 	go func() {
 		if err := srv.Serve(cfg.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("proxy stopped", "error", err)
