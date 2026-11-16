@@ -33,3 +33,6 @@ node_modules/
 .venv/
 __pycache__/
 .pytest_cache/
+
+# VHS takes (examples/demo/demo.tape); the final GIF is added deliberately
+/examples/demo/demo.gif
