@@ -108,8 +108,10 @@ func record(t *testing.T, exchanges []exchange) *cassette.Cassette {
 }
 
 // recordWith is record, with prepare run on the cassette's path before the
-// writer starts, and the writer's stats returned.
-func recordWith(t *testing.T, exchanges []exchange, prepare func(path string)) (*cassette.Cassette, cassette.WriterStats) {
+// writer starts, and the writer's stats returned. The function prepare returns
+// runs after the writer closes, before the cassette is reopened: it undoes
+// what Open would reject, such as a trigger (spec §7.6).
+func recordWith(t *testing.T, exchanges []exchange, prepare func(path string) (undo func())) (*cassette.Cassette, cassette.WriterStats) {
 	t.Helper()
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "s.cassette")
@@ -124,8 +126,9 @@ func recordWith(t *testing.T, exchanges []exchange, prepare func(path string)) (
 	if err != nil {
 		t.Fatal(err)
 	}
+	undo := func() {}
 	if prepare != nil {
-		prepare(path)
+		undo = prepare(path)
 	}
 	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Deriver: New()})
 	if err != nil {
@@ -163,6 +166,7 @@ func recordWith(t *testing.T, exchanges []exchange, prepare func(path string)) (
 	if err := c.Close(); err != nil {
 		t.Fatal(err)
 	}
+	undo()
 	c, err = cassette.Open(ctx, path)
 	if err != nil {
 		t.Fatal(err)

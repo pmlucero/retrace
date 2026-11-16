@@ -1,0 +1,7 @@
+-- trigger session_single_row
+CREATE TRIGGER session_single_row BEFORE INSERT ON session
+WHEN (SELECT COUNT(*) FROM session) > 0
+BEGIN
+    SELECT RAISE(ABORT, 'cassette already has a session');
+END
+
