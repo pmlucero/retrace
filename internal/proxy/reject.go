@@ -118,11 +118,8 @@ func splitHost(hostport string) (string, bool) {
 // host cannot carry DNS rebinding.
 func isIPLiteral(host string) bool {
 	if inner, ok := strings.CutPrefix(host, "["); ok {
-		inner, ok = strings.CutSuffix(inner, "]")
-		if !ok {
-			return false
-		}
-		a, err := netip.ParseAddr(inner)
+		// splitHost keeps the closing bracket, so TrimSuffix always trims it.
+		a, err := netip.ParseAddr(strings.TrimSuffix(inner, "]"))
 		return err == nil && a.Is6() && a.Zone() == ""
 	}
 	a, err := netip.ParseAddr(host)

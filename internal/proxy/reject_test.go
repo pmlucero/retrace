@@ -276,6 +276,9 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 		{"unbracketed ipv6", []string{"127.0.0.1"}, "::1", nil, "", 403},
 		{"bracketed ipv4", []string{"127.0.0.1"}, "[10.0.0.5]:4790", nil, "", 403},
 		{"userinfo", []string{"127.0.0.1"}, "user@localhost:4790", nil, "", 403},
+		{"unclosed bracket", []string{"127.0.0.1"}, "[::1", nil, "", 403},
+		{"junk after bracket", []string{"127.0.0.1"}, "[::1]4790", nil, "", 403},
+		{"non-numeric port", []string{"127.0.0.1"}, "localhost:47a0", nil, "", 403},
 		{"docker internal", []string{"127.0.0.1"}, "host.docker.internal:4790", nil, "", 403},
 		{"origin", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Origin": {"http://localhost:4790"}}, "", 403},
 		{"origin null", []string{"127.0.0.1"}, "localhost:4790", http.Header{"Origin": {"null"}}, "", 403},
@@ -306,7 +309,7 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 				rec := httptest.NewRecorder()
 				Guard(next, log, tt.listen...).ServeHTTP(rec, r)
 
-				if rec.Code != tt.want && !(tt.want == 200 && rec.Code == 200) {
+				if rec.Code != tt.want {
 					t.Fatalf("status %d, want %d", rec.Code, tt.want)
 				}
 				if tt.want == 200 {
@@ -332,7 +335,7 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 					leaks = append(leaks, v)
 				}
 				checkRejectionLog(t, logs.String(), wantRoute, leaks...)
-				for _, leak := range leaks[:1] {
+				for _, leak := range leaks {
 					if strings.Contains(rec.Body.String(), leak) {
 						t.Errorf("body %q contains %q", rec.Body, leak)
 					}
