@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.27
-- Last updated: 2026-11-14
+- Version: 0.28
+- Last updated: 2026-11-16
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -420,8 +420,9 @@ Each event carries every field the future UI needs ([ADR 0009](../adr/0009-appen
   - `session`, `interactions`, `events`, `blobs` and `chunks` MUST be ordinary tables, not views or virtual tables.
   - None of their columns may be generated (`PRAGMA table_xinfo` reports them), because reading a generated column evaluates its expression, and `trusted_schema(0)` does not stop innocuous functions such as `printf`.
   - The file MUST NOT hold any view, any virtual table, or any trigger other than those retrace's migrations create, compared by name and SQL text.
-  - Other tables and indexes are allowed. Reading never evaluates them: an index runs SQL only when its table is written, and `trusted_schema(0)` limits the functions it can call to those SQLite marks innocuous. A crafted index can at worst slow down a write to the cassette, such as `reindex`, or make it fail (a `UNIQUE` index), which leaves the cassette as it was because the write is one transaction.
+  - Other tables and indexes are allowed. Reading never evaluates them: an index runs SQL only when its table is written, and `trusted_schema(0)` limits the functions it can call to those SQLite marks innocuous. A crafted index can at worst slow down a write to the cassette, such as `reindex`, or make it fail (a `UNIQUE` index), which leaves the cassette as it was because the write is one transaction. Column constraints and defaults (`CHECK`, `DEFAULT`, `REFERENCES ... ON DELETE`) on the five expected tables are accepted for the same reason: they run only when the table is written, with the same limits.
   - The check applies to a cassette with a newer schema version too, against the objects of retrace's own schema. When such a cassette fails it, the error says that its schema is newer than this retrace, since a later migration may have added the object.
+  - Rejecting a cassette writes nothing: retrace runs no migration and does not change the journal mode. The file's content stays as it was, but its bytes can change: when the connection closes, SQLite may fold a leftover `-wal` into the main file and delete it.
   - A file that fails it is a cassette that cannot be read: `ls` skips it with a warning (§9.5), and the other commands fail as they do for a corrupt cassette.
 - `retrace reindex <id>` rebuilds `events` from `interactions` with the current deriver (§9.8). Interactions are never modified.
   - It replaces the events in one transaction, so a failure leaves them as they were. It is the only operation that removes events, as [ADR 0009](../adr/0009-append-only-event-log.md) foresees.
@@ -707,7 +708,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-20** `diff` of a session with a diverging swap-model replay reports the correct step, event, tool and argument diff, and exits `1`.
 - **AC-21** `diff --format json` output validates against a JSON schema committed in the repo.
 - **AC-22** `ls` and `show` (text and `--json`) display the fields listed in §9.5 and §9.6.
-- **AC-35** A cassette whose `events` is a view, that holds a virtual table or a trigger retrace's migrations do not create, or whose `events` table has a generated column, is rejected before it is read: `ls` skips it with a warning and exits `0`, `show` and `run` exit `1`, and the file is not modified.
+- **AC-35** A cassette whose `events` is a view, that holds a virtual table or a trigger retrace's migrations do not create, or whose `events` table has a generated column, is rejected before it is read: `ls` skips it with a warning and exits `0`, `show` and `run` exit `1`, and the file's content is not modified (SQLite may fold a leftover `-wal` into it when it closes).
 - **AC-36** A cassette whose event `tool` and `arguments`, stored MCP URL and an interaction body hold ESC (`\x1b`), a C1 control (U+009B) and a bidi control (U+202E): `ls`, `show`, `show --raw`, `diff` text and the divergence report print none of them unescaped (§10), and neither does the usage error of `run --tools live` for a stored URL that also holds a redaction marker (§4.3). `show --raw` keeps the body's LF and TAB, a truncated `show` argument never ends inside an escape, and `show --json` emits the original values.
 - **AC-27** For a session with `dropped_events > 0`, `ls` shows `+gaps` after its status and `dropped_events` in `--json`, `show` warns with the count and marks each gap in its timeline, and `diff` warns in text output and reports `dropped_events` in `--format json`.
 
