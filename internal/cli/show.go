@@ -81,7 +81,7 @@ func runShow(ctx context.Context, env *Env, args []string) int {
 	if rawID != 0 {
 		return showRaw(ctx, env, path, id, rawID)
 	}
-	s, events, err := readSession(ctx, path, env)
+	s, events, err := readSession(ctx, path, env, (*cassette.Cassette).Events)
 	if err != nil {
 		env.Logger.Error("cannot read the session", "session", id, "error", err)
 		return ExitError

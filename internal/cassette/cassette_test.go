@@ -864,3 +864,26 @@ func TestInteractionIncomplete(t *testing.T) {
 		}
 	}
 }
+
+func TestEventHeadsReadsOnlyTheTotalsColumns(t *testing.T) {
+	ctx := context.Background()
+	c, _ := newCassette(t)
+	write(t, c, func(tx *Tx) error {
+		if err := tx.InsertSession(ctx, testSession()); err != nil {
+			return err
+		}
+		return tx.AppendEvent(ctx, Event{Seq: 1, Kind: "model_response", Source: "model", Target: "agent",
+			StartedAt: at(1), Model: ptr("claude-x"), Tool: ptr("search"), Arguments: json.RawMessage(`{"q":"x"}`),
+			Result: json.RawMessage(`{"a":1}`), TokensIn: ptr[int64](10), TokensOut: ptr[int64](5),
+			CostUSD: ptr(0.0012), Status: "ok", Provenance: "recorded", DeriverVersion: 1})
+	})
+	got, err := c.EventHeads(ctx)
+	if err != nil {
+		t.Fatalf("EventHeads: %v", err)
+	}
+	want := []Event{{Seq: 1, Kind: "model_response", Model: ptr("claude-x"), TokensIn: ptr[int64](10),
+		TokensOut: ptr[int64](5), CostUSD: ptr(0.0012)}}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("heads:\n got %+v\nwant %+v", got, want)
+	}
+}

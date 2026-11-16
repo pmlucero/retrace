@@ -1,7 +1,10 @@
 package summary
 
 import (
+	"context"
+	"encoding/json"
 	"math"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -243,5 +246,99 @@ func TestFormatDuration(t *testing.T) {
 		if got := FormatDuration(tt.d); got != tt.want {
 			t.Errorf("FormatDuration(%v) = %q, want %q", tt.d, got, tt.want)
 		}
+	}
+}
+
+// AC-22: ls reads only the event heads, and its totals must equal the ones
+// computed from the full events, including tool calls, errors and gaps.
+func TestOfEventHeadsMatchesFullEvents(t *testing.T) {
+	at := func(sec int) time.Time { return time.Date(2026, 10, 23, 12, 0, sec, 0, time.UTC) }
+	event := func(seq int64, kind string, mut func(*cassette.Event)) cassette.Event {
+		e := cassette.Event{Seq: seq, Kind: kind, Source: "model", Target: "agent", StartedAt: at(int(seq)),
+			Status: "ok", Provenance: "recorded", DeriverVersion: 1,
+			Arguments: json.RawMessage(`{"q":"payload"}`), Result: json.RawMessage(`{"text":"payload"}`)}
+		if mut != nil {
+			mut(&e)
+		}
+		return e
+	}
+	priced := func(model string, in, out int64, cost float64) func(*cassette.Event) {
+		return func(e *cassette.Event) {
+			e.Model, e.TokensIn, e.TokensOut, e.CostUSD = ptr(model), ptr(in), ptr(out), ptr(cost)
+		}
+	}
+	tests := []struct {
+		name    string
+		events  []cassette.Event
+		dropped int
+	}{
+		{name: "no events"},
+		{name: "tool calls and priced responses", events: []cassette.Event{
+			event(1, "model_response", priced("m1", 10, 5, 0.01)),
+			event(2, "tool_call", func(e *cassette.Event) { e.Tool = ptr("search") }),
+			event(3, "model_response", priced("m2", 20, 7, 0.02)),
+		}},
+		{name: "errors and unpriced responses", events: []cassette.Event{
+			event(1, "model_response", func(e *cassette.Event) {
+				e.Model, e.TokensIn, e.TokensOut = ptr("m1"), ptr[int64](10), ptr[int64](5)
+			}),
+			event(2, "model_response", func(e *cassette.Event) { e.Status, e.Error = "error", ptr("overloaded") }),
+			event(3, "tool_call", func(e *cassette.Event) { e.Status, e.Error = "error", ptr("boom") }),
+		}},
+		{name: "gaps", dropped: 3, events: []cassette.Event{
+			event(1, "model_response", priced("m1", 10, 5, 0.01)),
+			event(4, "tool_call", nil),
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "s.cassette")
+			c, err := cassette.Create(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			err = c.Write(ctx, func(tx *cassette.Tx) error {
+				if err := tx.InsertSession(ctx, cassette.Session{ID: "20261023-120000-ab12", Mode: "record",
+					Status: "recording", CreatedAt: at(0), Command: []string{"agent"}, Cwd: "/work", OnMiss: "strict",
+					MCPServers: json.RawMessage(`[]`), Redaction: json.RawMessage(`{}`), RetraceVersion: "dev",
+					DeriverVersion: 1, PricingVersion: "2026-10"}); err != nil {
+					return err
+				}
+				for _, e := range tt.events {
+					if err := tx.AppendEvent(ctx, e); err != nil {
+						return err
+					}
+				}
+				return tx.EndSession(ctx, cassette.SessionEnd{Status: "completed", EndedAt: at(9), DroppedEvents: tt.dropped})
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s, err := c.Session(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			full, err := c.Events(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			heads, err := c.EventHeads(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(heads) != len(full) {
+				t.Fatalf("EventHeads returned %d events, Events %d", len(heads), len(full))
+			}
+			for _, h := range heads {
+				if h.Arguments != nil || h.Result != nil {
+					t.Errorf("event %d: EventHeads read a payload", h.Seq)
+				}
+			}
+			if got, want := Of(s, heads), Of(s, full); !reflect.DeepEqual(got, want) {
+				t.Errorf("totals from heads:\n got %+v\nwant %+v", got, want)
+			}
+		})
 	}
 }

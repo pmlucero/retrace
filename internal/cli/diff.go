@@ -77,7 +77,7 @@ func runDiff(ctx context.Context, env *Env, args []string) int {
 			env.Logger.Error("no such session", "session", id, "dir", env.Globals.Dir)
 			return ExitUsage
 		}
-		s, events, err := readSession(ctx, path, env)
+		s, events, err := readSession(ctx, path, env, (*cassette.Cassette).Events)
 		if err != nil {
 			env.Logger.Error("cannot read the session", "session", id, "error", err)
 			return ExitUsage

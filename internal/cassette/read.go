@@ -213,6 +213,41 @@ func (c *Cassette) Events(ctx context.Context) ([]Event, error) {
 	return out, nil
 }
 
+// EventHeads returns the semantic log in seq order like Events, but reads only
+// the columns the session totals need (spec §8.2): Seq, Kind, Model, TokensIn,
+// TokensOut and CostUSD. The other fields, the large Arguments and Result
+// payloads among them, are left zero, so it must not be used where they matter.
+func (c *Cassette) EventHeads(ctx context.Context) ([]Event, error) {
+	rows, err := c.db.QueryContext(ctx,
+		`SELECT seq, kind, model, tokens_in, tokens_out, cost_usd FROM events ORDER BY seq`)
+	if err != nil {
+		return nil, fmt.Errorf("reading events of %s: %w", c.path, err)
+	}
+	defer rows.Close()
+
+	var out []Event
+	for rows.Next() {
+		var (
+			e         Event
+			model     sql.NullString
+			tin, tout sql.NullInt64
+			cost      sql.NullFloat64
+		)
+		if err := rows.Scan(&e.Seq, &e.Kind, &model, &tin, &tout, &cost); err != nil {
+			return nil, fmt.Errorf("reading events of %s: %w", c.path, err)
+		}
+		e.Model, e.TokensIn, e.TokensOut = stringPtr(model), int64Ptr(tin), int64Ptr(tout)
+		if cost.Valid {
+			e.CostUSD = &cost.Float64
+		}
+		out = append(out, e)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("reading events of %s: %w", c.path, err)
+	}
+	return out, nil
+}
+
 func parseTime(s string) (time.Time, error) {
 	return time.Parse(time.RFC3339Nano, s)
 }
