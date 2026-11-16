@@ -28,6 +28,18 @@ updates:
     groups:
       go-modules:
         patterns: ["*"]
+  # tools/go.mod declares govulncheck (a `tool` directive) outside the main module.
+  - package-ecosystem: gomod
+    directory: /tools
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 14
+    commit-message:
+      prefix: chore(deps)
+    groups:
+      go-tools:
+        patterns: ["*"]
   - package-ecosystem: uv
     directory: /examples/demo
     schedule:

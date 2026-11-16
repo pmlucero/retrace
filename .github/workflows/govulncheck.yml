@@ -46,5 +46,5 @@ jobs:
           go version
           echo "Scanned with \`$(go version)\`." >> "$GITHUB_STEP_SUMMARY"
       - name: Scan for known vulnerabilities
-        # Pinned version and the GOOS list: .github/scripts/govulncheck.sh.
+        # Version: tools/go.mod. GOOS list: .github/scripts/govulncheck.sh.
         run: sh .github/scripts/govulncheck.sh

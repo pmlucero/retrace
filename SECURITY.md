@@ -50,7 +50,7 @@ The security review before `v0.1.0` ([#100](https://github.com/pmlucero/retrace/
 - **`github.com/remyoudompheng/bigfft` is unmaintained** (last release in 2023). It is a small arithmetic package that `modernc.org/sqlite` pulls in, with no I/O and no parsing of untrusted input.
 - **`go.sum` lists modules the binary does not link**, such as the SQLite driver's code generators and test dependencies. They are there to verify the module graph; `go version -m retrace` lists what is linked.
 - **The demo's Python dependencies are not part of the product.** `examples/demo/` is not in the Go module or the release archives. Its lock file has hashes, follows the 14-day rule and was audited with `pip-audit` in the security review (#100).
-- **Some tool versions are pinned by hand.** The versions of golangci-lint, GoReleaser, uv and govulncheck that CI installs are inputs Dependabot does not update; they are bumped by hand ([#141](https://github.com/pmlucero/retrace/issues/141) tracks govulncheck). The docs check installs `markdownlint-cli2` with `npx`, so its own dependencies are not locked. That job has a read-only token and no secrets.
+- **Some tool versions are pinned by hand.** The versions of golangci-lint, GoReleaser and uv that CI installs are inputs Dependabot does not update; they are bumped by hand. govulncheck is declared in `tools/go.mod`, which Dependabot tracks. The docs check installs `markdownlint-cli2` with `npx`, so its own dependencies are not locked. That job has a read-only token and no secrets.
 
 ### Repository and pipeline
 
