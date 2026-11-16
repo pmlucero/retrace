@@ -182,6 +182,23 @@ func TestOpenAllowsExtraTablesAndIndexes(t *testing.T) {
 	}
 }
 
+// AC-35: column constraints and defaults on an expected table run only when it
+// is written, so they do not make the cassette unsafe (spec §7.6).
+func TestOpenAllowsConstraintsAndDefaultsOnExpectedTables(t *testing.T) {
+	path := craftCassette(t, len(migrations),
+		"ALTER TABLE events ADD COLUMN c INTEGER DEFAULT 0 CHECK (c >= 0)",
+		"ALTER TABLE events ADD COLUMN p INTEGER REFERENCES events (seq) ON DELETE CASCADE",
+	)
+	c, err := Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer c.Close()
+	if _, err := c.Session(context.Background()); err != nil {
+		t.Errorf("Session: %v", err)
+	}
+}
+
 func TestCreateKeyword(t *testing.T) {
 	for _, tc := range []struct{ sql, want string }{
 		{"CREATE TABLE t (a)", "TABLE"},
