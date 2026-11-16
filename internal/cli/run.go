@@ -314,6 +314,7 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	path := c.Path()
 	res, err := runSession(ctx, env, sessionConfig{
 		listener: ln,
+		listen:   opts.listen,
 		handler:  mux,
 		cassette: c,
 		writer:   w,

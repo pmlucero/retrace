@@ -134,6 +134,13 @@ text differs in step 1 (not compared; use --text)
 
 Model text is not compared unless you pass `--text`. `--format json` prints the same result as JSON, which validates against the committed schema [docs/schema/diff.v1.json](docs/schema/diff.v1.json).
 
+### Known limitations
+
+The proxy answers `403` to a request whose `Host` does not name its listen address, and to one that carries an `Origin` or `Sec-Fetch-Site` header, so a web page cannot reach it through DNS rebinding or a cross-origin request (spec §3.6). That has two consequences:
+
+- An agent that runs in a browser or in a desktop application's web view cannot be recorded or replayed, because it sends those headers. The same holds for any runtime that does.
+- `host.docker.internal` is rejected. An agent in a container uses the IP address that name resolves to instead (IP literals are accepted; no `--listen-unsafe` is needed for a loopback-bound proxy that Docker Desktop forwards to).
+
 M7 comes next: the demo agent with two MCP servers, and the first release ([#22](https://github.com/pmlucero/retrace/issues/22)). See the [MVP plan](docs/plan/mvp.md).
 
 ## Documentation

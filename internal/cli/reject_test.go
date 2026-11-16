@@ -11,6 +11,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -30,6 +31,8 @@ type rejectCase struct {
 	target  string // the request target, sent byte for byte
 	size    int64  // the body size; bodies above the limit are zeros
 	noLen   bool   // send the body chunked, without a Content-Length
+	host    string // the Host header; "" for the proxy's address. "%PORT%" is the proxy's port
+	headers string // extra header lines, each ending in CRLF
 	status  int
 	errType string // the Anthropic error type on the LLM route; "" for plain text
 }
@@ -46,6 +49,36 @@ var rejectCases = []rejectCase{
 	{target: "/mcp/orders?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, status: 413},
 	{target: "/mcp/orders?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, noLen: true, status: 413},
 	{target: "/llm/anthropic/v1/messages?next=../x", status: 200},
+	// AC-37: the host and browser headers, on both routes.
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, host: "rebind.example:%PORT%", status: 403, errType: "permission_error"},
+	{target: "/mcp/orders?token=" + rejectToken, host: "rebind.example:%PORT%", status: 403},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, host: "localhost.:%PORT%", status: 403, errType: "permission_error"},
+	{target: "/mcp/orders?token=" + rejectToken, host: "localhost.:%PORT%", status: 403},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, headers: "Origin: http://localhost:4790\r\n", status: 403, errType: "permission_error"},
+	{target: "/mcp/orders?token=" + rejectToken, headers: "Origin: null\r\n", status: 403},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, headers: "Sec-Fetch-Site: cross-site\r\n", status: 403, errType: "permission_error"},
+	{target: "/mcp/orders?token=" + rejectToken, headers: "Sec-Fetch-Site: cross-site\r\n", status: 403},
+	{target: "/mcp/orders/../x?token=" + rejectToken, host: "rebind.example:%PORT%", status: 403},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, host: "rebind.example:%PORT%", status: 403, errType: "permission_error"},
+	{target: "/llm/anthropic/v1/messages?ok=1", headers: "Sec-Fetch-Mode: cors\r\n", status: 200},
+	{target: "/llm/anthropic/v1/messages?ok=2", host: "localhost:9000", status: 200},
+	{target: "/llm/anthropic/v1/messages?ok=3", host: "localhost:%PORT%", status: 200},
+	{target: "/llm/anthropic/v1/messages?ok=4", host: "10.0.0.5:%PORT%", status: 200},
+	// An absolute request target: its authority is the host, not the Host header.
+	{target: "http://rebind.example:%PORT%/mcp/orders?token=" + rejectToken, status: 403},
+	{target: "http://127.0.0.1:%PORT%/llm/anthropic/v1/messages?ok=6", host: "rebind.example:%PORT%", status: 200},
+	{target: "/llm/anthropic/v1/messages?ok=5", host: "[::1]:%PORT%", status: 200},
+}
+
+// okCases counts the cases that are answered as usual.
+func okCases() int {
+	n := 0
+	for _, c := range rejectCases {
+		if c.status == 200 {
+			n++
+		}
+	}
+	return n
 }
 
 // rejectBody is the body of the requests within the limit.
@@ -89,7 +122,13 @@ func sendRaw(addr string, c rejectCase) (int, string, error) {
 	if c.size > 0 {
 		body, size = io.LimitReader(zeroReader{}, c.size), c.size
 	}
-	head := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\nContent-Type: application/json\r\nConnection: close\r\n", c.target, addr)
+	_, port, _ := net.SplitHostPort(addr)
+	c.target = strings.ReplaceAll(c.target, "%PORT%", port)
+	host := addr
+	if c.host != "" {
+		host = strings.ReplaceAll(c.host, "%PORT%", port)
+	}
+	head := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\n%sContent-Type: application/json\r\nConnection: close\r\n", c.target, host, c.headers)
 	if c.noLen {
 		head += "Transfer-Encoding: chunked\r\n\r\n"
 	} else {
@@ -167,19 +206,19 @@ func checkRejectAgent(t *testing.T, r recordRun) {
 		}
 	}
 	logs := r.stderr.String()
-	if got, want := strings.Count(logs, "request rejected"), len(rejectCases)-1; got != want {
+	if got, want := strings.Count(logs, "request rejected"), len(rejectCases)-okCases(); got != want {
 		t.Errorf("%d rejection warnings, want %d:\n%s", got, want, logs)
 	}
-	for _, leak := range []string{rejectToken, "orders/", "%2e", "/x"} {
+	for _, leak := range []string{rejectToken, "orders/", "%2e", "/x", "rebind.example", "http://localhost:4790", "cross-site"} {
 		if strings.Contains(logs, leak) {
 			t.Errorf("the log holds %q:\n%s", leak, logs)
 		}
 	}
 }
 
-// AC-34: in record mode, rejected requests get 400 or 413, never reach an
+// AC-34, AC-37: in record mode, rejected requests get 403, 400 or 413, never reach an
 // upstream and are not recorded.
-func TestRecordRejectsDotSegmentsAndLargeBodies(t *testing.T) {
+func TestRecordRejectsRefusedRequests(t *testing.T) {
 	recordRejectAgent(t, t.TempDir(), "s")
 }
 
@@ -197,19 +236,19 @@ func recordRejectAgent(t *testing.T, dir, id string) string {
 		t.Fatalf("record: exit %d\n%s", r.code, r.stderr)
 	}
 	checkRejectAgent(t, r)
-	// Only the request with ../ in its query reached an upstream.
-	if llmCalls.Load() != 1 || mcpCalls.Load() != 0 {
-		t.Errorf("upstream calls: %d LLM, %d MCP; want 1 and 0", llmCalls.Load(), mcpCalls.Load())
+	// Only the requests answered as usual reached an upstream.
+	if llmCalls.Load() != int64(okCases()) || mcpCalls.Load() != 0 {
+		t.Errorf("upstream calls: %d LLM, %d MCP; want %d and 0", llmCalls.Load(), mcpCalls.Load(), okCases())
 	}
-	if _, ins := sessionOf(t, dir, id); len(ins) != 1 || ins[0].Path != "/v1/messages?next=../x" {
-		t.Errorf("recorded interactions = %+v, want only the request with ../ in its query", ins)
+	if _, ins := sessionOf(t, dir, id); len(ins) != okCases() || ins[0].Path != "/v1/messages?next=../x" {
+		t.Errorf("recorded interactions = %+v, want only the %d requests answered as usual", ins, okCases())
 	}
 	return r.stdout.String()
 }
 
-// AC-34: in exact mode, rejected requests get the same answers as while
+// AC-34, AC-37: in exact mode, rejected requests get the same answers as while
 // recording, are not matched (no cassette miss) and are not recorded.
-func TestRunRejectsDotSegmentsAndLargeBodies(t *testing.T) {
+func TestRunRejectsRefusedRequests(t *testing.T) {
 	dir := t.TempDir()
 	want := recordRejectAgent(t, dir, "s")
 
@@ -223,7 +262,24 @@ func TestRunRejectsDotSegmentsAndLargeBodies(t *testing.T) {
 		t.Errorf("replayed answers:\n%s\nwant the recorded ones:\n%s", got, want)
 	}
 	s, ins := sessionOf(t, dir, "replay")
-	if s.Status != "completed" || len(ins) != 1 || ins[0].Provenance != "replayed" {
-		t.Errorf("replay session %q with interactions %+v, want completed with only the replayed one", s.Status, ins)
+	if s.Status != "completed" || len(ins) != okCases() || ins[0].Provenance != "replayed" {
+		t.Errorf("replay session %q with interactions %+v, want completed with only the replayed ones", s.Status, ins)
+	}
+}
+
+// AC-37: guardHosts names the proxy by the --listen host and by the
+// listener's address.
+func TestGuardHosts(t *testing.T) {
+	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	got := guardHosts(sessionConfig{listener: ln, listen: "myhost.internal:4790"})
+	if want := []string{"myhost.internal", "127.0.0.1"}; !slices.Equal(got, want) {
+		t.Errorf("guardHosts = %q, want %q", got, want)
+	}
+	if got := guardHosts(sessionConfig{listener: ln}); !slices.Equal(got, []string{"127.0.0.1"}) {
+		t.Errorf("guardHosts without --listen = %q, want only the listener's host", got)
 	}
 }
