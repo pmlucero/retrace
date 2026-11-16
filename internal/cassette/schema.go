@@ -41,6 +41,9 @@ func checkSchema(ctx context.Context, db *sql.DB) error {
 		if err := checkColumns(ctx, db, table); err != nil {
 			return err
 		}
+		if err := checkForeignKeys(ctx, db, table); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -119,6 +122,33 @@ func checkColumns(ctx context.Context, db *sql.DB, table string) error {
 	}
 	if n == 0 {
 		return fmt.Errorf("%w: table %q is missing", ErrUnsafeSchema, table)
+	}
+	return nil
+}
+
+// checkForeignKeys rejects table when a foreign key has an action other than
+// NO ACTION or RESTRICT. With foreign keys on, a CASCADE, SET NULL or SET
+// DEFAULT action rewrites or deletes rows in the file when a row is deleted or
+// updated, which retrace's own migrations never declare (spec §7.6).
+func checkForeignKeys(ctx context.Context, db *sql.DB, table string) error {
+	rows, err := db.QueryContext(ctx, `SELECT "from", on_update, on_delete FROM pragma_foreign_key_list(?)`, table)
+	if err != nil {
+		return fmt.Errorf("reading the foreign keys of %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var col, onUpdate, onDelete string
+		if err := rows.Scan(&col, &onUpdate, &onDelete); err != nil {
+			return fmt.Errorf("reading the foreign keys of %s: %w", table, err)
+		}
+		for _, action := range []string{onUpdate, onDelete} {
+			if action != "NO ACTION" && action != "RESTRICT" {
+				return fmt.Errorf("%w: foreign key action %s on column %q in %q", ErrUnsafeSchema, action, col, table)
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reading the foreign keys of %s: %w", table, err)
 	}
 	return nil
 }

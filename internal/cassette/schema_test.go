@@ -80,6 +80,18 @@ func TestOpenRejectsUnsafeSchemas(t *testing.T) {
 		{"generated column", current, []string{
 			"ALTER TABLE events ADD COLUMN g TEXT GENERATED ALWAYS AS (printf('%s', kind)) VIRTUAL",
 		}, `generated column "g" in "events"`},
+		{"interactions foreign key cascades on delete", current, []string{
+			"ALTER TABLE interactions ADD COLUMN p INTEGER REFERENCES events (seq) ON DELETE CASCADE",
+		}, `foreign key action CASCADE on column "p" in "interactions"`},
+		{"blobs foreign key sets null on update", current, []string{
+			"ALTER TABLE blobs ADD COLUMN p INTEGER REFERENCES events (seq) ON UPDATE SET NULL",
+		}, `foreign key action SET NULL on column "p" in "blobs"`},
+		{"events foreign key sets default on delete", current, []string{
+			"ALTER TABLE events ADD COLUMN p INTEGER DEFAULT 1 REFERENCES events (seq) ON DELETE SET DEFAULT",
+		}, `foreign key action SET DEFAULT on column "p" in "events"`},
+		{"newer schema with a cascading foreign key", current + 1, []string{
+			"ALTER TABLE chunks ADD COLUMN p INTEGER REFERENCES events (seq) ON DELETE CASCADE",
+		}, `foreign key action CASCADE on column "p" in "chunks"`},
 		{"missing table", current, []string{"DROP TABLE chunks"}, `table "chunks" is missing`},
 		{"older schema with a view", 1, []string{"CREATE VIEW v AS SELECT 1"}, `view "v"`},
 		{"newer schema with a view", current + 1, []string{"CREATE VIEW v AS SELECT 1"}, `view "v"`},
@@ -182,12 +194,15 @@ func TestOpenAllowsExtraTablesAndIndexes(t *testing.T) {
 	}
 }
 
-// AC-35: column constraints and defaults on an expected table run only when it
-// is written, so they do not make the cassette unsafe (spec §7.6).
+// AC-35: column constraints, defaults and foreign keys without a cascading
+// action run only when an expected table is written, so they do not make the
+// cassette unsafe (spec §7.6).
 func TestOpenAllowsConstraintsAndDefaultsOnExpectedTables(t *testing.T) {
 	path := craftCassette(t, len(migrations),
 		"ALTER TABLE events ADD COLUMN c INTEGER DEFAULT 0 CHECK (c >= 0)",
-		"ALTER TABLE events ADD COLUMN p INTEGER REFERENCES events (seq) ON DELETE CASCADE",
+		"ALTER TABLE events ADD COLUMN p INTEGER REFERENCES events (seq)",
+		"ALTER TABLE events ADD COLUMN r INTEGER REFERENCES events (seq) ON DELETE RESTRICT ON UPDATE RESTRICT",
+		"ALTER TABLE interactions ADD COLUMN n INTEGER REFERENCES events (seq) ON DELETE NO ACTION ON UPDATE NO ACTION",
 	)
 	c, err := Open(context.Background(), path)
 	if err != nil {
