@@ -69,7 +69,7 @@ Coding agents follow these rules for every PR, in addition to the sections above
 
 ## Code review
 
-Reviews, human or automated, follow [docs/review-guidelines.md](docs/review-guidelines.md): grounded findings, severities, the review dimensions and the output format. When asked to review a change locally, use the same rubric. Every PR also gets an advisory review from `.github/workflows/claude-review.yml`. Comment `@claude review` on a PR to request another pass.
+Reviews, human or automated, follow [docs/review-guidelines.md](docs/review-guidelines.md): grounded findings, severities, the review dimensions and the output format. When asked to review a change locally, use the same rubric. Every PR also gets an advisory review from `.github/workflows/claude-review.yml`. Comment `@claude review` on a PR to request another pass. Agent-opened PRs follow the round cap in *Pull requests opened by agents*.
 
 ## Things not to do
 
