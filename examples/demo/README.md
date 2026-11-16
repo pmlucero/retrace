@@ -100,6 +100,10 @@ It runs `uv sync --locked`, starts the servers and the fake on free ports, and s
 
 For the last diff it also checks the divergence point in `retrace diff --format json`: step 1, a `search_orders` `tool_use`, with `$.status` differing. It pins `DEMO_MODEL` to `claude-haiku-5-5` for the recording, and prints `retrace show` for the recorded session and the swap-model replay, along with the output of both diffs. CI runs it in the `demo` workflow when this directory or the Go code changes.
 
+## Recording the README GIF
+
+[demo.tape](demo.tape) is a [VHS](https://github.com/charmbracelet/vhs) script that records the README GIF (AC-23): record, exact replay, swap-model replay with a divergence, and diff. [SMOKE.md](SMOKE.md) is the manual checklist for the real-API smoke test and for recording and rehearsing the GIF. VHS is a manual tool and CI does not use it.
+
 ## Tests
 
 ```sh
