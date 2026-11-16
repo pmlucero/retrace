@@ -1,7 +1,9 @@
 # retrace
 
-[![docs](https://github.com/pmlucero/retrace/actions/workflows/docs.yml/badge.svg)](https://github.com/pmlucero/retrace/actions/workflows/docs.yml)
+[![CI](https://github.com/pmlucero/retrace/actions/workflows/go.yml/badge.svg)](https://github.com/pmlucero/retrace/actions/workflows/go.yml)
+[![Release](https://img.shields.io/github/v/release/pmlucero/retrace?include_prereleases)](https://github.com/pmlucero/retrace/releases)
 [![License: Apache 2.0](https://img.shields.io/github/license/pmlucero/retrace)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/pmlucero/retrace)](go.mod)
 [![Status: MVP in progress](https://img.shields.io/badge/status-MVP%20in%20progress-yellow)](#project-status)
 
 **Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.**
@@ -50,6 +52,25 @@ retrace is **not** an observability or tracing tool. Langfuse, LangSmith, Phoeni
 | `diff` | — | — | Find the first divergence between two trajectories. |
 
 When a replay hits something that was never recorded, retrace stops by default (`strict`) and reports the exact divergence point. It never invents a response silently.
+
+## Install
+
+Download the archive for your platform from the [releases page](https://github.com/pmlucero/retrace/releases) (there is no release yet; until the first one, build from source). Each release has a `retrace_<version>_<os>_<arch>.tar.gz` archive (`.zip` on Windows) for Linux, macOS and Windows on amd64 and arm64, and a `checksums.txt` file. Unpack it and put the `retrace` binary on your `PATH`.
+
+Before you run it, check that the archive was built by this repository's release workflow. With the [GitHub CLI](https://cli.github.com/):
+
+```sh
+gh attestation verify <archive> --repo pmlucero/retrace
+```
+
+Without it, check the archive's SHA-256 sum against `checksums.txt`, downloaded from the same release:
+
+```sh
+sha256sum --check --ignore-missing checksums.txt        # Linux
+shasum -a 256 --check --ignore-missing checksums.txt    # macOS
+```
+
+On Windows, compare `(Get-FileHash <archive>).Hash` in PowerShell with the archive's line in `checksums.txt` (the case can differ). A matching sum shows the download is intact; only the attestation shows who built it. See [ADR 0012](docs/adr/0012-release-integrity.md).
 
 ## CLI at a glance
 
