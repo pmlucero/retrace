@@ -74,8 +74,9 @@ func Guard(next http.Handler, log *slog.Logger, listenHosts ...string) http.Hand
 
 // hostAllowed reports whether hostport, a Host header or the authority of an
 // absolute request target, names this proxy (spec §3.6). names are the
-// lower-case listen hosts, IPv6 in brackets. Only the ASCII case is folded:
-// "localhost." is not "localhost".
+// lower-case listen hosts, IPv6 in brackets. Names are compared with no other
+// normalization, so "localhost." is not "localhost". The HTTP server refuses
+// non-ASCII Host bytes before this runs, so lower-casing is plain ASCII.
 func hostAllowed(hostport string, names []string) bool {
 	host, ok := splitHost(hostport)
 	if !ok || host == "" {

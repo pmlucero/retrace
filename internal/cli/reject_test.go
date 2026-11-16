@@ -64,6 +64,9 @@ var rejectCases = []rejectCase{
 	{target: "/llm/anthropic/v1/messages?ok=2", host: "localhost:9000", status: 200},
 	{target: "/llm/anthropic/v1/messages?ok=3", host: "localhost:%PORT%", status: 200},
 	{target: "/llm/anthropic/v1/messages?ok=4", host: "10.0.0.5:%PORT%", status: 200},
+	// An absolute request target: its authority is the host, not the Host header.
+	{target: "http://rebind.example:%PORT%/mcp/orders?token=" + rejectToken, status: 403},
+	{target: "http://127.0.0.1:%PORT%/llm/anthropic/v1/messages?ok=6", host: "rebind.example:%PORT%", status: 200},
 	{target: "/llm/anthropic/v1/messages?ok=5", host: "[::1]:%PORT%", status: 200},
 }
 
@@ -119,9 +122,10 @@ func sendRaw(addr string, c rejectCase) (int, string, error) {
 	if c.size > 0 {
 		body, size = io.LimitReader(zeroReader{}, c.size), c.size
 	}
+	_, port, _ := net.SplitHostPort(addr)
+	c.target = strings.ReplaceAll(c.target, "%PORT%", port)
 	host := addr
 	if c.host != "" {
-		_, port, _ := net.SplitHostPort(addr)
 		host = strings.ReplaceAll(c.host, "%PORT%", port)
 	}
 	head := fmt.Sprintf("POST %s HTTP/1.1\r\nHost: %s\r\n%sContent-Type: application/json\r\nConnection: close\r\n", c.target, host, c.headers)
@@ -212,9 +216,9 @@ func checkRejectAgent(t *testing.T, r recordRun) {
 	}
 }
 
-// AC-34, AC-37: in record mode, rejected requests get 400 or 413, never reach an
+// AC-34, AC-37: in record mode, rejected requests get 403, 400 or 413, never reach an
 // upstream and are not recorded.
-func TestRecordRejectsDotSegmentsAndLargeBodies(t *testing.T) {
+func TestRecordRejectsRefusedRequests(t *testing.T) {
 	recordRejectAgent(t, t.TempDir(), "s")
 }
 
@@ -244,7 +248,7 @@ func recordRejectAgent(t *testing.T, dir, id string) string {
 
 // AC-34, AC-37: in exact mode, rejected requests get the same answers as while
 // recording, are not matched (no cassette miss) and are not recorded.
-func TestRunRejectsDotSegmentsAndLargeBodies(t *testing.T) {
+func TestRunRejectsRefusedRequests(t *testing.T) {
 	dir := t.TempDir()
 	want := recordRejectAgent(t, dir, "s")
 
