@@ -4,7 +4,7 @@ The overview in the [README](../../README.md#how-it-works) is generated with [Ar
 
 - `overview.json` is the source. Every component cites the spec section, ADR or code that justifies it, pinned to a commit in `meta.repository.revision`.
 - `overview-light.png` and `overview-dark.png` are what the README shows.
-- The interactive HTML (source links, component details, milestone tags) is not committed, because it is large and regenerated from the JSON.
+- The interactive HTML (source links and component details) is not committed, because it is large and regenerated from the JSON.
 
 Nothing checks automatically that the images still match the JSON. Whoever changes `overview.json` regenerates both images in the same PR.
 
@@ -12,7 +12,7 @@ CI (`.github/scripts/check_docs.py`) checks that `overview.json` parses, that `m
 
 ## Regenerating
 
-Update the diagram when a milestone changes the architecture or its status tags. Use Archify 3.2.0; a newer version can change the JSON schema or the rendering, so upgrading it is a change of its own.
+Update the diagram when the architecture changes. It carries no per-milestone status (tags or a build-status legend), so that it does not go stale; keep it that way. Use Archify 3.2.0; a newer version can change the JSON schema or the rendering, so upgrading it is a change of its own.
 
 1. Edit `overview.json`, and set `meta.repository.revision` to a commit on `main` that contains every cited line.
 2. Render and check it from the repository root:
