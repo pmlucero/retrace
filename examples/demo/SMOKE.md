@@ -57,11 +57,12 @@ Then, in a third terminal in `examples/demo` with the same `PATH`, `RETRACE_DIR`
 
    For the GIF you want the first outcome. Run `retrace record --force ...` and this step again until you get it. Several takes may be needed.
 
-5. **No key in the cassette.** The cassette must hold no credentials. Both commands must print nothing:
+5. **No key in the cassette.** The cassette must hold no credentials. The `grep -l` must print nothing and the count must be `0`:
 
    ```sh
-   grep -c "${ANTHROPIC_API_KEY:0:12}" "$RETRACE_DIR"/*.cassette | grep -v ':0$'
-   retrace show checkout --json | grep -c "${ANTHROPIC_API_KEY:0:12}" | grep -v '^0$'
+   : "${ANTHROPIC_API_KEY:?}"
+   grep -l -a -F "${ANTHROPIC_API_KEY:0:12}" "$RETRACE_DIR"/*.cassette
+   retrace show checkout --json | grep -c -F "${ANTHROPIC_API_KEY:0:12}"    # prints 0
    ```
 
    Also pick an `interaction_id` from `retrace show checkout --json` and check that `retrace show checkout --raw <id>` shows `x-api-key` as redacted. If the key appears anywhere, stop and report it as a security bug (see [SECURITY.md](../../SECURITY.md)). Rotate that key.
