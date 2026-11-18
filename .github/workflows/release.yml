@@ -150,6 +150,9 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Two tags can point at one commit (an rc and its final). GoReleaser
+          # then picks one of them, so name the tag that triggered this run.
+          GORELEASER_CURRENT_TAG: ${{ github.ref_name }}
       # The release is still a draft, and immutable once published (ADR 0012),
       # so the snapshot job's checks run again here before publishing.
       - name: Check the version the binary reports
