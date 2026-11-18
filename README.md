@@ -24,7 +24,7 @@ Step 1. Record a real agent session, with two MCP servers
 
 ```text
 $ retrace record --session checkout --mcp orders=http://127.0.0.1:9001/mcp --mcp shipping=http://127.0.0.1:9002/mcp -- uv run --locked python agent.py
-Your shipped order is o_1002 (one steel kettle), and it's currently in transit with Parcelo (tracking ID trk_7342). It's estimated to arrive on October 24, 2026.
+Your shipped order o_1002 (one steel kettle) is in transit with Parcelo, tracking number trk_7342. It was last scanned at the central hub on October 21, and the estimated delivery date is October 24, 2026.
 level=INFO msg="session recorded" session=checkout status=completed ...
 ```
 
