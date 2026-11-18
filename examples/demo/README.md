@@ -15,7 +15,7 @@ Both servers are written with the official [`mcp`](https://pypi.org/project/mcp/
 
 `shipping --delayed` serves the same tool, but `track_package` for `trk_7342` returns status `delayed` and a later estimated delivery. The demo runs it on port 9003 to play a shipping API that changed after the recording (see [Live tools](#live-tools)).
 
-- `search_orders` lists a customer's orders. `status` is optional and is one of `open`, `shipped` or `delivered`. An agent that is asked about a shipped order may pass `status: "shipped"`, or fetch every order and filter itself. Which one it does depends on the model, which is why a swap-model replay of the demo is likely to diverge.
+- `search_orders` lists a customer's orders. `status` is optional and is one of `open`, `shipped` or `delivered`. An agent that is asked about a shipped order may pass `status: "shipped"`, or fetch every order and filter itself. Which one it does depends on the model: the fake is scripted to differ between its two models, but the real API usually makes the same call for each.
 - `get_order` returns one order, with its items and, once shipped, its tracking id.
 - `track_package` returns a parcel's carrier, status and tracking events.
 

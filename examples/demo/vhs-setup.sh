@@ -48,7 +48,7 @@ demo_up() {
 		_demo_wait 9000 || return 1
 		export ANTHROPIC_API_KEY=test
 		# The visible commands stay the same: only here do record and the
-		# swap-model run (a run that forwards to an LLM) learn where the fake
+		# run with --model learn where the fake
 		# is. The live-tools run serves the LLM from the cassette.
 		retrace() {
 			case "${1:-} $*" in

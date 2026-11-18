@@ -34,7 +34,7 @@ Then, in a third terminal in `examples/demo` with the same `PATH`, `RETRACE_DIR`
 
    Expect exit `0`. The agent prints an answer about order `o_1002` (shipped, tracking `trk_7342`), and retrace logs `session recorded ... status=completed`. If it exits `4`, the agent failed: read its stderr (a bad key shows as an API error).
 
-2. **Inspect it.** `retrace ls` lists `checkout` with `completed` status. `retrace show checkout` shows an `llm` request, MCP `tools/list`, and tool calls `search_orders`, `get_order` and `track_package`, with token counts and an estimated cost. Note whether `search_orders` has a `status` argument: 
+2. **Inspect it.** `retrace ls` lists `checkout` with `completed` status. `retrace show checkout` shows an `llm` request, MCP `tools/list`, and tool calls `search_orders`, `get_order` and `track_package`, with token counts and an estimated cost..
 
 3. **Exact replay.** Exit `0`. It makes no network call, so you can disconnect to be sure.
 

@@ -1,5 +1,6 @@
 # Records examples/demo/demo.gif (AC-23): record, exact replay, live-tools
-# replay with a divergence (a changed shipping API), diff. Run from the repository root:
+# replay with a divergence (a changed shipping API), diff. Run from the
+# repository root:
 #
 #   vhs examples/demo/demo.tape                  # real API, needs ANTHROPIC_API_KEY
 #   DEMO_FAKE=1 vhs examples/demo/demo.tape      # free rehearsal, scripted fake

@@ -18,6 +18,7 @@ DEFAULT_PORT = 9002
 # The default data, which the recorded sessions and the fake rely on, is unchanged.
 DELAYED = "--delayed" in sys.argv
 if DELAYED:
+    # serve() parses the command line and does not know this flag.
     sys.argv.remove("--delayed")
 
 DELAYED_UPDATE = {
