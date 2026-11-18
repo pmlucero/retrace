@@ -26,18 +26,18 @@ Show
 
 Type "# 1. Record a real agent session, with two MCP servers"
 Enter
-Sleep 1s
+Sleep 2s
 Type "retrace record --session checkout --mcp orders=http://127.0.0.1:9001/mcp --mcp shipping=http://127.0.0.1:9002/mcp -- uv run --locked python agent.py"
 Sleep 500ms
 Enter
 Wait+Screen@120s /(?m)\$ *$/
-Sleep 4s
+Sleep 10s
 
 Type "clear"
 Enter
 Type "# 2. Replay it exactly: no network, same trajectory"
 Enter
-Sleep 1s
+Sleep 2s
 Type "retrace run checkout --as checkout.exact --recorded-command"
 Sleep 500ms
 Enter
@@ -46,13 +46,13 @@ Type "retrace diff checkout checkout.exact"
 Sleep 500ms
 Enter
 Wait+Screen@30s /(?m)\$ *$/
-Sleep 4s
+Sleep 10s
 
 Type "clear"
 Enter
 Type "# 3. Your shipping API changed: replay with live tools, see where the agent diverges"
 Enter
-Sleep 1s
+Sleep 2s
 Type "retrace run checkout --as checkout.live --tools live --mcp shipping=http://127.0.0.1:9003/mcp --recorded-command"
 Sleep 500ms
 Enter
@@ -61,7 +61,7 @@ Type "retrace diff checkout checkout.live"
 Sleep 500ms
 Enter
 Wait+Screen@30s /(?m)\$ *$/
-Sleep 6s
+Sleep 12s
 
 Hide
 Type "demo_down"
