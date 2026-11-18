@@ -14,6 +14,56 @@
 
 *Record a real session, replay it exactly (identical), then replay it against a changed shipping server: retrace stops at the first divergence and `diff` shows the tool result that changed.*
 
+<details>
+<summary>Transcript of the demo</summary>
+
+Output is abridged: long log lines and temporary paths are dropped.
+
+**1. Record a real agent session, with two MCP servers**
+
+```text
+$ retrace record --session checkout --mcp orders=http://127.0.0.1:9001/mcp --mcp shipping=http://127.0.0.1:9002/mcp -- uv run --locked python agent.py
+Your shipped order is o_1002 (one steel kettle), and it's currently in transit with Parcelo (tracking ID trk_7342). It's estimated to arrive on October 24, 2026.
+level=INFO msg="session recorded" session=checkout status=completed ...
+```
+
+**2. Replay it exactly: no network, same trajectory**
+
+```text
+$ retrace run checkout --as checkout.exact --recorded-command
+$ retrace diff checkout checkout.exact
+
+✓ trajectories identical (3 steps, 2 tool calls)
+```
+
+**3. Your shipping API changed: replay with live tools, see where the agent diverges**
+
+```text
+$ retrace run checkout --as checkout.live --tools live --mcp shipping=http://127.0.0.1:9003/mcp --recorded-command
+level=WARN msg="cassette miss" channel=llm upstream=anthropic reason="no recorded request matches this one"
+retrace: replay checkout.live diverged from checkout
+  first miss: anthropic POST /v1/messages
+  misses: 1
+  compare: retrace diff checkout checkout.live
+
+$ retrace diff checkout checkout.live
+
+               A: claude-haiku-5-5    B: claude-haiku-5-5
+steps          3                      2  (stopped: cassette miss)
+tool calls     2                      ...
+
+✗ first divergence at step 2, event tool_result
+    A  mcp:shipping track_package  ...  ok
+    B  mcp:shipping track_package  ...  ok
+       - $.structuredContent.estimated_delivery: "2026-10-24" → "2026-10-29"
+       - $.structuredContent.status: "in_transit" → "delayed"
+
+  step 1 identical (1 tool call)
+  B stopped at step 2: cassette miss on anthropic
+```
+
+</details>
+
 ## What is retrace
 
 retrace is a VCR for AI agents. It is a transparent proxy, shipped as a single Go binary, that sits between your agent and:
