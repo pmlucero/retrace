@@ -34,5 +34,5 @@ node_modules/
 __pycache__/
 .pytest_cache/
 
-# VHS takes (examples/demo/demo.tape); the final GIF is added deliberately
+# VHS takes (examples/demo/demo.tape); the final GIF is docs/assets/demo.gif
 /examples/demo/demo.gif

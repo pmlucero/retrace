@@ -80,6 +80,6 @@ DEMO_FAKE=1 vhs examples/demo/demo.tape    # free rehearsal against the fake
 vhs examples/demo/demo.tape                # real API, needs ANTHROPIC_API_KEY
 ```
 
-It writes `examples/demo/demo.gif`, which is git-ignored: a take is not committed. In rehearsal, the hidden setup also starts the fake on port 9000 and wraps `retrace` so that `record` and any `run` that calls an LLM go to it. The commands shown are the same in both modes. The tape stops the servers when it ends. The ports 9000 to 9003 and 4790 must be free.
+It writes `examples/demo/demo.gif`, which is git-ignored: a take is not committed. The GIF in the README is the final real-API take, copied deliberately to [docs/assets/demo.gif](../../docs/assets/demo.gif). In rehearsal, the hidden setup also starts the fake on port 9000 and wraps `retrace` so that `record` and any `run` that calls an LLM go to it. The commands shown are the same in both modes. The tape stops the servers when it ends. The ports 9000 to 9003 and 4790 must be free.
 
-The live-tools divergence is deterministic, in rehearsal and with the real API, so one take is enough. The final GIF is placed in the README in a later step.
+The live-tools divergence is deterministic, in rehearsal and with the real API, so one take is enough. To update the README GIF, copy a new take over `docs/assets/demo.gif`.
