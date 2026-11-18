@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Runs the demo end to end through retrace, against the scripted fake of the
-# Anthropic API: record, exact replay, swap-model replay and diff (AC-19,
-# AC-20, AC-23). It needs no API key and never calls the real API.
+# Anthropic API: record, exact replay, swap-model replay, live-tools replay and
+# diff (AC-18, AC-19, AC-20, AC-23). It needs no API key and never calls the real API.
 #
 # Usage, from the repository root or anywhere:
 #
@@ -39,18 +39,20 @@ fail() {
 
 # start <name> <args...>: starts a demo server on a free port, waits up to 30s
 # for the "<name>: <url>" line it prints once its port is bound, and stores the
-# URL in the variable URL.
+# URL in the variable URL. TAG, if set, names the log files instead of <name>,
+# for a second server of the same kind.
 start() {
 	local name=$1
 	shift
-	local out="$WORK/$name.out"
-	"$DEMO_DIR/.venv/bin/python" "$@" --port 0 >"$out" 2>"$WORK/$name.err" &
+	local tag=${TAG:-$name}
+	local out="$WORK/$tag.out"
+	"$DEMO_DIR/.venv/bin/python" "$@" --port 0 >"$out" 2>"$WORK/$tag.err" &
 	PIDS+=("$!")
 	local pid=$!
 	local deadline=$((SECONDS + 30))
 	until head -n 1 "$out" | grep -q "^$name: http://"; do
 		if ! kill -0 "$pid" 2>/dev/null; then
-			cat "$WORK/$name.err" >&2
+			cat "$WORK/$tag.err" >&2
 			fail "$name exited before printing its URL"
 		fi
 		if ((SECONDS >= deadline)); then
@@ -93,6 +95,10 @@ start orders -m servers.orders
 ORDERS=$URL
 start shipping -m servers.shipping
 SHIPPING=$URL
+# The same server with --delayed: track_package answers differently for
+# trk_7342, as if the shipping API had changed since the recording.
+TAG=shipping-delayed start shipping -m servers.shipping --delayed
+SHIPPING_DELAYED=$URL
 start fake-anthropic fake_anthropic.py
 FAKE=$URL
 
@@ -152,6 +158,34 @@ want = (1, "tool_use", "search_orders", "search_orders", ["$.status"])
 if got != want:
     sys.exit(f"e2e: divergence point is {got}, want {want}")
 print("step 1, tool_use search_orders, $.status: as expected")
+' "$json"
+
+# AC-18: --tools live serves the LLM from the cassette and forwards MCP to the
+# real server. The delayed server returns another track_package result, so the
+# next LLM request no longer matches the recorded one and strict stops with 3.
+log "Live-tools replay against the delayed shipping server (expect 3)"
+expect 3 rt run "$ID" --as "$ID.live" --listen 127.0.0.1:0 \
+	--tools live --mcp "shipping=$SHIPPING_DELAYED" --recorded-command
+rt show "$ID.live"
+
+log "Diff with the live-tools replay (expect 1)"
+expect 1 rt diff "$ID" "$ID.live"
+
+log "Checking the live-tools divergence point"
+code=0
+json=$(rt diff "$ID" "$ID.live" --format json) || code=$?
+((code == 1)) || fail "'diff --format json' exited with $code, want 1"
+"$DEMO_DIR/.venv/bin/python" -I -c '
+import json, sys
+p = json.loads(sys.argv[1])["first_divergence"]
+if not p or not p["a"] or not p["b"]:
+    sys.exit(f"e2e: want a divergence with an event on each side, got {p}")
+paths = [e["path"] for e in p["diff"]]
+got = (p["step"], p["kind"], p["a"]["tool"], p["b"]["tool"])
+want = (3, "tool_result", "track_package", "track_package")
+if got != want or "$.structuredContent.status" not in paths:
+    sys.exit(f"e2e: divergence point is {got} {paths}, want {want} with $.structuredContent.status")
+print("step 3, tool_result track_package, $.structuredContent.status: as expected")
 ' "$json"
 
 log "The demo ran end to end"

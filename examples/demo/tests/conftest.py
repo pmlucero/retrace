@@ -62,5 +62,10 @@ def shipping_url() -> Iterator[str]:
 
 
 @pytest.fixture(scope="session")
+def delayed_shipping_url() -> Iterator[str]:
+    yield from serve("-m", "servers.shipping", "--delayed")
+
+
+@pytest.fixture(scope="session")
 def anthropic_url() -> Iterator[str]:
     yield from serve("fake_anthropic.py")
