@@ -8,7 +8,7 @@ Cost: a few cents per run. The session is short (one question, three tool calls)
 
 - Go, to build retrace, and [uv](https://docs.astral.sh/uv/).
 - [VHS](https://github.com/charmbracelet/vhs), only for the GIF: `brew install vhs`. It is a manual tool, not a CI or Go module dependency.
-- An API key in your shell: `export ANTHROPIC_API_KEY=sk-ant-...`. Never put it in a file in the repo.
+- An API key in your shell: `export ANTHROPIC_API_KEY=sk-ant-...`. Never put it in a file in the repo. Exact and live-tools replays make no API call, but the agent's Anthropic SDK refuses to start without the variable set (any value), so keep it set for every step.
 
 From the repository root, build retrace and start the servers in two terminals:
 
@@ -34,7 +34,7 @@ Then, in a third terminal in `examples/demo` with the same `PATH`, `RETRACE_DIR`
 
    Expect exit `0`. The agent prints an answer about order `o_1002` (shipped, tracking `trk_7342`), and retrace logs `session recorded ... status=completed`. If it exits `4`, the agent failed: read its stderr (a bad key shows as an API error).
 
-2. **Inspect it.** `retrace ls` lists `checkout` with `completed` status. `retrace show checkout` shows an `llm` request, MCP `tools/list`, and tool calls `search_orders`, `get_order` and `track_package`, with token counts and an estimated cost. Note whether `search_orders` has a `status` argument: the swap-model step depends on it.
+2. **Inspect it.** `retrace ls` lists `checkout` with `completed` status. `retrace show checkout` shows an `llm` request, MCP `tools/list`, and tool calls `search_orders`, `get_order` and `track_package`, with token counts and an estimated cost. Note whether `search_orders` has a `status` argument: 
 
 3. **Exact replay.** Exit `0`. It makes no network call, so you can disconnect to be sure.
 
@@ -43,21 +43,25 @@ Then, in a third terminal in `examples/demo` with the same `PATH`, `RETRACE_DIR`
    retrace diff checkout checkout.exact     # exit 0: "trajectories identical"
    ```
 
-4. **Swap-model replay with Sonnet.** This calls the real API again.
+4. **Live-tools replay: a changed shipping API.** This is the divergence the GIF shows, and it makes no API call: the LLM is served from the cassette and MCP goes to a live server. The second shipping server (`--delayed`, port 9003, started by `demo_up`) returns another `track_package` result for `trk_7342`. If you run the steps by hand, start it with `uv run python -m servers.shipping --port 9003 --delayed`.
+
+   ```sh
+   retrace run checkout --as checkout.live --tools live --mcp shipping=http://127.0.0.1:9003/mcp --recorded-command
+   retrace diff checkout checkout.live
+   ```
+
+   Expect exit `3` (the next LLM request holds the new tool result, which the cassette does not) and `diff` exit `1`, with the first divergence at step 3, a `track_package` `tool_result` whose `status` changed from `in_transit` to `delayed`. It is deterministic, so it needs no retakes.
+
+5. **Swap-model replay with Sonnet (optional, not in the GIF).** This calls the real API again.
 
    ```sh
    retrace run checkout --as checkout.swap --model claude-sonnet-5-5 --recorded-command
    retrace diff checkout checkout.swap
    ```
 
-   Two outcomes are valid, because real models are not deterministic:
+   Against the real API this usually gives exit `0` and "trajectories identical": Sonnet makes the same tool calls as Haiku. That is a valid outcome, which is why the GIF does not rely on it. Exit `3` and `diff` exit `1` (a tool call the cassette does not hold) is also valid.
 
-   - Exit `3` and `diff` exit `1`: Sonnet made a tool call the cassette does not hold (typically `search_orders` without `status`), so the strict replay stopped. This is the divergence the GIF should show.
-   - Exit `0` and `diff` exit `0` or `1`: Sonnet called the same tools. There is no divergence to show; a `1` from `diff` can still come from different arguments or text.
-
-   For the GIF you want the first outcome. Run `retrace record --force ...` and this step again until you get it. Several takes may be needed.
-
-5. **No key in the cassette.** The cassette must hold no credentials. The `grep -l` must print nothing and the count must be `0`:
+6. **No key in the cassette.** The cassette must hold no credentials. The `grep -l` must print nothing and the count must be `0`:
 
    ```sh
    : "${ANTHROPIC_API_KEY:?}"
@@ -76,6 +80,6 @@ DEMO_FAKE=1 vhs examples/demo/demo.tape    # free rehearsal against the fake
 vhs examples/demo/demo.tape                # real API, needs ANTHROPIC_API_KEY
 ```
 
-It writes `examples/demo/demo.gif`, which is git-ignored: a take is not committed. In rehearsal, the hidden setup also starts the fake on port 9000 and wraps `retrace` so that `record` and the swap-model `run` go to it. The commands shown are the same in both modes. The tape stops the servers when it ends. The ports 9000 to 9002 and 4790 must be free.
+It writes `examples/demo/demo.gif`, which is git-ignored: a take is not committed. In rehearsal, the hidden setup also starts the fake on port 9000 and wraps `retrace` so that `record` and any `run` that calls an LLM go to it. The commands shown are the same in both modes. The tape stops the servers when it ends. The ports 9000 to 9003 and 4790 must be free.
 
-The rehearsal always diverges (the fake is scripted), but a real take may not (step 4), so repeat until the GIF shows the divergence. The final GIF is placed in the README in a later step.
+The live-tools divergence is deterministic, in rehearsal and with the real API, so one take is enough. The final GIF is placed in the README in a later step.

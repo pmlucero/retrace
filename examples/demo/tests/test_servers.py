@@ -77,3 +77,17 @@ async def test_track_package(shipping_url: str) -> None:
     is_error, _, text = await call(shipping_url, "track_package", {"tracking_id": "trk_0000"})
     assert is_error
     assert "no package with tracking id trk_0000" in text
+
+
+@pytest.mark.anyio
+async def test_track_package_delayed(delayed_shipping_url: str) -> None:
+    is_error, structured, _ = await call(delayed_shipping_url, "track_package", {"tracking_id": "trk_7342"})
+    assert not is_error
+    assert structured is not None
+    assert structured["status"] == "delayed"
+    assert structured["estimated_delivery"] == "2026-10-29"
+
+    # Only trk_7342 changes.
+    _, other, _ = await call(delayed_shipping_url, "track_package", {"tracking_id": "trk_7301"})
+    assert other is not None
+    assert other["status"] == "delivered"

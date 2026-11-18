@@ -3,7 +3,8 @@
 #   source examples/demo/vhs-setup.sh && demo_up      # before the visible part
 #   demo_down                                         # after it
 #
-# demo_up starts the two MCP servers on 9001 and 9002, uses a throwaway
+# demo_up starts the two MCP servers on 9001 and 9002, plus a second shipping
+# server on 9003 whose track_package answers differently (--delayed), uses a throwaway
 # cassette directory (RETRACE_DIR), puts a retrace binary on PATH and cds to
 # examples/demo. With DEMO_FAKE=1 it also starts the scripted fake Anthropic
 # API on 9000 and wraps `retrace` so that record and run go to it. That
@@ -38,15 +39,17 @@ demo_up() {
 	_DEMO_PIDS+=("$!")
 	$py -m servers.shipping --port 9002 >/dev/null 2>&1 &
 	_DEMO_PIDS+=("$!")
-	_demo_wait 9001 && _demo_wait 9002 || return 1
+	$py -m servers.shipping --port 9003 --delayed >/dev/null 2>&1 &
+	_DEMO_PIDS+=("$!")
+	_demo_wait 9001 && _demo_wait 9002 && _demo_wait 9003 || return 1
 	if [[ -n ${DEMO_FAKE:-} ]]; then
 		$py fake_anthropic.py --port 9000 >/dev/null 2>&1 &
 		_DEMO_PIDS+=("$!")
 		_demo_wait 9000 || return 1
 		export ANTHROPIC_API_KEY=test
 		# The visible commands stay the same: only here do record and the
-		# swap-model run (the only run that forwards to an LLM) learn where
-		# the fake is.
+		# swap-model run (a run that forwards to an LLM) learn where the fake
+		# is. The live-tools run serves the LLM from the cassette.
 		retrace() {
 			case "${1:-} $*" in
 			"record "* | "run "*" --model "*)
@@ -55,6 +58,8 @@ demo_up() {
 			esac
 		}
 	elif [[ -z ${ANTHROPIC_API_KEY:-} ]]; then
+		# Also needed by the replays that make no API call: the agent's SDK
+		# refuses to start without a key, whatever its value.
 		echo "demo: set ANTHROPIC_API_KEY, or DEMO_FAKE=1 to rehearse" >&2
 		return 1
 	fi

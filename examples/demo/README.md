@@ -2,7 +2,7 @@
 
 The demo shows retrace working with an agent written in another language, against real MCP servers (AC-23 in the [spec](../../docs/spec/core.md), M7 in the [MVP plan](../../docs/plan/mvp.md)). It is a Python project managed with [uv](https://docs.astral.sh/uv/), separate from the Go module.
 
-It contains a support agent, the two MCP servers it uses, and a scripted fake of the Anthropic API that lets the demo run without an API key. A script runs the whole flow through retrace against the fake (record, exact replay, swap-model replay, diff), and CI runs it (see [End to end](#end-to-end)).
+It contains a support agent, the two MCP servers it uses, and a scripted fake of the Anthropic API that lets the demo run without an API key. A script runs the whole flow through retrace against the fake (record, exact replay, swap-model replay, live-tools replay, diff), and CI runs it (see [End to end](#end-to-end)).
 
 ## The servers
 
@@ -12,6 +12,8 @@ Both servers are written with the official [`mcp`](https://pypi.org/project/mcp/
 |---|---|---|
 | `orders` | `http://127.0.0.1:9001/mcp` | `search_orders(customer_id, status=None)`, `get_order(order_id)` |
 | `shipping` | `http://127.0.0.1:9002/mcp` | `track_package(tracking_id)` |
+
+`shipping --delayed` serves the same tool, but `track_package` for `trk_7342` returns status `delayed` and a later estimated delivery. The demo runs it on port 9003 to play a shipping API that changed after the recording (see [Live tools](#live-tools)).
 
 - `search_orders` lists a customer's orders. `status` is optional and is one of `open`, `shipped` or `delivered`. An agent that is asked about a shipped order may pass `status: "shipped"`, or fetch every order and filter itself. Which one it does depends on the model, which is why a swap-model replay of the demo is likely to diverge.
 - `get_order` returns one order, with its items and, once shipped, its tracking id.
@@ -97,12 +99,18 @@ It runs `uv sync --locked`, starts the servers and the fake on free ports, and s
 | Diff (AC-19) | `retrace diff checkout checkout.exact` | `0`, identical trajectories |
 | Swap-model replay | `retrace run checkout --as checkout.swap --model claude-sonnet-5-5 --anthropic-upstream <fake> --recorded-command` | `3`, the `search_orders` call without `status` is a cassette miss |
 | Diff (AC-20) | `retrace diff checkout checkout.swap` | `1`, divergence at step 1 |
+| Live-tools replay (AC-18) | `retrace run checkout --as checkout.live --tools live --mcp shipping=<delayed shipping> --recorded-command` | `3`, the LLM request after the changed `track_package` result is a cassette miss |
+| Diff | `retrace diff checkout checkout.live` | `1`, divergence at step 3 |
 
-For the last diff it also checks the divergence point in `retrace diff --format json`: step 1, a `search_orders` `tool_use`, with `$.status` differing. It pins `DEMO_MODEL` to `claude-haiku-5-5` for the recording, and prints `retrace show` for the recorded session and the swap-model replay, along with the output of both diffs. CI runs it in the `demo` workflow when this directory or the Go code changes.
+It also checks each divergence point in `retrace diff --format json`: for the swap-model replay, step 1, a `search_orders` `tool_use`, with `$.status` differing; for the live-tools replay, step 3, a `track_package` `tool_result`, with `$.structuredContent.status` differing. It pins `DEMO_MODEL` to `claude-haiku-5-5` for the recording, and prints `retrace show` for the recorded session and the swap-model replay, along with the output of both diffs. CI runs it in the `demo` workflow when this directory or the Go code changes.
+
+## Live tools
+
+`--tools live` serves the LLM from the cassette and forwards MCP calls to real servers (AC-18). The model is not involved, so the divergence is deterministic: the delayed shipping server answers `track_package` differently from the recording, the next LLM request carries that new result, and strict replay stops there. The real API rarely diverges on a swap-model replay of this session (Haiku, Sonnet and Opus make the same calls), so the GIF shows this instead. The agent's SDK still needs `ANTHROPIC_API_KEY` set, with any value, to start.
 
 ## Recording the README GIF
 
-[demo.tape](demo.tape) is a [VHS](https://github.com/charmbracelet/vhs) script that records the README GIF (AC-23): record, exact replay, swap-model replay with a divergence, and diff. [SMOKE.md](SMOKE.md) is the manual checklist for the real-API smoke test and for recording and rehearsing the GIF. VHS is a manual tool and CI does not use it.
+[demo.tape](demo.tape) is a [VHS](https://github.com/charmbracelet/vhs) script that records the README GIF (AC-23): record, exact replay, live-tools replay with a divergence, and diff. [SMOKE.md](SMOKE.md) is the manual checklist for the real-API smoke test and for recording and rehearsing the GIF. VHS is a manual tool and CI does not use it.
 
 ## Tests
 
