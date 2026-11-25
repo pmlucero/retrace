@@ -6,7 +6,7 @@
   "type": "object",
   "required": [
     "format_version", "mode", "model", "repeat", "corpus_size", "interrupted", "out", "budget",
-    "cost", "totals", "diverged_at", "sessions", "exit_code"
+    "cost", "totals", "diverged_at", "sessions"
   ],
   "properties": {
     "format_version": {
@@ -58,8 +58,7 @@
       "description": "One entry per session of the corpus, in id order.",
       "type": "array",
       "items": { "$ref": "#/$defs/session" }
-    },
-    "exit_code": { "description": "The exit code of the check (spec §9.9.8), when the report was written.", "type": "integer" }
+    }
   },
   "$defs": {
     "budget": {

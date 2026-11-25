@@ -30,7 +30,6 @@ type checkDocument struct {
 	Totals     checkTotalsJSON    `json:"totals"`
 	DivergedAt []checkCorpusJSON  `json:"diverged_at"`
 	Sessions   []checkSessionJSON `json:"sessions"`
-	ExitCode   int                `json:"exit_code"`
 }
 
 // checkBudgetJSON is the budget of spec §9.9.6.
@@ -128,7 +127,6 @@ func (r checkReport) writeJSON(w io.Writer) error {
 		},
 		DivergedAt: []checkCorpusJSON{},
 		Sessions:   []checkSessionJSON{},
-		ExitCode:   r.exitCode(),
 	}
 	if r.model != "" {
 		doc.Model = &r.model

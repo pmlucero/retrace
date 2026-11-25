@@ -68,7 +68,7 @@ func TestCheckJSON(t *testing.T) {
 		}
 		wantCounts := checkCountsJSON{Diverged: 3, Identical: 3}
 		if got.FormatVersion != 1 || got.Mode != "swap-model" || got.CorpusSize != 2 || got.Repeat != 3 ||
-			got.Totals.Replays != wantCounts || got.Out == nil || *got.Out != out || got.Budget != nil || got.ExitCode != ExitDiverged {
+			got.Totals.Replays != wantCounts || got.Out == nil || *got.Out != out || got.Budget != nil {
 			t.Errorf("unexpected document:\n%s", r.stdout)
 		}
 		if len(got.DivergedAt) != 1 || got.DivergedAt[0].Tool == nil || *got.DivergedAt[0].Tool != "get_weather" || got.DivergedAt[0].Sessions != 2 {
