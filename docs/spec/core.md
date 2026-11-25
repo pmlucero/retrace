@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.33
+- Version: 0.34
 - Last updated: 2026-11-25
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -748,19 +748,21 @@ The model names, ids and values above are illustrative.
 
 `--markdown <path>`: also writes the summary and the session lines as Markdown, appending to `<path>` and creating it if it does not exist, as the file in `$GITHUB_STEP_SUMMARY` expects. Values read from a cassette are escaped as in §10, and also so that they cannot add Markdown markup: a tool name cannot open a link, start an HTML tag or end a table cell.
 
+The `--markdown` file is opened after the budget is checked (§9.9.6) and before `--out` is created and the first replay starts, so a path that cannot be written fails before anything runs or is billed. Opening it is a check failure (exit `1`), and that holds even when the budget refused the check: a refused check still opens the file and writes its Markdown there. A write that fails after the replays is reported on stderr and is also a check failure, so it exits `1` where the check would otherwise exit `0` or `5`, and `3` still wins when a replay diverged (§9.9.8).
+
 #### 9.9.8 Exit codes and order of checks
 
 | Code | Meaning |
 |---|---|
 | `0` | Every replay is `identical`. |
 | `3` | At least one replay is `diverged`. |
-| `1` | No replay is `diverged`, and at least one is `error`, or the check failed (an id that does not exist, an empty corpus, an `--out` that cannot be created, an interruption). |
+| `1` | No replay is `diverged`, and at least one is `error`, or the check failed (an id that does not exist, an empty corpus, an `--out` or `--markdown` file that cannot be created or written, an interruption). |
 | `5` | No replay is `diverged` or `error`, and the budget skipped at least one (§9.9.6). |
 | `2` | Usage error. |
 
 A divergence takes precedence because it is a finding that stands whatever else failed. Exit `5` covers both a check the budget refused before it started (no replay ran) and one it cut short. The output tells them apart: the text says that the budget refused the check, and the JSON counts the replays by outcome. A check that exits `5` is not a pass, because some sessions were never checked. `check` never exits `4`: an agent that exits with an error makes that replay an `error` (§9.9.5).
 
-Usage errors in the flags and arguments are reported first, before `--dir` is read. Then come the checks that need the corpus (§9.9.1, §9.9.2, §9.9.3, §9.9.4), then the budget (§9.9.6). All of them come before `--out` is created and before any agent starts.
+Usage errors in the flags and arguments are reported first, before `--dir` is read. Then come the checks that need the corpus (§9.9.1, §9.9.2, §9.9.3, §9.9.4), then the budget (§9.9.6), then opening the `--markdown` file (§9.9.7). All of them come before `--out` is created and before any agent starts.
 
 ## 10. Security and privacy
 
@@ -839,7 +841,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-42** `check --recorded-command --cwd <dir>` runs each session's recorded argv in `<dir>`. `check` with neither `--recorded-command` nor `-- <cmd>` is a usage error that prints each session's argv and cwd, escaped, and neither creates `--out` nor starts a process. A usage error found in one session of the corpus starts no replay.
 - **AC-43** `check --max-cost` whose estimate exceeds the budget exits `5` with no request to the fake API. A budget reached during the check marks the remaining replays `skipped` and exits `5`. `--max-cost` with a `--model` missing from the price table, or outside `swap-model`, is a usage error.
 - **AC-44** Exit codes follow §9.9.8: a corpus with both a `diverged` and an `error` replay exits `3`; with only an `error` exits `1`; a replay whose trajectory is identical but whose agent exit code differs from the source's is an `error`; an empty corpus exits `1`.
-- **AC-45** `check --format json` validates against `docs/schema/check.v1.json`. `--markdown <path>` appends to an existing file. A tool name holding control characters, a bidi control, `|`, `<` and `[x](y)` is escaped in the text and Markdown outputs.
+- **AC-45** `check --format json` validates against `docs/schema/check.v1.json`. `--markdown <path>` appends to an existing file. A `--markdown` path that cannot be opened exits `1` before any replay starts, also when the budget refused the check. A refused check writes its Markdown. A write that fails after the replays is reported on stderr and exits `1`, or `3` when a replay diverged. A tool name holding control characters, a bidi control, `|`, `<` and `[x](y)` is escaped in the text and Markdown outputs.
 - **AC-46** Corpus and flag errors of §9.9: an id given twice, `--repeat 0`, an `--out` that holds a `.cassette` file and a replay id that does not fit the format are usage errors (exit `2`). An id that does not exist exits `1`. None of them starts a replay or creates `--out`.
 - **AC-47** In `live-tools`, an `--mcp` name that no session in the corpus has, and a session with a redacted stored URL and no `--mcp` for it, are usage errors. An `--mcp` override reaches every session that has a server with that name.
 - **AC-48** A replay whose agent outlives `--timeout` is stopped and reported as `error`, and the next replay starts. `SIGINT` during a check stops the running replay, reports the rest as `skipped`, prints the summary and exits `1`, or `3` when a replay already diverged.
