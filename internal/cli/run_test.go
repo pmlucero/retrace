@@ -28,6 +28,9 @@ const (
 	// replayStallEnv names a session id: the agent of that session sleeps
 	// before its requests, until a signal or a SIGKILL ends it.
 	replayStallEnv = "RETRACE_TEST_REPLAY_STALL"
+	// replayStallMarkerEnv is a file that the stalled agent creates just
+	// before it sleeps, so a test can wait for it.
+	replayStallMarkerEnv = "RETRACE_TEST_REPLAY_STALL_MARKER"
 )
 
 func replayAgentCommand() []string {
@@ -43,6 +46,9 @@ func TestHelperReplayAgent(t *testing.T) {
 	}
 	ignoreTerm()
 	if id := os.Getenv(replayStallEnv); id != "" && id == os.Getenv("RETRACE_SESSION_ID") {
+		if m := os.Getenv(replayStallMarkerEnv); m != "" {
+			_ = os.WriteFile(m, nil, 0o600)
+		}
 		time.Sleep(time.Minute)
 	}
 	n, _ := strconv.Atoi(os.Getenv(replayCountEnv))

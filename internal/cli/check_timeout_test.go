@@ -72,12 +72,6 @@ func newSignalFanout(t *testing.T) *signalFanout {
 	return f
 }
 
-func (f *signalFanout) count() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.subs)
-}
-
 func (f *signalFanout) send(sig os.Signal) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -111,16 +105,17 @@ func TestCheckInterrupted(t *testing.T) {
 			}
 			t.Setenv(replayPromptEnv, tc.prompt)
 			t.Setenv(replayStallEnv, "b.exact.1")
+			marker := filepath.Join(t.TempDir(), "stalled")
+			t.Setenv(replayStallMarkerEnv, marker)
 			fan := newSignalFanout(t)
 
 			done := make(chan recordRun, 1)
 			go func() {
 				done <- runCheckCmd(t, dir, afterDash([]string{"--out", out, "--grace", "5s"}, replayAgentCommand())...)
 			}()
-			// The check's own subscription, then one per replay: b runs when
-			// there are three.
-			waitUntil(t, func() bool { return fan.count() >= 3 })
-			time.Sleep(300 * time.Millisecond) // b's agent is running
+			// b's agent runs, and so has its replay's subscription, once it
+			// has written the marker.
+			waitUntil(t, func() bool { _, err := os.Stat(marker); return err == nil })
 			fan.send(syscall.SIGTERM)
 
 			var r recordRun
