@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.30
+- Version: 0.31
 - Last updated: 2026-11-25
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -662,7 +662,7 @@ retrace check [<id>...] [--model <model>] [--tools frozen|live] [--repeat <n>]
 
 #### 9.9.1 Corpus
 
-- `<id>...`: the source sessions, each validated as in §9.2. An id given twice is a usage error (exit `2`). An id that does not exist is an error (exit `1`), reported before any replay starts.
+- `<id>...`: the source sessions, each validated as in §9.2. An id given twice is a usage error (exit `2`). An id that does not exist is an error (exit `1`), reported before any replay starts. A given id is replayed whatever its `status` and `parent_session_id`: naming a session is the user's choice, so only the default corpus filters.
 - Without ids, the corpus is every session in `--dir` whose `parent_session_id` is null and whose `status` is `completed`: every finished recording. Replays are never part of the default corpus. A cassette that cannot be opened or read is skipped with a warning, as in `ls` (§9.5).
 - The corpus is replayed in id order, comparing ids byte by byte.
 - An empty corpus is an error (exit `1`) that names `--dir`. A gate that checked nothing must not pass.
@@ -721,9 +721,9 @@ Text output (default), on stdout, has one line per session and then a summary:
 ```text
 retrace check  swap-model (claude-haiku-4-5)  repeat 5  50 sessions
 
-  checkout-refund   5/5 identical
-  checkout-split    3/5 diverged  step 3 tool_use search_orders (3)
-  invoice-lookup    5/5 diverged  step 1 tool_use get_invoice (4), step 2 tool_call lookup (1)
+  checkout-refund   5 identical
+  checkout-split    3 diverged, 2 identical  step 3 tool_use search_orders (3)
+  invoice-lookup    5 diverged  step 1 tool_use get_invoice (4), step 2 tool_call lookup (1)
   ...
 
 sessions  42 identical, 6 diverged, 2 error
@@ -735,10 +735,11 @@ replays in .retrace/check/20261125-101500-3f9a
 
 The model names, ids and values above are illustrative.
 
-- A session's line gives its id, how many of its replays had each outcome, and its divergence points grouped by step, event kind and tool, with the number of replays at each.
+- A session's line gives its id, the count of each outcome its replays had, leaving out outcomes with a count of zero, in the order `diverged`, `error`, `skipped`, `identical`, and its divergence points grouped by step, event kind and tool, with the number of replays at each.
 - The summary counts sessions and replays by outcome, groups the divergence points of the whole corpus by event kind and tool (steps differ between sessions), and gives the cost spent in the format of §8.2 and the `--out` directory.
 - When text differs in steps that are not compared (§8.3), the session's line says so, as `diff` does.
 - One progress line per replay goes to stderr as it ends, with its id and outcome.
+- The agents' standard output goes to `check`'s stderr, with their standard error, so that stdout holds only `check`'s own output and `--format json` stays parseable.
 
 `--format json` emits one JSON document on stdout with the same information, plus, for each replay, its id, outcome, cost and, when it diverged, its divergence in the form `diff --format json` gives it (§8.4). It has a top-level `format_version` (`1`), and its JSON Schema is committed as `docs/schema/check.v1.json`, with the compatibility rule of `diff`'s schema (§8.4).
 
