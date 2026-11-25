@@ -41,11 +41,11 @@ func TestPrefilterSameAsDecode(t *testing.T) {
 		"key present":       `{"email":"a@b.c"}`,
 		"key nested":        `{"x":[{"user":{"password":"p"}}]}`,
 		"key in value only": `{"note":"email"}`,
-		"escaped u":         `{"email":"a@b.c"}`,
-		"escaped u api":     `{"api_key":"k"}`,
+		"escaped u":         `{"em\u0061il":"a@b.c"}`,
+		"escaped u api":     `{"api\u005fkey":"k"}`,
 		"escaped slash":     `{"a\/b":"v"}`,
 		"escaped quote":     `{"x":"say \"hi\""}`,
-		"escaped surrogate": `{"clé":"v","k":"😀"}`,
+		"escaped surrogate": `{"cl\u00e9":"v","k":"\ud83d\ude00"}`,
 		"invalid UTF-8":     "{\"em\xffail\":\"a\"}",
 		"invalid with key":  "{\"email\":\"a\xff\"}",
 		"array of scalars":  `[1,2,3]`,
@@ -91,9 +91,9 @@ func TestPrefilterEscapedKeyRedacted(t *testing.T) {
 		t.Fatal("prefilter is off for a literal rule")
 	}
 	for _, body := range []string{
-		`{"api_key":"sk-secret"}`,
-		`{"api_key":"sk-secret"}`,
-		`{"a":{"api_key":"sk-secret"}}`,
+		`{"api\u005fkey":"sk-secret"}`,
+		`{"\u0061pi_key":"sk-secret"}`,
+		`{"a":{"api_ke\u0079":"sk-secret"}}`,
 	} {
 		got, err := r.Body([]byte(body))
 		if err != nil || bytes.Contains(got, []byte("sk-secret")) || !bytes.Contains(got, []byte("[REDACTED:")) {

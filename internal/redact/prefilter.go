@@ -2,7 +2,6 @@ package redact
 
 import (
 	"bytes"
-	"strings"
 	"unicode/utf8"
 
 	"github.com/pmlucero/retrace/internal/jsonvalue"
@@ -16,9 +15,11 @@ import (
 // other way, or the decode could fail with ErrTooDeep.
 
 // literalNames returns, for each rule, one member name the rule needs in a
-// body to select anything, or nil when the prefilter cannot be used. It
-// returns nil if any rule has a wildcard or an index step, or a name that
-// JSON writes differently than the rule does.
+// body to select anything, or nil when the prefilter cannot be used. Any one
+// name of the path would be sound; the longest is taken because it is the
+// least likely to appear by chance. It returns nil if any rule has a
+// wildcard or an index step, or a name that JSON writes differently than the
+// rule does.
 func literalNames(rules []Path) [][]byte {
 	var out [][]byte
 	for _, p := range rules {
@@ -94,7 +95,7 @@ func mayEscape(data []byte, literals [][]byte) bool {
 		return false
 	}
 	for _, lit := range literals {
-		if strings.Contains(string(lit), "/") {
+		if bytes.IndexByte(lit, '/') >= 0 {
 			return true
 		}
 	}
@@ -137,15 +138,15 @@ func mayBeTooDeep(data []byte) bool {
 	depth := 0
 	for i := 0; i < len(data); i++ {
 		c := data[i]
-		switch {
-		case c == '"':
+		switch c {
+		case '"':
 			i = endOfString(data, i+1)
-		case c == '[' || c == '{':
+		case '[', '{':
 			depth++
 			if depth > jsonvalue.MaxDepth {
 				return true
 			}
-		case c == ']' || c == '}':
+		case ']', '}':
 			depth--
 		}
 	}
