@@ -142,7 +142,7 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage(fmt.Sprintf("--repeat %d: want a positive integer", opts.repeat))
 	case set["max-cost"] && ro.mode() != "swap-model":
 		return usage("--max-cost is only used with --model: only the LLM channel is billed")
-	case set["max-cost"] && !(opts.maxCost > 0 && !math.IsInf(opts.maxCost, 0)):
+	case set["max-cost"] && (opts.maxCost <= 0 || math.IsNaN(opts.maxCost) || math.IsInf(opts.maxCost, 0)):
 		return usage(fmt.Sprintf("--max-cost %v: want a positive number of US dollars", opts.maxCost))
 	case set["cwd"] && !isDir(ro.cwd):
 		return usage(fmt.Sprintf("--cwd %s is not an existing directory", strconv.Quote(ro.cwd)))
