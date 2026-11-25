@@ -22,7 +22,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0013](0013-explicit-replay-command.md) | Explicit agent command for replay | Accepted |
 | [0014](0014-redaction-fragments-and-literal-names.md) | Redaction of URL fragments and literal `--redact-header` names | Accepted |
 | [0015](0015-corpus-check-command.md) | Corpus check command | Accepted |
-| [0016](0016-redact-mcp-session-ids.md) | Redact MCP session ids | Proposed |
+| [0016](0016-redact-mcp-session-ids.md) | Redact MCP session ids | Accepted |
 
 ## Statuses
 
