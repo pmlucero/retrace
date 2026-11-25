@@ -53,8 +53,9 @@ retrace's price table, not a cap on what the API bills.
 
 --format json writes one JSON document on stdout instead of the text report
 (its schema is docs/schema/check.v1.json). --markdown appends the summary
-as Markdown to a file, creating it when missing: a file that cannot be
-written exits 1, or 3 when a replay diverged.
+as Markdown to a file, creating it when missing. A file that cannot be
+opened exits 1 before any replay starts; one that cannot be written after
+the replays exits 1, or 3 when a replay diverged.
 
 Exit codes: 0 every replay identical, 1 an error or an interruption, 2 a
 usage error, 3 a replay diverged, 5 the budget skipped a replay.
@@ -73,6 +74,7 @@ type checkOptions struct {
 	maxCost  float64       // --max-cost in USD; 0 when not given (spec §9.9.6)
 	format   string        // --format: text or json (spec §9.9.7)
 	markdown string        // --markdown: the file to append the Markdown report to
+	mdOut    *os.File      // that file, opened before the first replay
 	run      runOptions    // the replay flags shared by every replay
 }
 
@@ -226,9 +228,17 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 			return usageError(env.Stderr, fmt.Sprintf("--max-cost: the price of --model %s is unknown, so the budget cannot be checked",
 				printable(strconv.Quote(opts.run.model))))
 		}
+		if code := openMarkdownOut(env, &opts); code != 0 {
+			return code
+		}
 		fmt.Fprintln(env.Stderr, budget.describe())
 		if budget.refuses() {
 			return refuseCheck(env, corpus, opts, budget)
+		}
+	}
+	if mode != "swap-model" {
+		if code := openMarkdownOut(env, &opts); code != 0 {
+			return code
 		}
 	}
 	out := opts.out
@@ -304,9 +314,25 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	return emitCheck(env, opts, report)
 }
 
+// openMarkdownOut opens the --markdown file, if any, after the usage, corpus
+// and budget checks and before --out exists. A file that cannot be opened
+// fails the check before any replay runs (spec §9.9.7, §9.9.8).
+func openMarkdownOut(env *Env, opts *checkOptions) int {
+	if opts.markdown == "" {
+		return 0
+	}
+	f, err := openMarkdown(opts.markdown)
+	if err != nil {
+		env.Logger.Error("cannot open the Markdown file", "file", opts.markdown, "error", err)
+		return ExitError
+	}
+	opts.mdOut = f
+	return 0
+}
+
 // emitCheck writes the report in the format that was asked for, and to the
 // Markdown file when there is one, and returns the exit code (spec §9.9.8).
-// A Markdown file that cannot be written is a failed check: it exits 1,
+// A Markdown file that cannot be written after the replays is a failed check: it exits 1,
 // unless a replay diverged, which takes precedence as it does over an error.
 func emitCheck(env *Env, opts checkOptions, report checkReport) int {
 	write := report.writeText
@@ -318,8 +344,8 @@ func emitCheck(env *Env, opts checkOptions, report checkReport) int {
 		env.Logger.Error("cannot write the report", "error", err)
 		code = ExitError
 	}
-	if opts.markdown != "" {
-		if err := report.appendMarkdown(opts.markdown); err != nil {
+	if opts.mdOut != nil {
+		if err := report.appendMarkdown(opts.mdOut); err != nil {
 			env.Logger.Error("cannot write the Markdown report", "file", opts.markdown, "error", err)
 			if code != ExitDiverged {
 				code = ExitError

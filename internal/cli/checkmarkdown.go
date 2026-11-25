@@ -74,16 +74,18 @@ func (r checkReport) writeMarkdown(buf *bytes.Buffer) {
 	buf.WriteString("\n")
 }
 
-// appendMarkdown appends the Markdown report to path, creating it when it
-// does not exist, as the file of $GITHUB_STEP_SUMMARY expects. A new file is
-// private to its owner, like the other files retrace creates for the user.
-func (r checkReport) appendMarkdown(path string) error {
+// openMarkdown opens path to append to, creating it when it does not exist,
+// as the file of $GITHUB_STEP_SUMMARY expects. A new file is private to its
+// owner, like the other files retrace creates for the user. check opens it
+// before the first replay, so that a bad path costs nothing (spec §9.9.7).
+func openMarkdown(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: the path is the user's --markdown flag
+}
+
+// appendMarkdown writes the Markdown report to f, in one write, and closes it.
+func (r checkReport) appendMarkdown(f *os.File) error {
 	var buf bytes.Buffer
 	r.writeMarkdown(&buf)
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // G304: the path is the user's --markdown flag
-	if err != nil {
-		return err
-	}
 	if _, err := f.Write(buf.Bytes()); err != nil {
 		_ = f.Close()
 		return err

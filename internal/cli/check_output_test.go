@@ -274,7 +274,6 @@ func TestCheckMarkdownAppends(t *testing.T) {
 // Spec §9.9.8: a --markdown file that cannot be written is reported on stderr
 // and exits 1, or 3 when a replay diverged.
 func TestCheckMarkdownWriteError(t *testing.T) {
-	bad := filepath.Join(t.TempDir(), "missing", "summary.md")
 	for _, tc := range []struct {
 		name   string
 		report checkReport
@@ -286,7 +285,11 @@ func TestCheckMarkdownWriteError(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			var stdout, stderr syncBuffer
 			env := &Env{Stdout: &stdout, Stderr: &stderr, Logger: slog.New(slog.NewTextHandler(&stderr, nil))}
-			code := emitCheck(env, checkOptions{format: "text", markdown: bad}, tc.report)
+			readOnly, err := os.Open(os.DevNull) // a file that rejects writes
+			if err != nil {
+				t.Fatal(err)
+			}
+			code := emitCheck(env, checkOptions{format: "text", mdOut: readOnly}, tc.report)
 			if code != tc.want {
 				t.Errorf("exit %d, want %d", code, tc.want)
 			}
@@ -307,5 +310,58 @@ func TestCheckOutputFlagErrors(t *testing.T) {
 			t.Errorf("%v: exit %d, want %d\n%s", args, r.code, ExitUsage, r.stderr)
 		}
 		assertNotCreated(t, out)
+	}
+}
+
+// AC-45, spec §9.9.7: a --markdown path that cannot be opened (a directory, a
+// path under a missing directory) exits 1 before any replay: no request
+// reaches the API and --out is not created.
+func TestCheckMarkdownOpenError(t *testing.T) {
+	dir := t.TempDir()
+	recordHelperSession(t, dir, "a", fakeAnthropic(t).URL)
+	up, calls := usageUpstream(t, 100)
+	for name, bad := range map[string]string{
+		"directory":      t.TempDir(),
+		"missing parent": filepath.Join(t.TempDir(), "missing", "summary.md"),
+	} {
+		for _, mode := range []string{"exact", "swap-model"} {
+			t.Run(name+" "+mode, func(t *testing.T) {
+				out := filepath.Join(t.TempDir(), "out")
+				flags := []string{"--markdown", bad, "--out", out}
+				if mode == "swap-model" {
+					flags = append(flags, "--model", "claude-haiku-4-5", "--anthropic-upstream", up.URL)
+				}
+				r := runCheckCmd(t, dir, afterDash(flags, agentCommand())...)
+				if r.code != ExitError || !strings.Contains(r.stderr.String(), "cannot open the Markdown file") {
+					t.Errorf("exit %d, want %d\n%s", r.code, ExitError, r.stderr)
+				}
+				if n := calls.Load(); n != 0 {
+					t.Errorf("%d requests reached the API, want 0", n)
+				}
+				if r.stdout.String() != "" {
+					t.Errorf("stdout is not empty:\n%s", r.stdout)
+				}
+				assertNotCreated(t, out)
+			})
+		}
+	}
+}
+
+// AC-45: a check that the budget refuses still writes the Markdown report.
+func TestCheckMarkdownWhenBudgetRefuses(t *testing.T) {
+	dir := budgetCorpus(t)
+	up, calls := usageUpstream(t, 100)
+	md := filepath.Join(t.TempDir(), "summary.md")
+	r := runCheckCmd(t, dir, afterDash([]string{"--out", filepath.Join(t.TempDir(), "out"), "--model", "claude-haiku-4-5",
+		"--max-cost", "0.0002", "--anthropic-upstream", up.URL, "--markdown", md}, agentCommand())...)
+	if r.code != ExitBudget {
+		t.Fatalf("exit %d, want %d\n%s", r.code, ExitBudget, r.stderr)
+	}
+	got, err := os.ReadFile(md) //nolint:gosec // G304: a file of this test
+	if err != nil || !strings.Contains(string(got), `**budget:** refused`) {
+		t.Errorf("Markdown (%v):\n%s", err, got)
+	}
+	if n := calls.Load(); n != 0 {
+		t.Errorf("%d requests reached the API, want 0", n)
 	}
 }
