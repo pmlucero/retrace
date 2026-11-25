@@ -70,7 +70,9 @@ func Reindex(ctx context.Context, c *cassette.Cassette) (ReindexResult, error) {
 		dropped = s.DroppedEvents
 	}
 
-	err = c.Write(ctx, func(tx *cassette.Tx) error {
+	// ReplaceEvents, not Write: deleting every event with foreign keys on is
+	// quadratic (events.parent_seq has no index).
+	err = c.ReplaceEvents(ctx, func(tx *cassette.Tx) error {
 		if err := tx.DeleteEvents(ctx); err != nil {
 			return err
 		}
