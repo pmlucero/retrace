@@ -74,7 +74,13 @@ func TestConversationKeyMatchesReference(t *testing.T) {
 		}
 	}
 	// Several messages in a row share one canonicalizer.
-	all := rawMessages(conversationKeySeeds[:20]...)
+	var valid []string
+	for _, s := range conversationKeySeeds {
+		if json.Valid([]byte(s)) {
+			valid = append(valid, s)
+		}
+	}
+	all := rawMessages(valid...)
 	got, gotOK := conversationKey(all)
 	want, wantOK := referenceConversationKey(all)
 	if got != want || gotOK != wantOK {

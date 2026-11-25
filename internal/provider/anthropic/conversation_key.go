@@ -48,7 +48,7 @@ func stdCanonicalJSON(raw json.RawMessage) ([]byte, error) {
 }
 
 // maxScanDepth bounds the recursion of canonicalizer. A deeper value goes
-// through encoding/json.
+// through encoding/json, which nests up to 10000 levels.
 const maxScanDepth = 200
 
 // canonicalizer writes the same bytes as stdCanonicalJSON in a single pass
@@ -56,6 +56,9 @@ const maxScanDepth = 200
 // (ok false) whatever it does not handle exactly: malformed JSON, trailing
 // data, deep nesting, invalid UTF-8 and surrogate escapes. The caller then
 // uses stdCanonicalJSON. FuzzConversationKey checks the two for equality.
+//
+// jsonvalue.EncodeCanonical is not used: its form differs from the persisted
+// one (no HTML escaping, and duplicate keys are kept).
 type canonicalizer struct {
 	src     []byte
 	pos     int
@@ -204,7 +207,8 @@ func (c *canonicalizer) object(depth int) bool {
 	for len(c.bufs) <= depth {
 		c.bufs = append(c.bufs, nil)
 	}
-	res := append(c.bufs[depth][:0], '{')
+	res := c.bufs[depth][:0]
+	res = append(res, '{')
 	for i, m := range ms {
 		if i+1 < len(ms) && bytes.Equal(ms[i+1].key, m.key) {
 			continue
@@ -263,8 +267,8 @@ func (c *canonicalizer) number() bool {
 	return true
 }
 
-// str reads the string at pos and returns its decoded bytes. They are only
-// valid until the next call when the string has escapes.
+// str reads the string at pos and returns its decoded bytes: a slice of the
+// input, or a new slice when the string has escapes.
 func (c *canonicalizer) str() ([]byte, bool) {
 	s := c.src
 	i := c.pos + 1
