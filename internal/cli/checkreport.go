@@ -158,12 +158,32 @@ type checkReport struct {
 	out         string
 	sessions    []checkSession
 	interrupted bool // a signal stopped the check (spec §9.9.4)
+
+	budgetMax      float64 // --max-cost; 0 when not given
+	budgetEstimate float64 // the estimate of the whole check, in swap-model
+	budgetRefused  bool    // the estimate exceeded the budget: nothing ran
+}
+
+// budgetSkipped counts the replays that the budget skipped.
+func (r checkReport) budgetSkipped() int {
+	n := 0
+	for _, s := range r.sessions {
+		for _, rep := range s.replays {
+			if rep.outcome == outcomeSkipped && rep.reason == reasonBudget {
+				n++
+			}
+		}
+	}
+	return n
 }
 
 // exitCode follows spec §9.9.8: a divergence takes precedence over an error,
-// and an interruption is an error.
+// and an interruption is an error. A budget skip, exit 5, comes below both.
 func (r checkReport) exitCode() int {
 	code := ExitOK
+	if r.budgetSkipped() > 0 {
+		code = ExitBudget
+	}
 	if r.interrupted {
 		code = ExitError
 	}
@@ -251,7 +271,17 @@ func (r checkReport) writeText(w io.Writer) error {
 	if at := r.divergedAt(); at != "" {
 		fmt.Fprintf(&buf, "diverged at  %s\n", at)
 	}
-	fmt.Fprintf(&buf, "cost (est.)  %s\nreplays in   %s\n", summary.FormatCost(cost), printable(r.out))
+	fmt.Fprintf(&buf, "cost (est.)  %s\n", summary.FormatCost(cost))
+	if r.budgetRefused {
+		fmt.Fprintf(&buf, "budget       refused: the estimate $%.4f exceeds --max-cost $%.4f; no replay started\nreplays in   none (nothing was written)\n",
+			r.budgetEstimate, r.budgetMax)
+		_, err := w.Write(buf.Bytes())
+		return err
+	}
+	if n := r.budgetSkipped(); n > 0 {
+		fmt.Fprintf(&buf, "budget       reached: %s skipped (--max-cost $%.4f; costs are estimates)\n", plural(int64(n), "replay"), r.budgetMax)
+	}
+	fmt.Fprintf(&buf, "replays in   %s\n", printable(r.out))
 	_, err := w.Write(buf.Bytes())
 	return err
 }

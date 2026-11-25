@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -45,8 +46,13 @@ program. A corpus is code, so do not check one you do not trust.
 SIGINT or SIGTERM stops the running replay, skips the rest and still prints
 the report.
 
+With --model, check prints the estimated cost before the first replay.
+--max-cost refuses the check when the estimate exceeds it, and skips the
+replays that would take the spent cost over it. The cost is an estimate from
+retrace's price table, not a cap on what the API bills.
+
 Exit codes: 0 every replay identical, 1 an error or an interruption, 2 a
-usage error, 3 a replay diverged.
+usage error, 3 a replay diverged, 5 the budget skipped a replay.
 
 Flags:
 `
@@ -59,6 +65,7 @@ type checkOptions struct {
 	out     string
 	timeout time.Duration // --timeout: the longest one replay may run; 0 for no limit
 	text    bool          // --text: also compare the model texts, as diff does
+	maxCost float64       // --max-cost in USD; 0 when not given (spec §9.9.6)
 	run     runOptions    // the replay flags shared by every replay
 }
 
@@ -71,6 +78,7 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 	fs.IntVar(&opts.repeat, "repeat", 1, "replays of each session")
 	fs.StringVar(&opts.out, "out", "", "directory for the replays (default .retrace/check/<check-id>)")
 	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "the longest one replay may run, e.g. 10m; 0 for no limit")
+	fs.Float64Var(&opts.maxCost, "max-cost", 0, "with --model, the budget in USD for the check's LLM calls; an estimate, not a cap on billing")
 	fs.BoolVar(&opts.text, "text", false, "also compare the text of each model response")
 	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&ro.mcp))
 	fs.StringVar(&ro.cwd, "cwd", "", "run every replay's agent in this `dir`")
@@ -132,6 +140,10 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage(fmt.Sprintf("--timeout %s: want a duration of 0 or more", opts.timeout))
 	case opts.repeat < 1:
 		return usage(fmt.Sprintf("--repeat %d: want a positive integer", opts.repeat))
+	case set["max-cost"] && ro.mode() != "swap-model":
+		return usage("--max-cost is only used with --model: only the LLM channel is billed")
+	case set["max-cost"] && !(opts.maxCost > 0 && !math.IsInf(opts.maxCost, 0)):
+		return usage(fmt.Sprintf("--max-cost %v: want a positive number of US dollars", opts.maxCost))
 	case set["cwd"] && !isDir(ro.cwd):
 		return usage(fmt.Sprintf("--cwd %s is not an existing directory", strconv.Quote(ro.cwd)))
 	}
@@ -188,6 +200,24 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 			return usageError(env.Stderr, fmt.Sprintf("session %q: %v; its replay ids <id>.<mode>.<k> must fit the id format", s.ID, err))
 		}
 	}
+	// The budget comes after the corpus checks and before --out exists
+	// (spec §9.9.8).
+	var budget *checkBudget
+	if mode == "swap-model" {
+		budget, err = newCheckBudget(ctx, env, corpus, opts.run.model, opts.repeat, opts.maxCost)
+		if err != nil {
+			log.Error("cannot estimate the cost", "error", err)
+			return ExitError
+		}
+		if !budget.known && opts.maxCost > 0 {
+			return usageError(env.Stderr, fmt.Sprintf("--max-cost: the price of --model %s is unknown, so the budget cannot be checked",
+				printable(strconv.Quote(opts.run.model))))
+		}
+		fmt.Fprintln(env.Stderr, budget.describe())
+		if budget.refuses() {
+			return refuseCheck(env, corpus, opts, budget)
+		}
+	}
 	out := opts.out
 	if out == "" {
 		id, err := cassette.NewSessionID("", time.Now(), rand.Reader)
@@ -213,7 +243,10 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	stopSignals := notifySignals(sigs)
 	defer stopSignals()
 	interrupted := false
-	report := checkReport{mode: mode, model: opts.run.model, repeat: opts.repeat, out: out}
+	report := checkReport{mode: mode, model: opts.run.model, repeat: opts.repeat, out: out, budgetMax: opts.maxCost}
+	if budget != nil {
+		report.budgetEstimate = budget.total
+	}
 	for _, s := range corpus {
 		sr := checkSession{id: s.ID}
 		for k := 1; k <= opts.repeat; k++ {
@@ -229,7 +262,14 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 				sr.replays = append(sr.replays, replayOutcome{id: id, outcome: outcomeSkipped})
 				continue
 			}
+			if budget != nil && !budget.allows(s.ID) {
+				sr.replays = append(sr.replays, replayOutcome{id: id, outcome: outcomeSkipped, reason: reasonBudget})
+				continue
+			}
 			r := checkOne(ctx, env, opts, s, id, out)
+			if budget != nil {
+				budget.record(s.ID, r)
+			}
 			line := fmt.Sprintf("%s  %s", printable(r.id), r.outcome)
 			if r.reason != "" {
 				line += " (" + r.reason + ")"
@@ -250,6 +290,25 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	}
 	if err := report.writeText(env.Stdout); err != nil {
 		log.Error("cannot write the report", "error", err)
+		return ExitError
+	}
+	return report.exitCode()
+}
+
+// refuseCheck reports a check whose estimate exceeds the budget: no replay
+// starts, --out is not created, and every replay is skipped (spec §9.9.6).
+func refuseCheck(env *Env, corpus []cassette.Session, opts checkOptions, b *checkBudget) int {
+	report := checkReport{mode: opts.run.mode(), model: opts.run.model, repeat: opts.repeat,
+		budgetMax: b.max, budgetEstimate: b.total, budgetRefused: true}
+	for _, s := range corpus {
+		sr := checkSession{id: s.ID}
+		for k := 1; k <= opts.repeat; k++ {
+			sr.replays = append(sr.replays, replayOutcome{id: replayID(s.ID, report.mode, k), outcome: outcomeSkipped, reason: reasonBudget})
+		}
+		report.sessions = append(report.sessions, sr)
+	}
+	if err := report.writeText(env.Stdout); err != nil {
+		env.Logger.Error("cannot write the report", "error", err)
 		return ExitError
 	}
 	return report.exitCode()
