@@ -62,6 +62,7 @@ type sessionConfig struct {
 	command  []string           // the agent command; an empty one fails the session
 	cwd      string             // the agent's working directory; "" inherits retrace's
 	diverged <-chan struct{}    // closed at a cassette miss in a replay; nil when recording
+	timeout  time.Duration      // the longest the agent may run before it is stopped as on a miss; 0 for no limit
 	grace    time.Duration      // how long the agent has to exit after a miss's SIGTERM (spec §6.2)
 	// finish, if set, completes the session's metadata from what was
 	// recorded. It runs once the writer has written everything.
@@ -70,9 +71,10 @@ type sessionConfig struct {
 
 // sessionResult is how a session ended.
 type sessionResult struct {
-	status string // the session status written to the cassette (spec §3.1)
-	agent  agentResult
-	stats  cassette.WriterStats
+	status   string // the session status written to the cassette (spec §3.1)
+	agent    agentResult
+	timedOut bool // the agent was stopped because cfg.timeout expired
+	stats    cassette.WriterStats
 }
 
 // guardHosts returns the hosts that name the proxy's address: the host of
@@ -115,8 +117,18 @@ func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult
 	if cmd := startAgent(ctx, env, cfg, base); cmd == nil {
 		res.status = "failed"
 	} else {
-		res.agent = waitAgent(cmd, sigs, cfg.diverged, cfg.grace, log)
-		if res.agent.interrupted {
+		var timedOut <-chan struct{}
+		if cfg.timeout > 0 {
+			ch := make(chan struct{})
+			t := time.AfterFunc(cfg.timeout, func() { close(ch) })
+			defer t.Stop()
+			timedOut = ch
+		}
+		res.agent = waitAgent(cmd, sigs, cfg.diverged, timedOut, cfg.grace, log)
+		res.timedOut = res.agent.timedOut
+		// A session stopped for its time is cut short like one that a signal
+		// ended, so it has the same status; a miss outweighs both below.
+		if res.agent.interrupted || res.agent.timedOut {
 			res.status = "interrupted"
 		}
 	}

@@ -31,6 +31,7 @@ var notifySignals = func(c chan<- os.Signal) (stop func()) {
 type agentResult struct {
 	exitCode    int
 	interrupted bool // retrace received a signal while the agent ran
+	timedOut    bool // retrace stopped the agent because the session's time ran out (check --timeout)
 }
 
 // waitAgent waits for cmd, which has started, while handling the signals that
@@ -40,9 +41,9 @@ type agentResult struct {
 // When diverged is closed, a cassette miss ended the replay: the agent gets
 // SIGTERM, then SIGKILL if it has not exited after grace, or at once when
 // grace is 0 (spec §6.2 step 3). It happens once, and signals that arrive
-// during the grace period are still handled as above. A nil diverged never
-// closes.
-func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged <-chan struct{}, grace time.Duration, log *slog.Logger) agentResult {
+// during the grace period are still handled as above. A closed timeout stops
+// the agent the same way and sets timedOut. Nil channels never close.
+func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged, timeout <-chan struct{}, grace time.Duration, log *slog.Logger) agentResult {
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait() // the exit status is read from cmd.ProcessState
@@ -55,6 +56,21 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged <-chan struct{}, g
 		pending os.Signal
 		kill    <-chan time.Time
 	)
+	// stop ends the agent as a cassette miss does (spec §6.2 step 3): SIGTERM,
+	// then SIGKILL after grace. It reports whether the SIGKILL timer must run.
+	stop := func(why string) bool {
+		if grace <= 0 {
+			log.Warn(why + ": killing the agent")
+			_ = cmd.Process.Kill()
+			return false
+		}
+		if !signalAgent(cmd, syscall.SIGTERM) {
+			log.Warn(why + ": killing the agent, which cannot get SIGTERM here")
+			return false
+		}
+		log.Warn(why+": stopping the agent", "grace", grace)
+		return true
+	}
 	for {
 		select {
 		case <-exited:
@@ -84,17 +100,15 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged <-chan struct{}, g
 			forward = nil
 		case <-diverged:
 			diverged = nil
-			if grace <= 0 {
-				log.Warn("cassette miss: killing the agent")
-				_ = cmd.Process.Kill()
-				continue
+			if stop("cassette miss") {
+				kill = time.After(grace)
 			}
-			if !signalAgent(cmd, syscall.SIGTERM) {
-				log.Warn("cassette miss: killing the agent, which cannot get SIGTERM here")
-				continue
+		case <-timeout:
+			timeout = nil
+			res.timedOut = true
+			if stop("timeout") {
+				kill = time.After(grace)
 			}
-			log.Warn("cassette miss: stopping the agent", "grace", grace)
-			kill = time.After(grace)
 		case <-kill:
 			log.Warn("the agent did not exit within the grace period; killing it", "grace", grace)
 			_ = cmd.Process.Kill()

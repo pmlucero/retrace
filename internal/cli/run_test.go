@@ -25,6 +25,12 @@ import (
 const (
 	replayPromptEnv = "RETRACE_TEST_REPLAY_PROMPT"
 	replayCountEnv  = "RETRACE_TEST_REPLAY_N"
+	// replayStallEnv names a session id: the agent of that session sleeps
+	// before its requests, until a signal or a SIGKILL ends it.
+	replayStallEnv = "RETRACE_TEST_REPLAY_STALL"
+	// replayStallMarkerEnv is a file that the stalled agent creates just
+	// before it sleeps, so a test can wait for it.
+	replayStallMarkerEnv = "RETRACE_TEST_REPLAY_STALL_MARKER"
 )
 
 func replayAgentCommand() []string {
@@ -39,6 +45,13 @@ func TestHelperReplayAgent(t *testing.T) {
 		t.Skip("subprocess of the run tests")
 	}
 	ignoreTerm()
+	if id := os.Getenv(replayStallEnv); id != "" && id == os.Getenv("RETRACE_SESSION_ID") {
+		if m := os.Getenv(replayStallMarkerEnv); m != "" {
+			// The path is a temp file the test itself chose.
+			_ = os.WriteFile(m, nil, 0o600) //nolint:gosec // G703
+		}
+		time.Sleep(time.Minute)
+	}
 	n, _ := strconv.Atoi(os.Getenv(replayCountEnv))
 	body := fmt.Sprintf(`{"model":"claude-sonnet-5-5","max_tokens":16,"stream":true,"metadata":{"user_id":"run-%s"},`+
 		`"messages":[{"role":"user","content":%q}]}`, os.Getenv("RETRACE_MODE"), prompt)

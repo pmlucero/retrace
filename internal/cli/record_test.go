@@ -556,7 +556,7 @@ func TestWaitAgentCountsASignalThatRacesTheExit(t *testing.T) {
 	}
 	sigs := make(chan os.Signal, 1)
 	sigs <- os.Interrupt
-	res := waitAgent(cmd, sigs, nil, 0, slog.New(slog.DiscardHandler))
+	res := waitAgent(cmd, sigs, nil, nil, 0, slog.New(slog.DiscardHandler))
 	if !res.interrupted {
 		t.Error("the session was not marked as interrupted")
 	}
