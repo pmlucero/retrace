@@ -281,11 +281,11 @@ func TestRecordMCPOverStreamableHTTP(t *testing.T) {
 		_ = json.Unmarshal(in.ResponseHeaders, &respH)
 		session := seen[i-i%7].SessionID
 		if i%7 == 0 {
-			if session == "" || respH.Get(mcptest.SessionHeader) != session {
-				t.Errorf("%s: response %s = %q, want the agent's %q", step, mcptest.SessionHeader, respH.Get(mcptest.SessionHeader), session)
+			if session == "" || respH.Get(mcptest.SessionHeader) != marker(session) {
+				t.Errorf("%s: response %s = %q, want the agent's %q redacted (spec §3.5)", step, mcptest.SessionHeader, respH.Get(mcptest.SessionHeader), session)
 			}
-		} else if reqH.Get(mcptest.SessionHeader) != session || reqH.Get(mcptest.ProtocolVersionHeader) == "" {
-			t.Errorf("%s: request headers %v, want %s %q and %s", step, reqH, mcptest.SessionHeader, session, mcptest.ProtocolVersionHeader)
+		} else if reqH.Get(mcptest.SessionHeader) != marker(session) || reqH.Get(mcptest.ProtocolVersionHeader) == "" {
+			t.Errorf("%s: request headers %v, want %s %q redacted and %s", step, reqH, mcptest.SessionHeader, session, mcptest.ProtocolVersionHeader)
 		}
 	}
 	if seen[0].ContentType != "application/json" || !strings.Contains(seen[4].Body, `"id":"p"`) || !strings.HasPrefix(seen[4].Body, "[") {

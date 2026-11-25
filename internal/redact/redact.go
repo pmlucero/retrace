@@ -20,7 +20,7 @@ import (
 var (
 	DefaultHeaders = []string{
 		"authorization", "proxy-authorization", "x-api-key", "cookie", "set-cookie",
-		"apikey", "auth", "key", "password", "secret", "sig", "signature", "token",
+		"apikey", "auth", "key", "password", "secret", "sig", "signature", "token", "mcp-session-id",
 	}
 	DefaultPatterns = []string{
 		"*-token", "*-secret", "*-key", "*-auth", "*-password", "*-signature", "*-credential", "*apikey",
