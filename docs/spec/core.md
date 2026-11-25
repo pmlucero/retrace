@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.32
+- Version: 0.33
 - Last updated: 2026-11-25
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -688,7 +688,7 @@ retrace check [<id>...] [--model <model>] [--tools frozen|live] [--repeat <n>]
 - `--repeat <n>`: the number of replays per session, a positive integer, default `1`. Any other value is a usage error. More than one replay is useful when a channel is live: in `swap-model` a model can answer the same request differently each time, and in `live-tools` a tool can. It is allowed in every mode, because the agent itself can be nondeterministic too, for example when it reads the clock or runs tool calls concurrently.
 - Replays run one at a time: each session's `n` replays in a row, sessions in corpus order. Each replay is a `run` (§4, §9.3) with its own proxy on a free loopback port (`127.0.0.1:0`). The agent finds the proxy through the environment variables of §3.2, so ports never collide.
 - A replay that diverges, fails or whose agent exits with an error never stops the check: the next replay starts.
-- `--timeout <duration>`: the longest one replay may run, as a Go duration. Default `10m`; `0` means no limit. A negative value is a usage error. When it expires, `check` stops the agent as `run` does on a divergence (`SIGTERM`, then `SIGKILL` after `--grace`, §6.2), and the replay's outcome is `error`, with the timeout as its reason. A sequential check must not hang a CI job on one stuck agent or upstream.
+- `--timeout <duration>`: the longest one replay may run, as a Go duration. Default `10m`; `0` means no limit. A negative value is a usage error. When it expires, `check` stops the agent as `run` does on a divergence (`SIGTERM`, then `SIGKILL` after `--grace`, §6.2), and the replay's outcome is `error`, with the timeout as its reason, unless a cassette miss came first: then the outcome is `diverged` (§9.9.5). The replay's session ends with status `interrupted`, or `diverged` after a miss. A sequential check must not hang a CI job on one stuck agent or upstream.
 - `--out <dir>`: the directory for the replays' cassettes. The default is `.retrace/check/<check-id>`, relative to the working directory, where `<check-id>` has the form of a generated session id (§9.2). A missing `--out` is created as `record` creates `--dir` (§9.1). An `--out` that already holds a `.cassette` file is a usage error, so the results of two checks never mix.
 - The `k`-th replay of session `<id>` gets the id `<id>.<mode>.<k>`. If that id does not fit the id format (§9.2) for some session and `k ≤ n`, it is a usage error that names the session.
 - On `SIGINT` or `SIGTERM`, `check` stops the running replay as `run` does (§3.1), starts no other, and prints its output with the replays that never started reported as `skipped`. It exits `1`, unless a replay already diverged (exit `3`).
@@ -699,10 +699,12 @@ After each replay, `check` compares its trajectory with its source's as `diff` d
 
 | Outcome | When |
 |---|---|
-| `diverged` | The replay stopped on a cassette miss (§6.2), or its trajectory differs from its source's. Its divergence point is that of §8.3. |
-| `error` | Not `diverged`, and the replay did not end with status `completed` (for example, the agent could not be started), its agent's exit code differs from the source's `agent_exit_code`, or it hit `--timeout` (§9.9.4). |
+| `diverged` | The replay stopped on a cassette miss (§6.2), or it ended with status `completed` and its trajectory differs from its source's. Its divergence point is that of §8.3. |
+| `error` | Not `diverged`, and the replay did not end with status `completed` (for example, the agent could not be started, or the replay hit `--timeout` (§9.9.4) or was interrupted), or its agent's exit code differs from the source's `agent_exit_code`. |
 | `identical` | Neither of the above: the trajectories are identical and the agent exited as in the source. |
 | `skipped` | The replay never started, because of the budget (§9.9.6) or an interruption. |
+
+Only a replay that ended `completed` can diverge by trajectory: a replay cut short by `--timeout` or an interruption has a truncated trajectory, which would read as a divergence and hide the cause. A replay that hit a cassette miss is `diverged` whatever its agent's exit code, since the miss stops the agent (§6.2, §9.3).
 
 A session's outcome is the first of `diverged`, `error`, `skipped` and `identical` that any of its replays has.
 
