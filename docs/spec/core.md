@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.34
+- Version: 0.35
 - Last updated: 2026-11-25
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -714,7 +714,8 @@ A session's outcome is the first of `diverged`, `error`, `skipped` and `identica
 - The estimate of one replay prices its source session's tokens (input, output, cache read and cache write, summed over its `model_response` events) at the prices of `--model` in the embedded price table (§7.5). The estimate of the check is the sum over the corpus, times `n`.
 - In `swap-model`, `check` prints the estimate on stderr before the first replay. When `--model` is not in the price table, the estimate is unknown: it says so, and with `--max-cost` that is a usage error, because a budget that cannot be checked guards nothing.
 - If the estimate exceeds `--max-cost`, `check` starts no replay: every replay is `skipped`, the output says that the budget refused the check, and it exits `5`.
-- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of `cost_usd` over the previous replays (§8.2). A previous replay with a `model_response` that has tokens but a null `cost_usd` counts with its estimate instead, so an unknown cost never lowers what was spent. If the result exceeds `--max-cost`, that replay and every later one are `skipped`.
+- A replay's **billed cost** is the sum of `cost_usd` over its `model_response` events whose `provenance` is `live`, in the format of §8.2: the known sum, plus the number of `live` responses that have tokens but a null `cost_usd`. Responses answered from the cassette (`replayed`) were not billed by this replay, so `exact` and `live-tools` replays have a billed cost of $0.
+- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of the billed costs of the previous replays. A previous replay with a `live` `model_response` that has tokens but a null `cost_usd` counts with its estimate instead, so an unknown cost never lowers what was spent. If the result exceeds `--max-cost`, that replay and every later one are `skipped`.
 - The budget limits what `check` starts, not what the API bills: a replay can use more tokens than its source did. The output and the documentation MUST say that the cost is an estimate.
 
 #### 9.9.7 Output
@@ -739,12 +740,12 @@ replays in .retrace/check/20261125-101500-3f9a
 The model names, ids and values above are illustrative.
 
 - A session's line gives its id, the count of each outcome its replays had, leaving out outcomes with a count of zero, in the order `diverged`, `error`, `skipped`, `identical`, and its divergence points grouped by step, event kind and tool, with the number of replays at each.
-- The summary counts sessions and replays by outcome, groups the divergence points of the whole corpus by event kind and tool (steps differ between sessions), and gives the cost spent in the format of §8.2 and the `--out` directory.
+- The summary counts sessions and replays by outcome, groups the divergence points of the whole corpus by event kind and tool (steps differ between sessions), and gives, on the `cost (est.)` line, the billed cost of the check (the sum over its replays, §9.9.6), so an `exact` or `live-tools` check shows `$0.00`, and the `--out` directory.
 - When text differs in steps that are not compared (§8.3), the session's line says so, as `diff` does.
 - One progress line per replay goes to stderr as it ends, with its id and outcome.
 - The agents' standard output goes to `check`'s stderr, with their standard error, so that stdout holds only `check`'s own output and `--format json` stays parseable.
 
-`--format json` emits one JSON document on stdout with the same information, except that it gives every outcome's count, zeros included, plus, for each replay, its id, outcome, cost and, when it diverged, its divergence in the form `diff --format json` gives it (§8.4). It has a top-level `format_version` (`1`), and its JSON Schema is committed as `docs/schema/check.v1.json`, with the compatibility rule of `diff`'s schema (§8.4).
+`--format json` emits one JSON document on stdout with the same information, except that it gives every outcome's count, zeros included, plus, for each replay, its id, outcome, billed cost (§9.9.6) and, when it diverged, its divergence in the form `diff --format json` gives it (§8.4). It has a top-level `format_version` (`1`), and its JSON Schema is committed as `docs/schema/check.v1.json`, with the compatibility rule of `diff`'s schema (§8.4).
 
 `--markdown <path>`: also writes the summary and the session lines as Markdown, appending to `<path>` and creating it if it does not exist, as the file in `$GITHUB_STEP_SUMMARY` expects. Values read from a cassette are escaped as in §10, and also so that they cannot add Markdown markup: a tool name cannot open a link, start an HTML tag or end a table cell.
 
@@ -835,7 +836,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 
 ### Corpus check
 
-- **AC-39** `check` with no ids replays every `completed` session in `--dir` with a null `parent_session_id`, and no replay. An exact check of an unchanged agent reports every session `identical` and exits `0`, writes its replays to `--out`, and leaves the files in `--dir` unchanged.
+- **AC-39** `check` with no ids replays every `completed` session in `--dir` with a null `parent_session_id`, and no replay. An exact check of an unchanged agent reports every session `identical`, a billed cost of $0 (§9.9.6), and exits `0`, writes its replays to `--out`, and leaves the files in `--dir` unchanged.
 - **AC-40** `check -- <cmd>` with an agent whose requests differ from the recording reports the affected sessions as `diverged`, with the step, event kind and tool of each divergence point, groups them by event kind and tool in the summary, and exits `3`.
 - **AC-41** `check --model <m> --repeat 3` against a fake Anthropic API that answers differently across calls runs 3 replays per session and reports per-session counts (e.g. `2/3 diverged`) and divergence points with replay counts.
 - **AC-42** `check --recorded-command --cwd <dir>` runs each session's recorded argv in `<dir>`. `check` with neither `--recorded-command` nor `-- <cmd>` is a usage error that prints each session's argv and cwd, escaped, and neither creates `--out` nor starts a process. A usage error found in one session of the corpus starts no replay.
@@ -846,6 +847,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-47** In `live-tools`, an `--mcp` name that no session in the corpus has, and a session with a redacted stored URL and no `--mcp` for it, are usage errors. An `--mcp` override reaches every session that has a server with that name.
 - **AC-48** A replay whose agent outlives `--timeout` is stopped and reported as `error`, and the next replay starts. `SIGINT` during a check stops the running replay, reports the rest as `skipped`, prints the summary and exits `1`, or `3` when a replay already diverged.
 - **AC-49** `check` with an explicit id replays it when it names a `failed` session or a replay. While the agent writes to its stdout, `check`'s stdout holds only `check`'s own output, and the agent's output appears on stderr.
+- **AC-50** The billed cost of `check` (§9.9.6) counts only `live` responses: an `exact` and a `live-tools` check report $0 in text and JSON, a `swap-model` check reports the cost of its live responses, and the budget's spent cost ignores responses answered from the cassette.
 
 ### Demo (manual)
 
