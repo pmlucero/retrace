@@ -55,7 +55,7 @@ func BenchmarkReplaceAllEvents(b *testing.B) {
 			}
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := c.Write(ctx, replace); err != nil {
+				if err := c.ReplaceEvents(ctx, replace); err != nil {
 					b.Fatal(err)
 				}
 			}
