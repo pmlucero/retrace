@@ -130,12 +130,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install retrace
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          # download the release archive, verify it as in Install, put retrace on PATH
+          gh release download --repo pmlucero/retrace --pattern 'retrace_*_linux_amd64.tar.gz'
+          gh attestation verify retrace_*_linux_amd64.tar.gz --repo pmlucero/retrace
+          tar -xzf retrace_*_linux_amd64.tar.gz retrace
+          echo "$PWD" >> "$GITHUB_PATH"
       - name: Check the corpus
         run: retrace --dir cassettes check --recorded-command --cwd . --markdown "$GITHUB_STEP_SUMMARY"
 ```
 
+- `check` is on `main` but not in a release yet (see [Project status](#project-status)). Until it is, build retrace from source in this step.
 - `--format json` prints one JSON document that validates against [docs/schema/check.v1.json](docs/schema/check.v1.json).
 - `--cwd .` reruns each recorded argv inside the checkout under test, so record with relative paths and commands on `PATH`. An argv with an absolute path still needs that path on the runner.
 - `swap-model` calls the real API: pass `ANTHROPIC_API_KEY` as a secret and set `--max-cost`. `--repeat <n>` replays each session `n` times. The cost is an estimate from retrace's price table, and `--max-cost` limits what starts, not what the API bills.
