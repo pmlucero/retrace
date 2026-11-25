@@ -78,7 +78,7 @@ func TestCheckExactCorpusIsIdentical(t *testing.T) {
 	}
 	stdout := r.stdout.String()
 	for _, want := range []string{"retrace check  exact  repeat 1  2 sessions", "a   1 identical", "b   1 identical",
-		"sessions     2 identical", "replays      2 identical", "replays in   " + out} {
+		"sessions     2 identical", "replays      2 identical", "cost (est.)  $0.00", "replays in   " + out} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, stdout)
 		}

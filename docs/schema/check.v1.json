@@ -30,7 +30,7 @@
       "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/budget" }]
     },
     "cost": {
-      "description": "The estimated cost of all the replays.",
+      "description": "The estimated cost billed by all the replays: live responses only (spec §9.9.6).",
       "$ref": "#/$defs/cost"
     },
     "totals": {
@@ -72,7 +72,7 @@
       }
     },
     "cost": {
-      "description": "A cost as spec §8.2 gives it.",
+      "description": "A cost in the format of spec §8.2. For a replay, its billed cost (spec §9.9.6).",
       "type": "object",
       "required": ["cost_usd", "unpriced_responses"],
       "properties": {
