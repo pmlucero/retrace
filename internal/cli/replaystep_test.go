@@ -10,7 +10,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 )
 
-// AC-33: the cwd override runs the agent there and skips the recorded-cwd
+// AC-42: the cwd override runs the agent there and skips the recorded-cwd
 // checks, for the recorded command (spec §9.9.3). Without it the same source
 // is a usage error.
 func TestReplayStepCwdOverride(t *testing.T) {
