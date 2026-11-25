@@ -21,9 +21,7 @@ func referenceQuote(s string) string {
 
 // quote runs the quoting used by the encoder under test.
 func quote(s string) string {
-	var b bytes.Buffer
-	writeString(&b, s)
-	return b.String()
+	return string(appendQuoted(nil, s))
 }
 
 func quoteSeeds() []string {
