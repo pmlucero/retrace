@@ -194,19 +194,28 @@ func (r diffReport) writeText(w io.Writer) error {
 	for _, n := range notes {
 		fmt.Fprintf(&buf, "  %s\n", n)
 	}
-	if steps := res.TextDifferences; len(steps) > 0 {
-		names := make([]string, len(steps))
-		for i, n := range steps {
-			names[i] = strconv.Itoa(n)
-		}
-		noun := "steps"
-		if len(steps) == 1 {
-			noun = "step"
-		}
-		fmt.Fprintf(&buf, "\ntext differs in %s %s (not compared; use --text)\n", noun, strings.Join(names, ", "))
+	if note := textDiffersNote(res.TextDifferences); note != "" {
+		fmt.Fprintf(&buf, "\n%s\n", note)
 	}
 	_, err := w.Write(buf.Bytes())
 	return err
+}
+
+// textDiffersNote says which steps have different texts that were not
+// compared (spec §8.3), or is empty when there are none.
+func textDiffersNote(steps []int) string {
+	if len(steps) == 0 {
+		return ""
+	}
+	names := make([]string, len(steps))
+	for i, n := range steps {
+		names[i] = strconv.Itoa(n)
+	}
+	noun := "steps"
+	if len(steps) == 1 {
+		noun = "step"
+	}
+	return fmt.Sprintf("text differs in %s %s (not compared; use --text)", noun, strings.Join(names, ", "))
 }
 
 // writeTotals writes the two-column summary of the sessions (spec §8.2).

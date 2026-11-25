@@ -54,6 +54,7 @@ type checkOptions struct {
 	ids    []string
 	repeat int
 	out    string
+	text   bool       // --text: also compare the model texts, as diff does
 	run    runOptions // the replay flags shared by every replay
 }
 
@@ -65,6 +66,8 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 	fs.StringVar(&ro.tools, "tools", "frozen", "frozen, or live to forward MCP to the real servers (live-tools)")
 	fs.IntVar(&opts.repeat, "repeat", 1, "replays of each session")
 	fs.StringVar(&opts.out, "out", "", "directory for the replays (default .retrace/check/<check-id>)")
+	fs.BoolVar(&opts.text, "text", false, "also compare the text of each model response")
+	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&ro.mcp))
 	fs.StringVar(&ro.cwd, "cwd", "", "run every replay's agent in this `dir`")
 	fs.BoolVar(&ro.recorded, "recorded-command", false, "run each session's recorded command")
 	fs.StringVar(&ro.onMiss, "on-miss", "strict", "divergence strategy")
@@ -112,6 +115,8 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage("--model: want a model name")
 	case set["anthropic-upstream"] && ro.mode() != "swap-model":
 		return usage("--anthropic-upstream is only used with --model: the LLM is answered from the cassette")
+	case len(ro.mcp) > 0 && ro.mode() != "live-tools":
+		return usage("--mcp is only used with --tools live: MCP is answered from the cassette")
 	case reservedStrategies[ro.onMiss]:
 		return usage(fmt.Sprintf("--on-miss %s is not implemented in this version", ro.onMiss))
 	case ro.onMiss != "strict":
@@ -151,12 +156,14 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 		log.Error("the corpus is empty: no completed recording to check", "dir", env.Globals.Dir)
 		return ExitError
 	}
+	if err := checkMCPNames(corpus, opts.run.mcp); err != nil {
+		return usageError(env.Stderr, err.Error())
+	}
 	if opts.run.command == nil && !opts.run.recorded {
 		return usageError(env.Stderr, unchosenCorpusCommand(corpus))
 	}
 	for _, s := range corpus {
-		ro := opts.run
-		ro.source = s.ID
+		ro := sessionOptions(opts.run, s)
 		src, err := cassette.OpenForRead(ctx, cassette.Path(env.Globals.Dir, s.ID))
 		if err != nil {
 			log.Error("cannot open the cassette", "session", s.ID, "error", err)
@@ -165,6 +172,9 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 		_, perr := prepareReplay(ctx, src, s, ro)
 		_ = src.Close()
 		if perr != nil {
+			if perr.usage && !strings.Contains(perr.msg, strconv.Quote(s.ID)) {
+				perr.msg = printable(fmt.Sprintf("session %q: %s", s.ID, perr.msg))
+			}
 			return perr.report(env)
 		}
 		if err := cassette.ValidateSessionID(replayID(s.ID, mode, opts.repeat)); err != nil {
@@ -193,7 +203,7 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	for _, s := range corpus {
 		sr := checkSession{id: s.ID}
 		for k := 1; k <= opts.repeat; k++ {
-			r := checkOne(ctx, env, opts.run, s, replayID(s.ID, mode, k), out)
+			r := checkOne(ctx, env, opts, s, replayID(s.ID, mode, k), out)
 			fmt.Fprintf(env.Stderr, "%s  %s\n", printable(r.id), r.outcome)
 			sr.replays = append(sr.replays, r)
 		}
@@ -204,6 +214,36 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 	return report.exitCode()
+}
+
+// sessionOptions returns the replay flags for one session: its id as the
+// source, and only the --mcp overrides for servers that it has (spec §9.9.2).
+func sessionOptions(ro runOptions, s cassette.Session) runOptions {
+	ro.source = s.ID
+	names, _ := mcpServerNames(s.MCPServers) // prepareReplay reports a bad list
+	all := ro.mcp
+	ro.mcp = nil
+	for _, o := range all {
+		if slices.Contains(names, o.Name) {
+			ro.mcp = append(ro.mcp, o)
+		}
+	}
+	return ro
+}
+
+// checkMCPNames reports an --mcp whose name is no server of any session in
+// the corpus (spec §9.9.2).
+func checkMCPNames(corpus []cassette.Session, overrides []mcpServer) error {
+	for _, o := range overrides {
+		found := slices.ContainsFunc(corpus, func(s cassette.Session) bool {
+			names, _ := mcpServerNames(s.MCPServers)
+			return slices.Contains(names, o.Name)
+		})
+		if !found {
+			return fmt.Errorf("--mcp %s: no session in the corpus has an MCP server named %q", o.Name, o.Name)
+		}
+	}
+	return nil
 }
 
 func replayID(source, mode string, k int) string { return fmt.Sprintf("%s.%s.%d", source, mode, k) }
@@ -267,12 +307,12 @@ func unchosenCorpusCommand(corpus []cassette.Session) string {
 
 // checkOne runs one replay of session s and classifies it (spec §9.9.5). A
 // replay that cannot run has the outcome error and never stops the check.
-func checkOne(ctx context.Context, env *Env, ro runOptions, s cassette.Session, id, out string) replayOutcome {
+func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Session, id, out string) replayOutcome {
 	fail := func(why string, err error) replayOutcome {
 		env.Logger.Warn("replay failed", "replay", id, "reason", why, "error", err)
 		return replayOutcome{id: id, outcome: outcomeError}
 	}
-	ro.source = s.ID
+	ro := sessionOptions(opts.run, s)
 	srcPath := cassette.Path(env.Globals.Dir, s.ID)
 	src, err := cassette.OpenForRead(ctx, srcPath)
 	if err != nil {
@@ -298,8 +338,8 @@ func checkOne(ctx context.Context, env *Env, ro runOptions, s cassette.Session, 
 	if err != nil {
 		return fail("reading the replay", err)
 	}
-	cmpRes := diff.Compare(diff.Build(srcEvents), diff.Build(events), diff.Options{})
-	r := replayOutcome{id: id, point: cmpRes.Point, totals: summary.Of(rs, events)}
+	cmpRes := diff.Compare(diff.Build(srcEvents), diff.Build(events), diff.Options{Text: opts.text})
+	r := replayOutcome{id: id, point: cmpRes.Point, totals: summary.Of(rs, events), textSteps: cmpRes.TextDifferences}
 	wantExit := 0
 	if s.AgentExitCode != nil {
 		wantExit = *s.AgentExitCode
