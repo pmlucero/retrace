@@ -20,7 +20,7 @@ Testing v0.1.0 against real models showed three constraints:
 3. The agent command is `-- <cmd>` for every session, or each session's recorded argv with `--recorded-command`. A new `--cwd <dir>` sets the working directory of every agent, so recorded argv runs inside the checkout under test. The explicit opt-in of ADR 0013 applies unchanged.
 4. `--repeat <n>` (default `1`) runs `n` replays per session and reports counts per session and per divergence point ("3/5 diverged at `search_orders`").
 5. Each replay has one outcome: `identical`, `diverged`, `error` or `skipped`. `diverged` uses `diff`'s definition of the first divergence (§8.3), so `check` and `diff` never disagree.
-6. Replays run one at a time, each with its own proxy on a free loopback port. Replay cassettes go to a fresh `--out` directory, never to `--dir`.
+6. Replays run one at a time, each with its own proxy on a free loopback port. A per-replay `--timeout` (default `10m`) keeps one stuck agent from hanging the job. Replay cassettes go to a fresh `--out` directory, never to `--dir`.
 7. `--max-cost` estimates the cost of a `swap-model` check from the corpus's recorded tokens and the embedded price table, refuses to start over budget, and skips the remaining replays once the next one would exceed it.
 8. Exit codes: `0` all identical, `3` any divergence, `1` errors or a failed check, `5` budget skipped replays (new), `2` usage error. A divergence takes precedence.
 9. Output: a text table, a versioned JSON document (`docs/schema/check.v1.json`) and, optionally, Markdown appended to a file such as `$GITHUB_STEP_SUMMARY`. The output reports facts only.

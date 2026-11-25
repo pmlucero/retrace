@@ -10,7 +10,7 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 
 ## 1. Scope and terminology
 
-**In scope (MVP):** recording and replaying sessions of an agent that talks to the Anthropic Messages API and to MCP servers over Streamable HTTP. It covers the `exact`, `swap-model` and `live-tools` modes, the `strict` divergence strategy, and a terminal diff. Since v0.2 it also covers `check`, which replays a corpus of sessions and summarizes their divergences (§9.9).
+**In scope (MVP):** recording and replaying sessions of an agent that talks to the Anthropic Messages API and to MCP servers over Streamable HTTP. It covers the `exact`, `swap-model` and `live-tools` modes, the `strict` divergence strategy, and a terminal diff. It also covers `check`, which replays a corpus of sessions and summarizes their divergences (§9.9).
 
 **Out of scope (MVP):** web UI, other LLM providers, MCP stdio transport, and the `fallthrough`, `nearest-match` and `llm-stub` strategies. See §12.
 
@@ -651,7 +651,7 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 ```text
 retrace check [<id>...] [--model <model>] [--tools frozen|live] [--repeat <n>]
               [--max-cost <usd>] [--out <dir>] [--format text|json] [--markdown <path>]
-              [--text] [--on-miss strict] [--grace <duration>]
+              [--text] [--on-miss strict] [--grace <duration>] [--timeout <duration>]
               [--anthropic-upstream <url>] [--mcp <name>=<url>]... [--redact-header <name>]...
               (--recorded-command | -- <agent command...>) [--cwd <dir>]
 ```
@@ -684,9 +684,10 @@ retrace check [<id>...] [--model <model>] [--tools frozen|live] [--repeat <n>]
 
 #### 9.9.4 Replays
 
-- `--repeat <n>`: the number of replays per session, a positive integer, default `1`. Any other value is a usage error. More than one replay is useful when the LLM channel is live (`swap-model`), because a model can answer the same request differently each time.
+- `--repeat <n>`: the number of replays per session, a positive integer, default `1`. Any other value is a usage error. More than one replay is useful when a channel is live: in `swap-model` a model can answer the same request differently each time, and in `live-tools` a tool can. It is allowed in every mode, because the agent itself can be nondeterministic too, for example when it reads the clock or runs tool calls concurrently.
 - Replays run one at a time: each session's `n` replays in a row, sessions in corpus order. Each replay is a `run` (§4, §9.3) with its own proxy on a free loopback port (`127.0.0.1:0`). The agent finds the proxy through the environment variables of §3.2, so ports never collide.
 - A replay that diverges, fails or whose agent exits with an error never stops the check: the next replay starts.
+- `--timeout <duration>`: the longest one replay may run, as a Go duration. Default `10m`; `0` means no limit. A negative value is a usage error. When it expires, `check` stops the agent as `run` does on a divergence (`SIGTERM`, then `SIGKILL` after `--grace`, §6.2), and the replay's outcome is `error`, with the timeout as its reason. A sequential check must not hang a CI job on one stuck agent or upstream.
 - `--out <dir>`: the directory for the replays' cassettes. The default is `.retrace/check/<check-id>`, relative to the working directory, where `<check-id>` has the form of a generated session id (§9.2). A missing `--out` is created as `record` creates `--dir` (§9.1). An `--out` that already holds a `.cassette` file is a usage error, so the results of two checks never mix.
 - The `k`-th replay of session `<id>` gets the id `<id>.<mode>.<k>`. If that id does not fit the id format (§9.2) for some session and `k ≤ n`, it is a usage error that names the session.
 - On `SIGINT` or `SIGTERM`, `check` stops the running replay as `run` does (§3.1), starts no other, and prints its output with the replays that never started reported as `skipped`. It exits `1`, unless a replay already diverged (exit `3`).
@@ -698,7 +699,7 @@ After each replay, `check` compares its trajectory with its source's as `diff` d
 | Outcome | When |
 |---|---|
 | `diverged` | The replay stopped on a cassette miss (§6.2), or its trajectory differs from its source's. Its divergence point is that of §8.3. |
-| `error` | Not `diverged`, and the replay did not end with status `completed` (for example, the agent could not be started), or its agent's exit code differs from the source's `agent_exit_code`. |
+| `error` | Not `diverged`, and the replay did not end with status `completed` (for example, the agent could not be started), its agent's exit code differs from the source's `agent_exit_code`, or it hit `--timeout` (§9.9.4). |
 | `identical` | Neither of the above: the trajectories are identical and the agent exited as in the source. |
 | `skipped` | The replay never started, because of the budget (§9.9.6) or an interruption. |
 
@@ -709,8 +710,8 @@ A session's outcome is the first of `diverged`, `error`, `skipped` and `identica
 - `--max-cost <usd>`: the budget for the check's LLM calls, a positive decimal number of US dollars. It is valid only in `swap-model`, the one mode whose LLM channel is billed. In the other modes it is a usage error.
 - The estimate of one replay prices its source session's tokens (input, output, cache read and cache write, summed over its `model_response` events) at the prices of `--model` in the embedded price table (§7.5). The estimate of the check is the sum over the corpus, times `n`.
 - In `swap-model`, `check` prints the estimate on stderr before the first replay. When `--model` is not in the price table, the estimate is unknown: it says so, and with `--max-cost` that is a usage error, because a budget that cannot be checked guards nothing.
-- If the estimate exceeds `--max-cost`, `check` exits `5` without starting any replay.
-- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of `cost_usd` over the previous replays (§8.2). If the result exceeds `--max-cost`, that replay and every later one are `skipped`.
+- If the estimate exceeds `--max-cost`, `check` starts no replay: every replay is `skipped`, the output says that the budget refused the check, and it exits `5`.
+- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of `cost_usd` over the previous replays (§8.2). A previous replay with a `model_response` that has tokens but a null `cost_usd` counts with its estimate instead, so an unknown cost never lowers what was spent. If the result exceeds `--max-cost`, that replay and every later one are `skipped`.
 - The budget limits what `check` starts, not what the API bills: a replay can use more tokens than its source did. The output and the documentation MUST say that the cost is an estimate.
 
 #### 9.9.7 Output
@@ -753,7 +754,7 @@ The model names, ids and values above are illustrative.
 | `5` | No replay is `diverged` or `error`, and the budget skipped at least one (§9.9.6). |
 | `2` | Usage error. |
 
-A divergence takes precedence because it is a finding that stands whatever else failed. `check` never exits `4`: an agent that exits with an error makes that replay an `error` (§9.9.5).
+A divergence takes precedence because it is a finding that stands whatever else failed. Exit `5` covers both a check the budget refused before it started (no replay ran) and one it cut short. The output tells them apart: the text says that the budget refused the check, and the JSON counts the replays by outcome. A check that exits `5` is not a pass, because some sessions were never checked. `check` never exits `4`: an agent that exits with an error makes that replay an `error` (§9.9.5).
 
 Usage errors in the flags and arguments are reported first, before `--dir` is read. Then come the checks that need the corpus (§9.9.1, §9.9.2, §9.9.3, §9.9.4), then the budget (§9.9.6). All of them come before `--out` is created and before any agent starts.
 
@@ -835,6 +836,9 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-43** `check --max-cost` whose estimate exceeds the budget exits `5` with no request to the fake API. A budget reached during the check marks the remaining replays `skipped` and exits `5`. `--max-cost` with a `--model` missing from the price table, or outside `swap-model`, is a usage error.
 - **AC-44** Exit codes follow §9.9.8: a corpus with both a `diverged` and an `error` replay exits `3`; with only an `error` exits `1`; a replay whose trajectory is identical but whose agent exit code differs from the source's is an `error`; an empty corpus exits `1`.
 - **AC-45** `check --format json` validates against `docs/schema/check.v1.json`. `--markdown <path>` appends to an existing file. A tool name holding control characters, a bidi control, `|`, `<` and `[x](y)` is escaped in the text and Markdown outputs.
+- **AC-46** Corpus and flag errors of §9.9: an id given twice, `--repeat 0`, an `--out` that holds a `.cassette` file and a replay id that does not fit the format are usage errors (exit `2`). An id that does not exist exits `1`. None of them starts a replay or creates `--out`.
+- **AC-47** In `live-tools`, an `--mcp` name that no session in the corpus has, and a session with a redacted stored URL and no `--mcp` for it, are usage errors. An `--mcp` override reaches every session that has a server with that name.
+- **AC-48** A replay whose agent outlives `--timeout` is stopped and reported as `error`, and the next replay starts. `SIGINT` during a check stops the running replay, reports the rest as `skipped`, prints the summary and exits `1`, or `3` when a replay already diverged.
 
 ### Demo (manual)
 
