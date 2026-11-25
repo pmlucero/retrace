@@ -77,7 +77,7 @@ func TestCheckExactCorpusIsIdentical(t *testing.T) {
 		t.Fatalf("exit %d\n%s", r.code, r.stderr)
 	}
 	stdout := r.stdout.String()
-	for _, want := range []string{"retrace check  exact  repeat 1  2 sessions", "a   1/1 identical", "b   1/1 identical",
+	for _, want := range []string{"retrace check  exact  repeat 1  2 sessions", "a   1 identical", "b   1 identical",
 		"sessions     2 identical", "replays      2 identical", "replays in   " + out} {
 		if !strings.Contains(stdout, want) {
 			t.Errorf("stdout lacks %q:\n%s", want, stdout)
@@ -117,7 +117,7 @@ func TestCheckDivergedAgent(t *testing.T) {
 	if r.code != ExitDiverged {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
-	for _, want := range []string{"s   1/1 diverged  step 0 divergence", "sessions     1 diverged", "replays      1 diverged"} {
+	for _, want := range []string{"s   1 diverged  step 0 divergence (1)", "sessions     1 diverged", "replays      1 diverged"} {
 		if !strings.Contains(r.stdout.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, r.stdout)
 		}
@@ -160,8 +160,8 @@ func TestCheckSwapModelRepeat(t *testing.T) {
 		t.Fatalf("exit %d, want %d\n%s", r.code, ExitDiverged, r.stderr)
 	}
 	for _, want := range []string{"retrace check  swap-model (claude-haiku-4-5)  repeat 3  2 sessions",
-		"a   1/3 diverged  step 1 tool_use get_weather", "b   2/3 diverged  step 1 tool_use get_weather",
-		"sessions     2 diverged", "replays      3 identical, 3 diverged", "cost (est.)  <$0.01"} {
+		"a   1 diverged, 2 identical  step 1 tool_use get_weather (1)", "b   2 diverged, 1 identical  step 1 tool_use get_weather (2)",
+		"sessions     2 diverged", "replays      3 diverged, 3 identical", "cost (est.)  <$0.01"} {
 		if !strings.Contains(r.stdout.String(), want) {
 			t.Errorf("stdout lacks %q:\n%s", want, r.stdout)
 		}
@@ -180,8 +180,8 @@ func TestCheckErrorsExitOne(t *testing.T) {
 	recordHelperSession(t, dir, "s", fakeAnthropic(t).URL)
 	t.Setenv(agentExitEnv, "3")
 	r := runCheckCmd(t, dir, afterDash([]string{"--out", filepath.Join(t.TempDir(), "out")}, agentCommand())...)
-	if r.code != ExitError || !strings.Contains(r.stdout.String(), "s   1/1 error") {
-		t.Errorf("exit %d, want %d with 1/1 error\n%s%s", r.code, ExitError, r.stdout, r.stderr)
+	if r.code != ExitError || !strings.Contains(r.stdout.String(), "s   1 error") {
+		t.Errorf("exit %d, want %d with 1 error\n%s%s", r.code, ExitError, r.stdout, r.stderr)
 	}
 
 	empty := runCheckCmd(t, t.TempDir(), "--", "true")

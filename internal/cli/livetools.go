@@ -55,7 +55,7 @@ func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]liveServer
 		case err != nil:
 			return nil, fmt.Errorf("MCP server %s: the recorded URL cannot be used (%w); give one with --mcp %s=<url>", sv.Name, err, sv.Name)
 		case redact.HasMarker(u):
-			return nil, fmt.Errorf("MCP server %s: the recorded URL %s was redacted; give the real one with --mcp %s=<url>", sv.Name, sv.URL, sv.Name)
+			return nil, fmt.Errorf("MCP server %s: the recorded URL %s was redacted; give the real one with --mcp %s=<url>", sv.Name, printable(sv.URL), sv.Name)
 		}
 		servers = append(servers, liveServer{name: sv.Name, target: u})
 	}
