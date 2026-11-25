@@ -185,8 +185,10 @@ const hexDigits = "0123456789abcdef"
 // appendQuoted appends s as a JSON string exactly as encoding/json writes it
 // with HTML escaping off: short escapes for the quote, the backslash and
 // \b \f \n \r \t, \u00xx for other control characters, U+2028 and U+2029
-// escaped, and each invalid UTF-8 byte written as �. A test compares it
-// with encoding/json.
+// escaped. Each invalid UTF-8 byte is written as the escape \ufffd, as
+// encoding/json does up to Go 1.26 (Go 1.27 writes a raw U+FFFD), so the
+// output does not depend on the Go version that built retrace. A test
+// compares it with encoding/json.
 func appendQuoted(b []byte, s string) []byte {
 	b = append(b, '"')
 	start := 0
@@ -221,7 +223,7 @@ func appendQuoted(b []byte, s string) []byte {
 		r, size := utf8.DecodeRuneInString(s[i:])
 		if r == utf8.RuneError && size == 1 {
 			b = append(b, s[start:i]...)
-			b = append(b, `�`...)
+			b = append(b, `\ufffd`...)
 			i += size
 			start = i
 			continue

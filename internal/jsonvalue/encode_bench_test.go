@@ -10,13 +10,38 @@ import (
 )
 
 // referenceQuote is the quoting EncodeCanonical must reproduce byte for byte:
-// encoding/json without HTML escaping.
+// encoding/json without HTML escaping, except that each invalid UTF-8 byte is
+// the escape \ufffd on every Go version (Go 1.27's encoding/json writes a raw
+// U+FFFD instead). Valid runs are quoted by encoding/json.
 func referenceQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	start := 0
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteString(jsonQuoteBody(s[start:i]))
+			b.WriteString(`\ufffd`)
+			i++
+			start = i
+			continue
+		}
+		i += size
+	}
+	b.WriteString(jsonQuoteBody(s[start:]))
+	b.WriteByte('"')
+	return b.String()
+}
+
+// jsonQuoteBody quotes valid UTF-8 with encoding/json, HTML escaping off, and
+// strips the surrounding quotes.
+func jsonQuoteBody(s string) string {
 	var b bytes.Buffer
 	enc := json.NewEncoder(&b)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(s)
-	return strings.TrimSuffix(b.String(), "\n")
+	out := strings.TrimSuffix(b.String(), "\n")
+	return out[1 : len(out)-1]
 }
 
 // quote runs the quoting used by the encoder under test.
