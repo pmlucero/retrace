@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+
+	"github.com/pmlucero/retrace/internal/summary"
 )
 
 // usageUpstream answers every request with a tool_use that bills the given
@@ -145,6 +147,23 @@ func TestCheckBudgetFlagErrors(t *testing.T) {
 			}
 			assertNotCreated(t, out)
 		})
+	}
+}
+
+// AC-43: a replay with a response that has tokens but no cost counts with its
+// estimate, so an unknown cost never lowers what was spent (spec §9.9.6).
+func TestCheckBudgetRecordCountsUnpricedAtItsEstimate(t *testing.T) {
+	b := &checkBudget{max: 1, perRun: map[string]float64{"a": 0.5}}
+	b.record("a", replayOutcome{totals: summary.Totals{CostUSD: 0.125, Priced: 1}})
+	if b.spent != 0.125 {
+		t.Errorf("spent %v after a priced replay, want its cost 0.125", b.spent)
+	}
+	b.record("a", replayOutcome{totals: summary.Totals{CostUSD: 0.125, Priced: 1, Unpriced: 1}})
+	if b.spent != 0.625 {
+		t.Errorf("spent %v after an unpriced replay, want 0.125 + the 0.5 estimate", b.spent)
+	}
+	if b.allows("a") { // 0.625 + 0.5 > 1
+		t.Error("the next replay was allowed over the budget")
 	}
 }
 

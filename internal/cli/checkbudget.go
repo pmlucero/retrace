@@ -36,7 +36,8 @@ type checkBudget struct {
 func estimateEvents(model string, events []cassette.Event) (float64, bool) {
 	var sum float64
 	for _, e := range events {
-		if e.Kind != "model_response" || (!billedTokens(e.TokensIn) && !billedTokens(e.TokensOut)) {
+		billed := billedTokens(e.TokensIn) || billedTokens(e.TokensOut)
+		if e.Kind != "model_response" || !billed {
 			continue // not billed by tokens
 		}
 		// Cache writes are priced at the 5-minute rate: the TTL breakdown
