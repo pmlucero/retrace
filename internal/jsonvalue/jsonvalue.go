@@ -12,7 +12,10 @@ import (
 	"fmt"
 	"io"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
+	"unicode/utf8"
 )
 
 // Value is a decoded JSON value. It is one of *Object, Array, string,
@@ -104,9 +107,7 @@ func decodeValue(dec *json.Decoder, depth int) (Value, error) {
 
 // Encode writes v compactly, in member order, without HTML escaping.
 func Encode(v Value) []byte {
-	var b bytes.Buffer
-	writeValue(&b, v, false)
-	return b.Bytes()
+	return encode(v, false)
 }
 
 // EncodeCanonical writes v like Encode, but with the members of every object
@@ -116,56 +117,127 @@ func Encode(v Value) []byte {
 // (ADR 0007 §1). Decoding replaces invalid UTF-8 and lone surrogate escapes
 // with U+FFFD, so strings that differ only there are equal too.
 func EncodeCanonical(v Value) []byte {
-	var b bytes.Buffer
-	writeValue(&b, v, true)
-	return b.Bytes()
+	return encode(v, true)
 }
 
-func writeValue(b *bytes.Buffer, v Value, sorted bool) {
+// scratch reuses encoding buffers, so a large body grows one buffer once
+// instead of once per call.
+var scratch = sync.Pool{New: func() any { b := make([]byte, 0, 4096); return &b }}
+
+// maxPooled keeps one huge body from pinning its buffer in the pool.
+const maxPooled = 1 << 20
+
+func encode(v Value, sorted bool) []byte {
+	p := scratch.Get().(*[]byte)
+	b := appendValue((*p)[:0], v, sorted)
+	out := bytes.Clone(b)
+	if cap(b) <= maxPooled {
+		*p = b
+		scratch.Put(p)
+	}
+	return out
+}
+
+func appendValue(b []byte, v Value, sorted bool) []byte {
 	switch t := v.(type) {
 	case *Object:
 		members := t.Members
 		if sorted {
-			members = slices.Clone(members)
-			slices.SortStableFunc(members, func(x, y Member) int { return strings.Compare(x.Key, y.Key) })
+			cmp := func(x, y Member) int { return strings.Compare(x.Key, y.Key) }
+			if !slices.IsSortedFunc(members, cmp) {
+				members = slices.Clone(members)
+				slices.SortStableFunc(members, cmp)
+			}
 		}
-		b.WriteByte('{')
+		b = append(b, '{')
 		for i, m := range members {
 			if i > 0 {
-				b.WriteByte(',')
+				b = append(b, ',')
 			}
-			writeString(b, m.Key)
-			b.WriteByte(':')
-			writeValue(b, m.Value, sorted)
+			b = appendQuoted(b, m.Key)
+			b = append(b, ':')
+			b = appendValue(b, m.Value, sorted)
 		}
-		b.WriteByte('}')
+		b = append(b, '}')
 	case Array:
-		b.WriteByte('[')
+		b = append(b, '[')
 		for i, e := range t {
 			if i > 0 {
-				b.WriteByte(',')
+				b = append(b, ',')
 			}
-			writeValue(b, e, sorted)
+			b = appendValue(b, e, sorted)
 		}
-		b.WriteByte(']')
+		b = append(b, ']')
 	case string:
-		writeString(b, t)
+		b = appendQuoted(b, t)
 	case json.Number:
-		b.WriteString(t.String())
+		b = append(b, t.String()...)
 	case bool:
-		if t {
-			b.WriteString("true")
-		} else {
-			b.WriteString("false")
-		}
+		b = strconv.AppendBool(b, t)
 	case nil:
-		b.WriteString("null")
+		b = append(b, "null"...)
 	}
+	return b
 }
 
-func writeString(b *bytes.Buffer, s string) {
-	enc := json.NewEncoder(b)
-	enc.SetEscapeHTML(false)
-	_ = enc.Encode(s)       // a string always encodes
-	b.Truncate(b.Len() - 1) // Encode appends a newline
+const hexDigits = "0123456789abcdef"
+
+// appendQuoted appends s as a JSON string exactly as encoding/json writes it
+// with HTML escaping off: short escapes for the quote, the backslash and
+// \b \f \n \r \t, \u00xx for other control characters, U+2028 and U+2029
+// escaped. Each invalid UTF-8 byte is written as the escape \ufffd, as
+// encoding/json does up to Go 1.26 (Go 1.27 writes a raw U+FFFD), so the
+// output does not depend on the Go version that built retrace. A test
+// compares it with encoding/json.
+func appendQuoted(b []byte, s string) []byte {
+	b = append(b, '"')
+	start := 0
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			if c >= ' ' && c != '"' && c != '\\' {
+				i++
+				continue
+			}
+			b = append(b, s[start:i]...)
+			switch c {
+			case '"', '\\':
+				b = append(b, '\\', c)
+			case '\b':
+				b = append(b, '\\', 'b')
+			case '\f':
+				b = append(b, '\\', 'f')
+			case '\n':
+				b = append(b, '\\', 'n')
+			case '\r':
+				b = append(b, '\\', 'r')
+			case '\t':
+				b = append(b, '\\', 't')
+			default:
+				b = append(b, '\\', 'u', '0', '0', hexDigits[c>>4], hexDigits[c&0xf])
+			}
+			i++
+			start = i
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b = append(b, s[start:i]...)
+			b = append(b, `\ufffd`...)
+			i += size
+			start = i
+			continue
+		}
+		if r == ' ' || r == ' ' {
+			b = append(b, s[start:i]...)
+			b = append(b, `\u202`...)
+			b = append(b, hexDigits[r&0xf])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	b = append(b, s[start:]...)
+	return append(b, '"')
 }
