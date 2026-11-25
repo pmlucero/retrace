@@ -42,8 +42,11 @@ The change under test is the agent's code (the command that runs), the model
 unless --recorded-command is given: a cassette from someone else can run any
 program. A corpus is code, so do not check one you do not trust.
 
-Exit codes: 0 every replay identical, 1 an error, 2 a usage error, 3 a
-replay diverged.
+SIGINT or SIGTERM stops the running replay, skips the rest and still prints
+the report.
+
+Exit codes: 0 every replay identical, 1 an error or an interruption, 2 a
+usage error, 3 a replay diverged.
 
 Flags:
 `
@@ -51,11 +54,12 @@ Flags:
 // checkOptions are the flags of check. The replay flags are those of run
 // (spec §9.9.2).
 type checkOptions struct {
-	ids    []string
-	repeat int
-	out    string
-	text   bool       // --text: also compare the model texts, as diff does
-	run    runOptions // the replay flags shared by every replay
+	ids     []string
+	repeat  int
+	out     string
+	timeout time.Duration // --timeout: the longest one replay may run; 0 for no limit
+	text    bool          // --text: also compare the model texts, as diff does
+	run     runOptions    // the replay flags shared by every replay
 }
 
 func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
@@ -66,6 +70,7 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 	fs.StringVar(&ro.tools, "tools", "frozen", "frozen, or live to forward MCP to the real servers (live-tools)")
 	fs.IntVar(&opts.repeat, "repeat", 1, "replays of each session")
 	fs.StringVar(&opts.out, "out", "", "directory for the replays (default .retrace/check/<check-id>)")
+	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "the longest one replay may run, e.g. 10m; 0 for no limit")
 	fs.BoolVar(&opts.text, "text", false, "also compare the text of each model response")
 	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&ro.mcp))
 	fs.StringVar(&ro.cwd, "cwd", "", "run every replay's agent in this `dir`")
@@ -123,6 +128,8 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage(fmt.Sprintf("--on-miss %q: want strict", ro.onMiss))
 	case ro.grace < 0:
 		return usage(fmt.Sprintf("--grace %s: want a duration of 0 or more", ro.grace))
+	case opts.timeout < 0:
+		return usage(fmt.Sprintf("--timeout %s: want a duration of 0 or more", opts.timeout))
 	case opts.repeat < 1:
 		return usage(fmt.Sprintf("--repeat %d: want a positive integer", opts.repeat))
 	case set["cwd"] && !isDir(ro.cwd):
@@ -199,15 +206,47 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 
+	// Subscribed for the whole check, so that a signal between two replays
+	// does not kill retrace and is not lost (spec §9.9.4). Each replay also
+	// handles signals itself, to stop its agent.
+	sigs := make(chan os.Signal, 2)
+	stopSignals := notifySignals(sigs)
+	defer stopSignals()
+	interrupted := false
 	report := checkReport{mode: mode, model: opts.run.model, repeat: opts.repeat, out: out}
 	for _, s := range corpus {
 		sr := checkSession{id: s.ID}
 		for k := 1; k <= opts.repeat; k++ {
-			r := checkOne(ctx, env, opts, s, replayID(s.ID, mode, k), out)
-			fmt.Fprintf(env.Stderr, "%s  %s\n", printable(r.id), r.outcome)
+			id := replayID(s.ID, mode, k)
+			if !interrupted {
+				select {
+				case <-sigs:
+					interrupted = true
+				default:
+				}
+			}
+			if interrupted {
+				sr.replays = append(sr.replays, replayOutcome{id: id, outcome: outcomeSkipped})
+				continue
+			}
+			r := checkOne(ctx, env, opts, s, id, out)
+			line := fmt.Sprintf("%s  %s", printable(r.id), r.outcome)
+			if r.reason != "" {
+				line += " (" + r.reason + ")"
+			}
+			fmt.Fprintln(env.Stderr, line)
 			sr.replays = append(sr.replays, r)
 		}
 		report.sessions = append(report.sessions, sr)
+	}
+	select { // a signal that ended the last replay
+	case <-sigs:
+		interrupted = true
+	default:
+	}
+	report.interrupted = interrupted
+	if interrupted {
+		log.Warn("interrupted: the replays that never started are skipped")
 	}
 	if err := report.writeText(env.Stdout); err != nil {
 		log.Error("cannot write the report", "error", err)
@@ -326,7 +365,7 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 	// The agents' output goes to stderr, so that stdout holds only the report.
 	agentEnv := *env
 	agentEnv.Stdout = env.Stderr
-	res, err := executeReplay(ctx, &agentEnv, plan, replayTarget{dir: out, id: id, explicit: true, listen: ro.listen})
+	res, err := executeReplay(ctx, &agentEnv, plan, replayTarget{dir: out, id: id, explicit: true, listen: ro.listen, timeout: opts.timeout})
 	if err != nil {
 		return replayOutcome{id: id, outcome: outcomeError} // executeReplay logged it
 	}
@@ -345,9 +384,19 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 		wantExit = *s.AgentExitCode
 	}
 	switch {
-	case res.status == "diverged" || cmpRes.Point != nil:
+	case res.status == "diverged":
 		r.outcome = outcomeDiverged
-	case res.status != "completed" || res.agentExit != wantExit:
+	case res.status != "completed":
+		// A replay that was stopped (timeout, signal) or never ran has a
+		// shorter trajectory than its source. That is no divergence: it would
+		// hide why the replay ended.
+		r.outcome = outcomeError
+		if res.timedOut {
+			r.reason = "timed out after " + opts.timeout.String()
+		}
+	case cmpRes.Point != nil:
+		r.outcome = outcomeDiverged
+	case res.agentExit != wantExit:
 		r.outcome = outcomeError
 	default:
 		r.outcome = outcomeIdentical

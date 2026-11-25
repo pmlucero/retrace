@@ -111,8 +111,9 @@ func prepareReplay(ctx context.Context, src *cassette.Cassette, sess cassette.Se
 type replayTarget struct {
 	dir      string
 	id       string
-	explicit bool   // the user named id, so it must be new (spec §9.3)
-	listen   string // port 0 picks a free port
+	explicit bool          // the user named id, so it must be new (spec §9.3)
+	listen   string        // port 0 picks a free port
+	timeout  time.Duration // the longest the agent may run; 0 for no limit (check --timeout)
 }
 
 // replayResult is how an executed replay ended. The caller decides what to
@@ -122,7 +123,8 @@ type replayResult struct {
 	path      string
 	status    string
 	agentExit int
-	exitCode  int // what run exits with
+	exitCode  int  // what run exits with
+	timedOut  bool // the agent was stopped at --timeout
 	// first and misses describe the replay's divergence when hasMiss is set.
 	first         replay.MissReport
 	misses        int
@@ -198,13 +200,14 @@ func executeReplay(ctx context.Context, env *Env, plan *replayPlan, target repla
 		cwd:      plan.cwd,
 		diverged: divergence.Done(),
 		grace:    opts.grace,
+		timeout:  target.timeout,
 		finish:   finish,
 	})
 	if err != nil {
 		return replayResult{}, fmt.Errorf("running the session: %w", err)
 	}
 	out := replayResult{
-		id: id, path: path, status: res.status, agentExit: res.agent.exitCode, exitCode: res.exitCode(),
+		id: id, path: path, status: res.status, agentExit: res.agent.exitCode, exitCode: res.exitCode(), timedOut: res.timedOut,
 		droppedEvents: res.stats.DroppedEvents, unconsumed: plan.queues.unconsumed(),
 	}
 	out.first, out.misses, out.hasMiss = divergence.Report()

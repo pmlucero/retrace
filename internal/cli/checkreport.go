@@ -47,6 +47,7 @@ type replayOutcome struct {
 	// is only possible without --text (spec §8.3).
 	textSteps []int
 	totals    summary.Totals
+	reason    string // why it is an error, when retrace knows: a timeout
 }
 
 type checkSession struct {
@@ -65,10 +66,10 @@ func (s checkSession) count(o string) int {
 	return n
 }
 
-// outcome is the first of diverged, error and identical that any replay has
+// outcome is the first of diverged, error, skipped and identical that any replay has
 // (spec §9.9.5).
 func (s checkSession) outcome() string {
-	for _, o := range []string{outcomeDiverged, outcomeError} {
+	for _, o := range []string{outcomeDiverged, outcomeError, outcomeSkipped} {
 		if s.count(o) > 0 {
 			return o
 		}
@@ -156,11 +157,16 @@ type checkReport struct {
 	repeat      int
 	out         string
 	sessions    []checkSession
+	interrupted bool // a signal stopped the check (spec §9.9.4)
 }
 
-// exitCode follows spec §9.9.8: a divergence takes precedence over an error.
+// exitCode follows spec §9.9.8: a divergence takes precedence over an error,
+// and an interruption is an error.
 func (r checkReport) exitCode() int {
 	code := ExitOK
+	if r.interrupted {
+		code = ExitError
+	}
 	for _, s := range r.sessions {
 		switch s.outcome() {
 		case outcomeDiverged:
