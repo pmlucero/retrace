@@ -392,8 +392,11 @@ func (b *recordingBody) Read(p []byte) (int, error) {
 		// completion, and its events after this response's (spec §7.4).
 		// The transport often returns the last bytes together with EOF.
 		// The cost is deliberate: for a JSON body, finish redacts and hashes
-		// it before those bytes are forwarded, which is about a millisecond
-		// per megabyte with redaction rules, and far less without (spec §3.5).
+		// it before those bytes are forwarded. With redaction rules, measured
+		// on one laptop: about 2 ms per megabyte when no rule's key name
+		// appears in the body, about 6 ms when one does but nothing matches
+		// (decode) and about 9 ms when a value is masked (decode and encode),
+		// plus the hash. Without rules it is only the hash (spec §3.5).
 		b.ex.finish()
 	case err != nil:
 		b.ex.readErr = err
