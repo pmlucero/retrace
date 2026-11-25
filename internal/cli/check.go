@@ -493,7 +493,7 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 		return fail("reading the replay", err)
 	}
 	cmpRes := diff.Compare(diff.Build(srcEvents), diff.Build(events), diff.Options{Text: opts.text})
-	r := replayOutcome{id: id, point: cmpRes.Point, totals: summary.Of(rs, events), textSteps: cmpRes.TextDifferences}
+	r := replayOutcome{id: id, point: cmpRes.Point, totals: billed(rs, events), textSteps: cmpRes.TextDifferences}
 	wantExit := 0
 	if s.AgentExitCode != nil {
 		wantExit = *s.AgentExitCode
@@ -517,4 +517,18 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 		r.outcome = outcomeIdentical
 	}
 	return r
+}
+
+// billed is the cost a replay was billed for: the totals of its live model
+// responses. Responses answered from the cassette cost nothing (spec §9.9.6).
+// Only the cost fields of the result are meaningful: callers read nothing else.
+// The filter follows the spec's "live" literally.
+func billed(s cassette.Session, events []cassette.Event) summary.Totals {
+	live := make([]cassette.Event, 0, len(events))
+	for _, e := range events {
+		if e.Kind != "model_response" || e.Provenance == "live" {
+			live = append(live, e)
+		}
+	}
+	return summary.Of(s, live)
 }
