@@ -662,7 +662,7 @@ retrace check [<id>...] [--model <model>] [--tools frozen|live] [--repeat <n>]
 
 #### 9.9.1 Corpus
 
-- `<id>...`: the source sessions, each validated as in §9.2. An id given twice is a usage error (exit `2`). An id that does not exist is an error (exit `1`), reported before any replay starts. A given id is replayed whatever its `status` and `parent_session_id`: naming a session is the user's choice, so only the default corpus filters.
+- `<id>...`: the source sessions, each validated as in §9.2. An id given twice is a usage error (exit `2`). An id that does not exist is an error (exit `1`), reported before any replay starts. A given id is replayed whatever its `status` and `parent_session_id`, as `run` would replay it (§9.3): naming a session is the user's choice, so only the default corpus filters. This includes a session that is still `recording` or never ended, and a replay, whose own replays then have that replay as their parent.
 - Without ids, the corpus is every session in `--dir` whose `parent_session_id` is null and whose `status` is `completed`: every finished recording. Replays are never part of the default corpus. A cassette that cannot be opened or read is skipped with a warning, as in `ls` (§9.5).
 - The corpus is replayed in id order, comparing ids byte by byte.
 - An empty corpus is an error (exit `1`) that names `--dir`. A gate that checked nothing must not pass.
@@ -741,7 +741,7 @@ The model names, ids and values above are illustrative.
 - One progress line per replay goes to stderr as it ends, with its id and outcome.
 - The agents' standard output goes to `check`'s stderr, with their standard error, so that stdout holds only `check`'s own output and `--format json` stays parseable.
 
-`--format json` emits one JSON document on stdout with the same information, plus, for each replay, its id, outcome, cost and, when it diverged, its divergence in the form `diff --format json` gives it (§8.4). It has a top-level `format_version` (`1`), and its JSON Schema is committed as `docs/schema/check.v1.json`, with the compatibility rule of `diff`'s schema (§8.4).
+`--format json` emits one JSON document on stdout with the same information, except that it gives every outcome's count, zeros included, plus, for each replay, its id, outcome, cost and, when it diverged, its divergence in the form `diff --format json` gives it (§8.4). It has a top-level `format_version` (`1`), and its JSON Schema is committed as `docs/schema/check.v1.json`, with the compatibility rule of `diff`'s schema (§8.4).
 
 `--markdown <path>`: also writes the summary and the session lines as Markdown, appending to `<path>` and creating it if it does not exist, as the file in `$GITHUB_STEP_SUMMARY` expects. Values read from a cassette are escaped as in §10, and also so that they cannot add Markdown markup: a tool name cannot open a link, start an HTML tag or end a table cell.
 
@@ -840,6 +840,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-46** Corpus and flag errors of §9.9: an id given twice, `--repeat 0`, an `--out` that holds a `.cassette` file and a replay id that does not fit the format are usage errors (exit `2`). An id that does not exist exits `1`. None of them starts a replay or creates `--out`.
 - **AC-47** In `live-tools`, an `--mcp` name that no session in the corpus has, and a session with a redacted stored URL and no `--mcp` for it, are usage errors. An `--mcp` override reaches every session that has a server with that name.
 - **AC-48** A replay whose agent outlives `--timeout` is stopped and reported as `error`, and the next replay starts. `SIGINT` during a check stops the running replay, reports the rest as `skipped`, prints the summary and exits `1`, or `3` when a replay already diverged.
+- **AC-49** `check` with an explicit id replays it when it names a `failed` session or a replay. While the agent writes to its stdout, `check`'s stdout holds only `check`'s own output, and the agent's output appears on stderr.
 
 ### Demo (manual)
 
