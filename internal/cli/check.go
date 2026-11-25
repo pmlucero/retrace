@@ -51,6 +51,11 @@ With --model, check prints the estimated cost before the first replay.
 replays that would take the spent cost over it. The cost is an estimate from
 retrace's price table, not a cap on what the API bills.
 
+--format json writes one JSON document on stdout instead of the text report
+(its schema is docs/schema/check.v1.json). --markdown appends the summary
+as Markdown to a file, creating it when missing: a file that cannot be
+written exits 1, or 3 when a replay diverged.
+
 Exit codes: 0 every replay identical, 1 an error or an interruption, 2 a
 usage error, 3 a replay diverged, 5 the budget skipped a replay.
 
@@ -60,13 +65,15 @@ Flags:
 // checkOptions are the flags of check. The replay flags are those of run
 // (spec §9.9.2).
 type checkOptions struct {
-	ids     []string
-	repeat  int
-	out     string
-	timeout time.Duration // --timeout: the longest one replay may run; 0 for no limit
-	text    bool          // --text: also compare the model texts, as diff does
-	maxCost float64       // --max-cost in USD; 0 when not given (spec §9.9.6)
-	run     runOptions    // the replay flags shared by every replay
+	ids      []string
+	repeat   int
+	out      string
+	timeout  time.Duration // --timeout: the longest one replay may run; 0 for no limit
+	text     bool          // --text: also compare the model texts, as diff does
+	maxCost  float64       // --max-cost in USD; 0 when not given (spec §9.9.6)
+	format   string        // --format: text or json (spec §9.9.7)
+	markdown string        // --markdown: the file to append the Markdown report to
+	run      runOptions    // the replay flags shared by every replay
 }
 
 func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
@@ -79,6 +86,8 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 	fs.StringVar(&opts.out, "out", "", "directory for the replays (default .retrace/check/<check-id>)")
 	fs.DurationVar(&opts.timeout, "timeout", 10*time.Minute, "the longest one replay may run, e.g. 10m; 0 for no limit")
 	fs.Float64Var(&opts.maxCost, "max-cost", 0, "with --model, the budget in USD for the check's LLM calls; an estimate, not a cap on billing")
+	fs.StringVar(&opts.format, "format", "text", "output format: text or json")
+	fs.StringVar(&opts.markdown, "markdown", "", "also append the report as Markdown to this `file`, e.g. $GITHUB_STEP_SUMMARY")
 	fs.BoolVar(&opts.text, "text", false, "also compare the text of each model response")
 	fs.Func("mcp", "in live-tools, reach MCP server `name=url` at this URL (repeatable)", mcpFlag(&ro.mcp))
 	fs.StringVar(&ro.cwd, "cwd", "", "run every replay's agent in this `dir`")
@@ -138,6 +147,10 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage(fmt.Sprintf("--grace %s: want a duration of 0 or more", ro.grace))
 	case opts.timeout < 0:
 		return usage(fmt.Sprintf("--timeout %s: want a duration of 0 or more", opts.timeout))
+	case opts.format != "text" && opts.format != "json":
+		return usage(fmt.Sprintf("--format %q: want text or json", opts.format))
+	case set["markdown"] && opts.markdown == "":
+		return usage("--markdown: want a file name")
 	case opts.repeat < 1:
 		return usage(fmt.Sprintf("--repeat %d: want a positive integer", opts.repeat))
 	case set["max-cost"] && ro.mode() != "swap-model":
@@ -288,11 +301,32 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	if interrupted {
 		log.Warn("interrupted: the replays that never started are skipped")
 	}
-	if err := report.writeText(env.Stdout); err != nil {
-		log.Error("cannot write the report", "error", err)
-		return ExitError
+	return emitCheck(env, opts, report)
+}
+
+// emitCheck writes the report in the format that was asked for, and to the
+// Markdown file when there is one, and returns the exit code (spec §9.9.8).
+// A Markdown file that cannot be written is a failed check: it exits 1,
+// unless a replay diverged, which takes precedence as it does over an error.
+func emitCheck(env *Env, opts checkOptions, report checkReport) int {
+	write := report.writeText
+	if opts.format == "json" {
+		write = report.writeJSON
 	}
-	return report.exitCode()
+	code := report.exitCode()
+	if err := write(env.Stdout); err != nil {
+		env.Logger.Error("cannot write the report", "error", err)
+		code = ExitError
+	}
+	if opts.markdown != "" {
+		if err := report.appendMarkdown(opts.markdown); err != nil {
+			env.Logger.Error("cannot write the Markdown report", "file", opts.markdown, "error", err)
+			if code != ExitDiverged {
+				code = ExitError
+			}
+		}
+	}
+	return code
 }
 
 // refuseCheck reports a check whose estimate exceeds the budget: no replay
@@ -307,11 +341,7 @@ func refuseCheck(env *Env, corpus []cassette.Session, opts checkOptions, b *chec
 		}
 		report.sessions = append(report.sessions, sr)
 	}
-	if err := report.writeText(env.Stdout); err != nil {
-		env.Logger.Error("cannot write the report", "error", err)
-		return ExitError
-	}
-	return report.exitCode()
+	return emitCheck(env, opts, report)
 }
 
 // sessionOptions returns the replay flags for one session: its id as the

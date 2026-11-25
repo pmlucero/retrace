@@ -207,9 +207,13 @@ var schemaKeywords = map[string]bool{
 	"items": true, "enum": true, "const": true, "minimum": true, "oneOf": true,
 }
 
-func loadDiffSchema(t *testing.T) jsonSchema {
+func loadDiffSchema(t *testing.T) jsonSchema { return loadSchema(t, diffSchemaPath) }
+
+// loadSchema reads the schema at path and checks that jsonSchema implements
+// every keyword it uses.
+func loadSchema(t *testing.T, path string) jsonSchema {
 	t.Helper()
-	raw, err := os.ReadFile(diffSchemaPath) //nolint:gosec // G304: the committed schema
+	raw, err := os.ReadFile(path) //nolint:gosec // G304: a committed schema
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1,0 +1,197 @@
+{
+  "format_version": 1,
+  "mode": "swap-model",
+  "model": "claude-haiku-4-5",
+  "repeat": 2,
+  "corpus_size": 3,
+  "interrupted": false,
+  "out": "out dir",
+  "budget": {
+    "max_cost_usd": 1,
+    "estimate_usd": 0.5,
+    "refused": false,
+    "skipped_replays": 1
+  },
+  "cost": {
+    "cost_usd": 0.0125,
+    "unpriced_responses": 1
+  },
+  "totals": {
+    "sessions": {
+      "diverged": 2,
+      "error": 0,
+      "skipped": 0,
+      "identical": 1
+    },
+    "replays": {
+      "diverged": 2,
+      "error": 1,
+      "skipped": 1,
+      "identical": 2
+    }
+  },
+  "diverged_at": [
+    {
+      "kind": "stop",
+      "tool": null,
+      "sessions": 1
+    },
+    {
+      "kind": "tool_use",
+      "tool": "a|b<script>\u001b[2J‮[x](http://evil.example)`c`*d*_e_ www.evil.example &amp; <https://x.y>\r\n# h",
+      "sessions": 1
+    }
+  ],
+  "sessions": [
+    {
+      "id": "a",
+      "outcome": "identical",
+      "counts": {
+        "diverged": 0,
+        "error": 0,
+        "skipped": 0,
+        "identical": 2
+      },
+      "divergence_points": [],
+      "text_differences": [],
+      "replays": [
+        {
+          "id": "a.swap-model.1",
+          "outcome": "identical",
+          "reason": null,
+          "cost": {
+            "cost_usd": 0,
+            "unpriced_responses": 0
+          },
+          "divergence": null
+        },
+        {
+          "id": "a.swap-model.2",
+          "outcome": "identical",
+          "reason": null,
+          "cost": {
+            "cost_usd": 0,
+            "unpriced_responses": 0
+          },
+          "divergence": null
+        }
+      ]
+    },
+    {
+      "id": "b",
+      "outcome": "diverged",
+      "counts": {
+        "diverged": 1,
+        "error": 1,
+        "skipped": 0,
+        "identical": 0
+      },
+      "divergence_points": [
+        {
+          "step": 3,
+          "kind": "tool_use",
+          "tool": "a|b<script>\u001b[2J‮[x](http://evil.example)`c`*d*_e_ www.evil.example &amp; <https://x.y>\r\n# h",
+          "replays": 1
+        }
+      ],
+      "text_differences": [
+        2
+      ],
+      "replays": [
+        {
+          "id": "b.swap-model.1",
+          "outcome": "diverged",
+          "reason": null,
+          "cost": {
+            "cost_usd": 0.0125,
+            "unpriced_responses": 1
+          },
+          "divergence": {
+            "step": 3,
+            "kind": "tool_use",
+            "field": null,
+            "a": null,
+            "b": {
+              "seq": 0,
+              "kind": "",
+              "source": "",
+              "target": "",
+              "tool": "a|b<script>\u001b[2J‮[x](http://evil.example)`c`*d*_e_ www.evil.example &amp; <https://x.y>\r\n# h",
+              "arguments": null,
+              "result": null,
+              "status": ""
+            },
+            "stop_a": null,
+            "stop_b": null,
+            "diff": [],
+            "diff_truncated": false,
+            "more_paths": false
+          }
+        },
+        {
+          "id": "b.swap-model.2",
+          "outcome": "error",
+          "reason": "timed out after 10m0s",
+          "cost": {
+            "cost_usd": 0,
+            "unpriced_responses": 0
+          },
+          "divergence": null
+        }
+      ]
+    },
+    {
+      "id": "c",
+      "outcome": "diverged",
+      "counts": {
+        "diverged": 1,
+        "error": 0,
+        "skipped": 1,
+        "identical": 0
+      },
+      "divergence_points": [
+        {
+          "step": 4,
+          "kind": "stop",
+          "tool": null,
+          "replays": 1
+        }
+      ],
+      "text_differences": [],
+      "replays": [
+        {
+          "id": "c.swap-model.1",
+          "outcome": "diverged",
+          "reason": null,
+          "cost": {
+            "cost_usd": 0,
+            "unpriced_responses": 0
+          },
+          "divergence": {
+            "step": 4,
+            "kind": "stop",
+            "field": null,
+            "a": null,
+            "b": null,
+            "stop_a": null,
+            "stop_b": null,
+            "diff": [],
+            "diff_truncated": false,
+            "more_paths": false
+          }
+        },
+        {
+          "id": "c.swap-model.2",
+          "outcome": "skipped",
+          "reason": "budget",
+          "cost": {
+            "cost_usd": 0,
+            "unpriced_responses": 0
+          },
+          "divergence": null
+        }
+      ]
+    }
+  ],
+  "exit_code": 3
+}

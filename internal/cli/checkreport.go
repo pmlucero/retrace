@@ -110,33 +110,45 @@ type sessionPoint struct {
 	pointKey
 }
 
-// pointsText groups the divergence points of the session's replays by step,
-// event kind and tool, with the number of replays at each:
-// "step 1 tool_use get_invoice (4), step 2 tool_call lookup (1)". The groups
-// are in descending order of count, then by step, kind and tool, so the
-// output is deterministic.
-func (s checkSession) pointsText() string {
+// pointGroup is the replays of one session that diverged at one step, with
+// one event kind and tool.
+type pointGroup struct {
+	sessionPoint
+	replays int
+}
+
+// pointGroups groups the divergence points of the session's replays by step,
+// event kind and tool. The groups are in descending order of count, then by
+// step, kind and tool, so the output is deterministic.
+func (s checkSession) pointGroups() []pointGroup {
 	counts := map[sessionPoint]int{}
 	for _, r := range s.replays {
 		if r.point != nil {
 			counts[sessionPoint{r.point.Step, keyOf(*r.point)}]++
 		}
 	}
-	keys := make([]sessionPoint, 0, len(counts))
-	for k := range counts {
-		keys = append(keys, k)
+	groups := make([]pointGroup, 0, len(counts))
+	for k, n := range counts {
+		groups = append(groups, pointGroup{k, n})
 	}
-	slices.SortFunc(keys, func(a, b sessionPoint) int {
-		return cmp.Or(cmp.Compare(counts[b], counts[a]), cmp.Compare(a.step, b.step),
+	slices.SortFunc(groups, func(a, b pointGroup) int {
+		return cmp.Or(cmp.Compare(b.replays, a.replays), cmp.Compare(a.step, b.step),
 			cmp.Compare(a.kind, b.kind), cmp.Compare(a.tool, b.tool))
 	})
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		text := fmt.Sprintf("step %d %s", k.step, k.kind)
-		if k.tool != "" {
-			text += " " + printable(k.tool)
+	return groups
+}
+
+// pointsText lists the groups of pointGroups with the number of replays at
+// each: "step 1 tool_use get_invoice (4), step 2 tool_call lookup (1)".
+func (s checkSession) pointsText() string {
+	groups := s.pointGroups()
+	parts := make([]string, len(groups))
+	for i, g := range groups {
+		text := fmt.Sprintf("step %d %s", g.step, g.kind)
+		if g.tool != "" {
+			text += " " + printable(g.tool)
 		}
-		parts[i] = fmt.Sprintf("%s (%d)", text, counts[k])
+		parts[i] = fmt.Sprintf("%s (%d)", text, g.replays)
 	}
 	return strings.Join(parts, ", ")
 }
@@ -198,12 +210,18 @@ func (r checkReport) exitCode() int {
 	return code
 }
 
-// divergedAt groups the divergence points of the whole corpus by event kind
-// and tool, since steps differ between sessions, and counts the sessions that
-// have each: "search_orders tool_use (5 sessions), get_invoice tool_use (1
-// session)". The groups are in descending order of sessions, then by kind
-// and tool.
-func (r checkReport) divergedAt() string {
+// corpusGroup is the sessions of the corpus that have a divergence point of
+// one event kind and tool.
+type corpusGroup struct {
+	pointKey
+	sessions int
+}
+
+// divergedGroups groups the divergence points of the whole corpus by event
+// kind and tool, since steps differ between sessions, and counts the sessions
+// that have each. The groups are in descending order of sessions, then by
+// kind and tool.
+func (r checkReport) divergedGroups() []corpusGroup {
 	sessions := map[pointKey]int{}
 	for _, s := range r.sessions {
 		seen := map[pointKey]bool{}
@@ -217,18 +235,41 @@ func (r checkReport) divergedAt() string {
 			}
 		}
 	}
-	keys := make([]pointKey, 0, len(sessions))
-	for k := range sessions {
-		keys = append(keys, k)
+	groups := make([]corpusGroup, 0, len(sessions))
+	for k, n := range sessions {
+		groups = append(groups, corpusGroup{k, n})
 	}
-	slices.SortFunc(keys, func(a, b pointKey) int {
-		return cmp.Or(cmp.Compare(sessions[b], sessions[a]), cmp.Compare(a.kind, b.kind), cmp.Compare(a.tool, b.tool))
+	slices.SortFunc(groups, func(a, b corpusGroup) int {
+		return cmp.Or(cmp.Compare(b.sessions, a.sessions), cmp.Compare(a.kind, b.kind), cmp.Compare(a.tool, b.tool))
 	})
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = fmt.Sprintf("%s (%s)", k.text(), plural(int64(sessions[k]), "session"))
+	return groups
+}
+
+// divergedAt lists the groups of divergedGroups: "search_orders tool_use (5
+// sessions), get_invoice tool_use (1 session)".
+func (r checkReport) divergedAt() string {
+	groups := r.divergedGroups()
+	parts := make([]string, len(groups))
+	for i, g := range groups {
+		parts[i] = fmt.Sprintf("%s (%s)", g.text(), plural(int64(g.sessions), "session"))
 	}
 	return strings.Join(parts, ", ")
+}
+
+// tally counts the sessions and the replays by outcome and adds up the cost
+// of the replays.
+func (r checkReport) tally() (sessions, replays map[string]int, cost summary.Totals) {
+	sessions, replays = map[string]int{}, map[string]int{}
+	for _, s := range r.sessions {
+		sessions[s.outcome()]++
+		for _, rep := range s.replays {
+			replays[rep.outcome]++
+			cost.CostUSD += rep.totals.CostUSD
+			cost.Priced += rep.totals.Priced
+			cost.Unpriced += rep.totals.Unpriced
+		}
+	}
+	return sessions, replays, cost
 }
 
 // writeText writes the text output (spec §9.9.7). Every value read from a
@@ -242,8 +283,7 @@ func (r checkReport) writeText(w io.Writer) error {
 	fmt.Fprintf(&buf, "retrace check  %s  repeat %d  %s\n\n", mode, r.repeat, plural(int64(len(r.sessions)), "session"))
 
 	tw := tabwriter.NewWriter(&buf, 0, 0, 3, ' ', 0)
-	sessions, replays := map[string]int{}, map[string]int{}
-	var cost summary.Totals
+	sessions, replays, cost := r.tally()
 	for _, s := range r.sessions {
 		line := outcomesText(s.count)
 		if p := s.pointsText(); p != "" {
@@ -255,13 +295,6 @@ func (r checkReport) writeText(w io.Writer) error {
 			line += "  " + note
 		}
 		fmt.Fprintf(tw, "  %s\t%s\n", printable(s.id), line)
-		sessions[s.outcome()]++
-		for _, rep := range s.replays {
-			replays[rep.outcome]++
-			cost.CostUSD += rep.totals.CostUSD
-			cost.Priced += rep.totals.Priced
-			cost.Unpriced += rep.totals.Unpriced
-		}
 	}
 	if err := tw.Flush(); err != nil {
 		return err
