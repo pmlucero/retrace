@@ -9,12 +9,11 @@ package anthropic
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // Request is what event derivation needs from a Messages API request body.
@@ -87,34 +86,6 @@ func contentText(content json.RawMessage) (string, bool) {
 		}
 	}
 	return strings.Join(texts, "\n"), len(texts) > 0
-}
-
-// conversationKey hashes the canonical JSON of messages, so the same
-// conversation gets the same key however its JSON was formatted.
-// ok is false when a message is not valid JSON.
-func conversationKey(messages []json.RawMessage) (key string, ok bool) {
-	h := sha256.New()
-	for _, m := range messages {
-		c, err := canonicalJSON(m)
-		if err != nil {
-			return "", false
-		}
-		h.Write(c)
-		h.Write([]byte{'\n'})
-	}
-	return hex.EncodeToString(h.Sum(nil)), true
-}
-
-// canonicalJSON re-encodes raw with object keys sorted and no insignificant
-// whitespace. Numbers keep their text.
-func canonicalJSON(raw json.RawMessage) ([]byte, error) {
-	dec := json.NewDecoder(bytes.NewReader(raw))
-	dec.UseNumber()
-	var v any
-	if err := dec.Decode(&v); err != nil {
-		return nil, err
-	}
-	return json.Marshal(v) // encoding/json sorts map keys
 }
 
 // Message is a model response, from a JSON body or reassembled from an SSE
@@ -286,6 +257,12 @@ func setString(dst *string, raw json.RawMessage) {
 
 // stringValue returns raw as a string, or "" when it is not a JSON string.
 func stringValue(raw json.RawMessage) string {
+	if n := len(raw); n >= 2 && raw[0] == '"' && raw[n-1] == '"' {
+		// The common case, a string with no escapes, needs no decoding.
+		if body := raw[1 : n-1]; bytes.IndexByte(body, '\\') < 0 && bytes.IndexByte(body, '"') < 0 && utf8.Valid(body) {
+			return string(body)
+		}
+	}
 	var s string
 	if len(raw) == 0 || json.Unmarshal(raw, &s) != nil {
 		return ""
