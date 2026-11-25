@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/pmlucero/retrace/main/docs/schema/check.v1.json",
+  "title": "retrace check --format json, format_version 1",
+  "description": "The document that `retrace check --format json` writes (spec §9.9.7). Values read from a cassette, such as tool names, are not constrained further than their type and are not escaped: a cassette is untrusted input, and this is the faithful form (spec §10). Objects are open: consumers must ignore members they do not know (spec §8.4).",
+  "type": "object",
+  "required": [
+    "format_version", "mode", "model", "repeat", "corpus_size", "interrupted", "out", "budget",
+    "cost", "totals", "diverged_at", "sessions"
+  ],
+  "properties": {
+    "format_version": {
+      "description": "Incremented, with a new schema file, by any change that is not backward compatible.",
+      "const": 1
+    },
+    "mode": { "description": "exact, swap-model or live-tools (spec §9.9.2).", "type": "string" },
+    "model": { "description": "The --model of a swap-model check, or null.", "type": ["string", "null"] },
+    "repeat": { "description": "Replays of each session.", "type": "integer", "minimum": 1 },
+    "corpus_size": { "description": "The number of sessions checked.", "type": "integer", "minimum": 0 },
+    "interrupted": {
+      "description": "True when a signal stopped the check: the replays that never started are skipped (spec §9.9.4).",
+      "type": "boolean"
+    },
+    "out": {
+      "description": "The directory of the replays, or null when nothing was written because the budget refused the check.",
+      "type": ["string", "null"]
+    },
+    "budget": {
+      "description": "Null unless --max-cost was given (spec §9.9.6).",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/budget" }]
+    },
+    "cost": {
+      "description": "The estimated cost of all the replays.",
+      "$ref": "#/$defs/cost"
+    },
+    "totals": {
+      "type": "object",
+      "required": ["sessions", "replays"],
+      "properties": {
+        "sessions": { "description": "Sessions by outcome: the first of diverged, error, skipped and identical that any of its replays has.", "$ref": "#/$defs/counts" },
+        "replays": { "description": "Replays by outcome.", "$ref": "#/$defs/counts" }
+      }
+    },
+    "diverged_at": {
+      "description": "The divergence points of the whole corpus grouped by event kind and tool, in descending order of sessions.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "tool", "sessions"],
+        "properties": {
+          "kind": { "type": "string" },
+          "tool": { "description": "Null for an event without a tool, such as a stop marker or a cassette miss.", "type": ["string", "null"] },
+          "sessions": { "description": "Sessions with a divergence point of this kind and tool.", "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "sessions": {
+      "description": "One entry per session of the corpus, in id order.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/session" }
+    }
+  },
+  "$defs": {
+    "budget": {
+      "type": "object",
+      "required": ["max_cost_usd", "estimate_usd", "refused", "skipped_replays"],
+      "properties": {
+        "max_cost_usd": { "type": "number" },
+        "estimate_usd": { "description": "The estimate of the whole check: an estimate from the price table, not a cap on billing.", "type": "number" },
+        "refused": { "description": "True when the estimate exceeded the budget and no replay started.", "type": "boolean" },
+        "skipped_replays": { "description": "Replays skipped by the budget.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "cost": {
+      "description": "A cost as spec §8.2 gives it.",
+      "type": "object",
+      "required": ["cost_usd", "unpriced_responses"],
+      "properties": {
+        "cost_usd": { "description": "The sum of the known costs, in US dollars. It leaves out the unpriced responses: a null cost is never guessed (spec §7.5).", "type": "number" },
+        "unpriced_responses": { "description": "Model responses with tokens but no known cost.", "type": "integer", "minimum": 0 }
+      }
+    },
+    "counts": {
+      "description": "A count for every outcome, zeros included.",
+      "type": "object",
+      "required": ["diverged", "error", "skipped", "identical"],
+      "properties": {
+        "diverged": { "type": "integer", "minimum": 0 },
+        "error": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "identical": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "session": {
+      "type": "object",
+      "required": ["id", "outcome", "counts", "divergence_points", "text_differences", "replays"],
+      "properties": {
+        "id": { "description": "The source session.", "type": "string" },
+        "outcome": { "enum": ["diverged", "error", "skipped", "identical"] },
+        "counts": { "description": "Its replays by outcome.", "$ref": "#/$defs/counts" },
+        "divergence_points": {
+          "description": "The divergence points of its replays grouped by step, event kind and tool, in descending order of replays.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["step", "kind", "tool", "replays"],
+            "properties": {
+              "step": { "type": "integer", "minimum": 0 },
+              "kind": { "type": "string" },
+              "tool": { "type": ["string", "null"] },
+              "replays": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "text_differences": {
+          "description": "The steps whose text differs in any replay and was not compared, which is only possible without --text (spec §8.3).",
+          "type": "array",
+          "items": { "type": "integer", "minimum": 0 }
+        },
+        "replays": { "type": "array", "items": { "$ref": "#/$defs/replay" } }
+      }
+    },
+    "replay": {
+      "type": "object",
+      "required": ["id", "outcome", "reason", "cost", "divergence"],
+      "properties": {
+        "id": { "description": "The id of the replay's cassette in --out.", "type": "string" },
+        "outcome": { "enum": ["diverged", "error", "skipped", "identical"] },
+        "reason": { "description": "Why, when retrace knows: budget for a replay the budget skipped, or a timeout. Null otherwise.", "type": ["string", "null"] },
+        "cost": { "$ref": "#/$defs/cost" },
+        "divergence": {
+          "description": "For a diverged replay, where it left its source, as `retrace diff --format json` gives first_divergence (spec §8.4), with the source as A and the replay as B. Null otherwise, and for a replay that diverged on a cassette miss with no earlier difference.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/point" }]
+        }
+      }
+    },
+    "point": {
+      "description": "The divergence point (spec §8.3 step 3).",
+      "type": "object",
+      "required": ["step", "kind", "field", "a", "b", "stop_a", "stop_b", "diff", "diff_truncated", "more_paths"],
+      "properties": {
+        "step": {
+          "description": "The step number. For kind stop it is the last step, and the stop marker is after it.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "The kind of event compared. model_response when the texts differ under --text, or when only one side has the step; stop when only the stop markers differ.",
+          "enum": ["tool_use", "tool_call", "tool_result", "divergence", "model_response", "stop"]
+        },
+        "field": {
+          "description": "What diff is about. Null, with an empty diff, when the events differ elsewhere (kind, source, target, tool or status), when a side has no event, and for kind stop.",
+          "enum": ["arguments", "result", "text", null]
+        },
+        "a": {
+          "description": "Side A's event, or null when side A has no event left in the step, and for kind stop.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/event" }]
+        },
+        "b": {
+          "description": "Side B's event, as a is for side A.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/event" }]
+        },
+        "stop_a": {
+          "description": "Side A's stop marker for kind stop, or null: also for a side with no model response.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/marker" }]
+        },
+        "stop_b": {
+          "description": "Side B's stop marker, as stop_a is for side A.",
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/marker" }]
+        },
+        "diff": {
+          "description": "The paths where field differs, with A as expected and B as received (spec §6.4).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/entry" }
+        },
+        "diff_truncated": {
+          "description": "True when paths were left out of diff or a value was elided as \"[retrace: <n> bytes elided]\" (spec §6.4).",
+          "type": "boolean"
+        },
+        "more_paths": {
+          "description": "True when more paths differ than diff lists.",
+          "type": "boolean"
+        }
+      }
+    },
+    "event": {
+      "description": "The members of an event that action identity compares (spec §8.3 step 1), and its seq. arguments and result are the stored JSON, or a string when the stored value is not JSON.",
+      "type": "object",
+      "required": ["seq", "kind", "source", "target", "tool", "arguments", "result", "status"],
+      "properties": {
+        "seq": { "type": "integer" },
+        "kind": { "type": "string" },
+        "source": { "type": "string" },
+        "target": { "type": "string" },
+        "tool": { "type": ["string", "null"] },
+        "arguments": {},
+        "result": {},
+        "status": { "type": "string" }
+      }
+    },
+    "marker": {
+      "description": "A stop marker (spec §8.2): the stop_reason of the last model response, or its error when its status is error.",
+      "type": "object",
+      "required": ["failed", "stop_reason", "error"],
+      "properties": {
+        "failed": { "description": "True when the response's status is error.", "type": "boolean" },
+        "stop_reason": { "type": ["string", "null"] },
+        "error": { "type": ["string", "null"] }
+      }
+    },
+    "entry": {
+      "description": "One path that differs. A side without the path has no member: expected for A, received for B. A value whose compact JSON is longer than 1024 bytes is replaced by the string \"[retrace: <n> bytes elided]\", and diff_truncated is set (spec §6.4).",
+      "type": "object",
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string" },
+        "expected": {},
+        "received": {}
+      }
+    }
+  }
+}
