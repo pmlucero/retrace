@@ -180,6 +180,7 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 		}
 		out = filepath.Join(".retrace", "check", id)
 	}
+	// Glob fails only on a bad pattern, which globEscape rules out.
 	if held, _ := filepath.Glob(filepath.Join(globEscape(out), "*.cassette")); len(held) > 0 {
 		return usageError(env.Stderr, fmt.Sprintf("--out %s already holds cassettes; give a new directory", strconv.Quote(out)))
 	}

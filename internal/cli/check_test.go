@@ -43,7 +43,7 @@ func dirState(t *testing.T, dir string) map[string]string {
 	}
 	state := map[string]string{}
 	for _, e := range entries {
-		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
+		b, err := os.ReadFile(filepath.Join(dir, e.Name())) //nolint:gosec // G304: a test reads its own temp dir
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -301,4 +301,37 @@ func TestCheckCorpusAndFlagErrors(t *testing.T) {
 // afterDash is flags, then '--' and the agent command.
 func afterDash(flags, cmd []string) []string {
 	return append(append(flags, "--"), cmd...)
+}
+
+// AC-46: the flag errors of spec 9.9 are usage errors that create nothing.
+func TestCheckFlagErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeSource(t, dir, "s", cwdAgentCommand(), "/")
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tt := range []struct {
+		name string
+		args []string
+	}{
+		{"tools", []string{"--tools", "both"}},
+		{"model with live tools", []string{"--model", "m", "--tools", "live"}},
+		{"empty model", []string{"--model", ""}},
+		{"upstream without model", []string{"--anthropic-upstream", "http://x"}},
+		{"on-miss", []string{"--on-miss", "fallthrough"}},
+		{"grace", []string{"--grace", "-1s"}},
+		{"cwd is a file", []string{"--cwd", file}},
+		{"both command forms", []string{"--recorded-command"}},
+		{"redact-header pattern", []string{"--redact-header", "*x"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			out := filepath.Join(t.TempDir(), "out")
+			r := runCheckCmd(t, dir, afterDash(append([]string{"--out", out}, tt.args...), []string{"true"})...)
+			if r.code != ExitUsage {
+				t.Errorf("exit %d, want %d\n%s", r.code, ExitUsage, r.stderr)
+			}
+			assertNotCreated(t, out)
+		})
+	}
 }
