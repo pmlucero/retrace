@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -59,7 +60,7 @@ func assertNotCreated(t *testing.T, path string) {
 	}
 }
 
-// AC-39: with no ids, check replays every completed recording and no replay;
+// AC-39, AC-50: with no ids, check replays every completed recording and no replay;
 // an exact check of an unchanged agent is identical and exits 0, writes to
 // --out and leaves --dir unchanged.
 func TestCheckExactCorpusIsIdentical(t *testing.T) {
@@ -93,6 +94,17 @@ func TestCheckExactCorpusIsIdentical(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(out, id+".cassette")); err != nil {
 			t.Errorf("replay %s: %v", id, err)
 		}
+	}
+	// AC-50: an exact check calls no API, so its JSON cost is zero too.
+	rj := runCheckCmd(t, dir, afterDash([]string{"--out", filepath.Join(t.TempDir(), "out"), "--grace", "1s", "--format", "json"}, agentCommand())...)
+	var doc struct {
+		Cost struct {
+			CostUSD  float64 `json:"cost_usd"`
+			Unpriced int     `json:"unpriced_responses"`
+		} `json:"cost"`
+	}
+	if err := json.Unmarshal([]byte(rj.stdout.String()), &doc); err != nil || doc.Cost.CostUSD != 0 || doc.Cost.Unpriced != 0 {
+		t.Errorf("json cost = %+v (%v), want 0\n%s", doc.Cost, err, rj.stdout)
 	}
 	after := dirState(t, dir)
 	if len(after) != len(before) {

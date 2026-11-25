@@ -6,7 +6,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 )
 
-// AC-39, AC-43: a replay's billed cost counts only its live responses, so
+// AC-50: a replay's billed cost counts only its live responses, so
 // responses answered from the cassette cost nothing and never reach the budget.
 func TestBilledCountsOnlyLiveResponses(t *testing.T) {
 	in, out := int64(10), int64(5)
