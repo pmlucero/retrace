@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.29
-- Last updated: 2026-11-16
+- Version: 0.30
+- Last updated: 2026-11-25
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -10,7 +10,7 @@ The key words MUST, MUST NOT, SHOULD and MAY are used as in RFC 2119.
 
 ## 1. Scope and terminology
 
-**In scope (MVP):** recording and replaying sessions of an agent that talks to the Anthropic Messages API and to MCP servers over Streamable HTTP. It covers the `exact`, `swap-model` and `live-tools` modes, the `strict` divergence strategy, and a terminal diff.
+**In scope (MVP):** recording and replaying sessions of an agent that talks to the Anthropic Messages API and to MCP servers over Streamable HTTP. It covers the `exact`, `swap-model` and `live-tools` modes, the `strict` divergence strategy, and a terminal diff. It also covers `check`, which replays a corpus of sessions and summarizes their divergences (§9.9).
 
 **Out of scope (MVP):** web UI, other LLM providers, MCP stdio transport, and the `fallthrough`, `nearest-match` and `llm-stub` strategies. See §12.
 
@@ -634,8 +634,9 @@ retrace show <id> [--json] [--raw <interaction-id>]
 | `0` | Success (for `diff`: trajectories identical) |
 | `1` | Runtime error (for `diff`: divergence found) |
 | `2` | Usage error, or unsupported option (reserved strategies, `--model` with `--tools live`). For `diff`: any error (§8.4) |
-| `3` | `run`: replay stopped on a divergence (`strict`) |
+| `3` | `run`: replay stopped on a divergence (`strict`). `check`: at least one replay diverged (§9.9.8) |
 | `4` | `record` / `run`: the agent exited with a non-zero code. Its code is stored in `agent_exit_code` |
+| `5` | `check`: the cost budget skipped at least one replay (§9.9.8) |
 
 ### 9.8 `retrace reindex`
 
@@ -645,6 +646,118 @@ retrace reindex <id>
 
 Rebuilds the events of session `<id>` (§7.6) and prints how many there are, with the deriver and pricing versions used. It exits `0` on success, `2` for an invalid id, and `1` when the session does not exist or cannot be reindexed.
 
+### 9.9 `retrace check`
+
+```text
+retrace check [<id>...] [--model <model>] [--tools frozen|live] [--repeat <n>]
+              [--max-cost <usd>] [--out <dir>] [--format text|json] [--markdown <path>]
+              [--text] [--on-miss strict] [--grace <duration>] [--timeout <duration>]
+              [--anthropic-upstream <url>] [--mcp <name>=<url>]... [--redact-header <name>]...
+              (--recorded-command | -- <agent command...>) [--cwd <dir>]
+```
+
+`check` replays a corpus of sessions against one change and reports which replays kept their source's trajectory and where the others diverged ([ADR 0015](../adr/0015-corpus-check-command.md)). It answers "did my change alter my agent's behavior?" across many sessions at once, and its exit code can gate a pull request. The change under test is the agent's code (the command that runs, for example in a pull request checkout), the model (`--model`) or today's tools (`--tools live`). Like `diff`, it reports facts, what diverged and where, and never a quality score ([vision](../vision.md)).
+
+`check` only reads the sessions in `--dir`. Its replays are written to `--out`.
+
+#### 9.9.1 Corpus
+
+- `<id>...`: the source sessions, each validated as in §9.2. An id given twice is a usage error (exit `2`). An id that does not exist is an error (exit `1`), reported before any replay starts.
+- Without ids, the corpus is every session in `--dir` whose `parent_session_id` is null and whose `status` is `completed`: every finished recording. Replays are never part of the default corpus. A cassette that cannot be opened or read is skipped with a warning, as in `ls` (§9.5).
+- The corpus is replayed in id order, comparing ids byte by byte.
+- An empty corpus is an error (exit `1`) that names `--dir`. A gate that checked nothing must not pass.
+
+#### 9.9.2 Mode and replay flags
+
+- The mode is derived from `--model` and `--tools` as in `run` (§9.3), including the usage error when both are given. Every replay of one check uses the same mode.
+- `--model`, `--anthropic-upstream`, `--redact-header`, `--on-miss` and `--grace` have the meaning, defaults and validation they have in `run` (§9.3), and apply to every replay.
+- `--mcp`: as in `run`, only in `live-tools`. Its name MUST be one of the `mcp_servers` (§7.2) of at least one session in the corpus, and it applies to every session that has a server with that name. A session that needs `--mcp` for one of its servers (a stored URL with a redaction marker, §4.3) and has none is a usage error that names the session and the server.
+
+#### 9.9.3 Agent command
+
+- `-- <cmd>`: every replay runs this command.
+- `--recorded-command`: each replay runs its source session's recorded `command` (§7.2).
+- `--cwd <dir>`: the working directory of every replay's agent. It MUST be an existing directory, else it is a usage error. Without it, `-- <cmd>` runs in retrace's working directory and `--recorded-command` runs each command in its recorded `cwd`, as in `run` (§9.3).
+  - `--cwd` makes a corpus recorded on one machine replayable on another, such as a CI runner: the recorded argv runs inside the checkout under test, so an argv like `python agent.py "refund order 42"` runs that checkout's code with the recorded input. An argv that names an absolute path still needs that path on the machine.
+- `check` MUST NOT run a recorded command unless `--recorded-command` is given ([ADR 0013](../adr/0013-explicit-replay-command.md)). Giving both forms, or neither, is a usage error. Without either, the error prints the stored argv and cwd of each session in the corpus (at most the first 10, then how many more), escaped as in §9.3.
+- Under `--recorded-command`, every session in the corpus is checked as in §9.3: an empty recorded command is a usage error, and so is, when `--cwd` is not given, a recorded `cwd` that is not absolute, does not exist or is not a directory. The error names the session.
+
+#### 9.9.4 Replays
+
+- `--repeat <n>`: the number of replays per session, a positive integer, default `1`. Any other value is a usage error. More than one replay is useful when a channel is live: in `swap-model` a model can answer the same request differently each time, and in `live-tools` a tool can. It is allowed in every mode, because the agent itself can be nondeterministic too, for example when it reads the clock or runs tool calls concurrently.
+- Replays run one at a time: each session's `n` replays in a row, sessions in corpus order. Each replay is a `run` (§4, §9.3) with its own proxy on a free loopback port (`127.0.0.1:0`). The agent finds the proxy through the environment variables of §3.2, so ports never collide.
+- A replay that diverges, fails or whose agent exits with an error never stops the check: the next replay starts.
+- `--timeout <duration>`: the longest one replay may run, as a Go duration. Default `10m`; `0` means no limit. A negative value is a usage error. When it expires, `check` stops the agent as `run` does on a divergence (`SIGTERM`, then `SIGKILL` after `--grace`, §6.2), and the replay's outcome is `error`, with the timeout as its reason. A sequential check must not hang a CI job on one stuck agent or upstream.
+- `--out <dir>`: the directory for the replays' cassettes. The default is `.retrace/check/<check-id>`, relative to the working directory, where `<check-id>` has the form of a generated session id (§9.2). A missing `--out` is created as `record` creates `--dir` (§9.1). An `--out` that already holds a `.cassette` file is a usage error, so the results of two checks never mix.
+- The `k`-th replay of session `<id>` gets the id `<id>.<mode>.<k>`. If that id does not fit the id format (§9.2) for some session and `k ≤ n`, it is a usage error that names the session.
+- On `SIGINT` or `SIGTERM`, `check` stops the running replay as `run` does (§3.1), starts no other, and prints its output with the replays that never started reported as `skipped`. It exits `1`, unless a replay already diverged (exit `3`).
+
+#### 9.9.5 Outcome of a replay
+
+After each replay, `check` compares its trajectory with its source's as `diff` does (§8.3). `--text` has the meaning it has in `diff`. Each replay has exactly one outcome:
+
+| Outcome | When |
+|---|---|
+| `diverged` | The replay stopped on a cassette miss (§6.2), or its trajectory differs from its source's. Its divergence point is that of §8.3. |
+| `error` | Not `diverged`, and the replay did not end with status `completed` (for example, the agent could not be started), its agent's exit code differs from the source's `agent_exit_code`, or it hit `--timeout` (§9.9.4). |
+| `identical` | Neither of the above: the trajectories are identical and the agent exited as in the source. |
+| `skipped` | The replay never started, because of the budget (§9.9.6) or an interruption. |
+
+A session's outcome is the first of `diverged`, `error`, `skipped` and `identical` that any of its replays has.
+
+#### 9.9.6 Cost budget
+
+- `--max-cost <usd>`: the budget for the check's LLM calls, a positive decimal number of US dollars. It is valid only in `swap-model`, the one mode whose LLM channel is billed. In the other modes it is a usage error.
+- The estimate of one replay prices its source session's tokens (input, output, cache read and cache write, summed over its `model_response` events) at the prices of `--model` in the embedded price table (§7.5). The estimate of the check is the sum over the corpus, times `n`.
+- In `swap-model`, `check` prints the estimate on stderr before the first replay. When `--model` is not in the price table, the estimate is unknown: it says so, and with `--max-cost` that is a usage error, because a budget that cannot be checked guards nothing.
+- If the estimate exceeds `--max-cost`, `check` starts no replay: every replay is `skipped`, the output says that the budget refused the check, and it exits `5`.
+- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of `cost_usd` over the previous replays (§8.2). A previous replay with a `model_response` that has tokens but a null `cost_usd` counts with its estimate instead, so an unknown cost never lowers what was spent. If the result exceeds `--max-cost`, that replay and every later one are `skipped`.
+- The budget limits what `check` starts, not what the API bills: a replay can use more tokens than its source did. The output and the documentation MUST say that the cost is an estimate.
+
+#### 9.9.7 Output
+
+Text output (default), on stdout, has one line per session and then a summary:
+
+```text
+retrace check  swap-model (claude-haiku-4-5)  repeat 5  50 sessions
+
+  checkout-refund   5/5 identical
+  checkout-split    3/5 diverged  step 3 tool_use search_orders (3)
+  invoice-lookup    5/5 diverged  step 1 tool_use get_invoice (4), step 2 tool_call lookup (1)
+  ...
+
+sessions  42 identical, 6 diverged, 2 error
+replays   228 identical, 15 diverged, 7 error
+diverged at  search_orders tool_use (5 sessions), get_invoice tool_use (1 session)
+cost (est.)  $0.40
+replays in .retrace/check/20261125-101500-3f9a
+```
+
+The model names, ids and values above are illustrative.
+
+- A session's line gives its id, how many of its replays had each outcome, and its divergence points grouped by step, event kind and tool, with the number of replays at each.
+- The summary counts sessions and replays by outcome, groups the divergence points of the whole corpus by event kind and tool (steps differ between sessions), and gives the cost spent in the format of §8.2 and the `--out` directory.
+- When text differs in steps that are not compared (§8.3), the session's line says so, as `diff` does.
+- One progress line per replay goes to stderr as it ends, with its id and outcome.
+
+`--format json` emits one JSON document on stdout with the same information, plus, for each replay, its id, outcome, cost and, when it diverged, its divergence in the form `diff --format json` gives it (§8.4). It has a top-level `format_version` (`1`), and its JSON Schema is committed as `docs/schema/check.v1.json`, with the compatibility rule of `diff`'s schema (§8.4).
+
+`--markdown <path>`: also writes the summary and the session lines as Markdown, appending to `<path>` and creating it if it does not exist, as the file in `$GITHUB_STEP_SUMMARY` expects. Values read from a cassette are escaped as in §10, and also so that they cannot add Markdown markup: a tool name cannot open a link, start an HTML tag or end a table cell.
+
+#### 9.9.8 Exit codes and order of checks
+
+| Code | Meaning |
+|---|---|
+| `0` | Every replay is `identical`. |
+| `3` | At least one replay is `diverged`. |
+| `1` | No replay is `diverged`, and at least one is `error`, or the check failed (an id that does not exist, an empty corpus, an `--out` that cannot be created, an interruption). |
+| `5` | No replay is `diverged` or `error`, and the budget skipped at least one (§9.9.6). |
+| `2` | Usage error. |
+
+A divergence takes precedence because it is a finding that stands whatever else failed. Exit `5` covers both a check the budget refused before it started (no replay ran) and one it cut short. The output tells them apart: the text says that the budget refused the check, and the JSON counts the replays by outcome. A check that exits `5` is not a pass, because some sessions were never checked. `check` never exits `4`: an agent that exits with an error makes that replay an `error` (§9.9.5).
+
+Usage errors in the flags and arguments are reported first, before `--dir` is read. Then come the checks that need the corpus (§9.9.1, §9.9.2, §9.9.3, §9.9.4), then the budget (§9.9.6). All of them come before `--out` is created and before any agent starts.
+
 ## 10. Security and privacy
 
 - Credentials in headers and URLs are redacted before storage, and body redaction is opt-in (§3.5, [ADR 0011](../adr/0011-secret-redaction-defaults.md)).
@@ -652,10 +765,11 @@ Rebuilds the events of session `<id>` (§7.6) and prints how many there are, wit
 - The proxy answers only requests whose host names its listen address and that carry no `Origin` or `Sec-Fetch-Site` header (§3.6). A web page cannot reach it through DNS rebinding or a cross-origin request on a loopback address. With `--listen-unsafe`, a page can still send it a `GET` without reading the response (§3.6).
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
-- A cassette from someone else is untrusted input. `run` never runs its recorded command implicitly (§9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
-- **Escaped text output.** Every text output escapes each control character (C0 and C1) and each bidirectional control character that comes from a cassette. That covers `ls`, `show`, `show --raw`, `diff` in text format and the divergence report of §6.4, and also the warnings, errors and log messages of any command that include a value read from a cassette, such as a stored MCP URL (§4.3) or command (§9.3). The one exception is the multi-line text of `show --raw` (bodies and SSE chunks), which keeps line feeds and tabs so it keeps its layout. They cannot drive the terminal.
+- A cassette from someone else is untrusted input. `run` and `check` never run its recorded command implicitly (§9.3, §9.9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
+- A corpus is code. `check --recorded-command` runs the command of every cassette in it, so a change that adds or edits a cassette changes what runs. A CI workflow that runs `check --recorded-command` on untrusted changes, such as pull requests from forks, runs code those changes chose. The README MUST say so.
+- **Escaped text output.** Every text output escapes each control character (C0 and C1) and each bidirectional control character that comes from a cassette. That covers `ls`, `show`, `show --raw`, `diff` in text format, `check` in text and Markdown (§9.9.7) and the divergence report of §6.4, and also the warnings, errors and log messages of any command that include a value read from a cassette, such as a stored MCP URL (§4.3) or command (§9.3). The one exception is the multi-line text of `show --raw` (bodies and SSE chunks), which keeps line feeds and tabs so it keeps its layout. They cannot drive the terminal.
   - The length limits of §6.4 (80 characters) and §9.6 (60 characters) count characters before escaping. An escaped value can therefore print wider than the limit, but a cut never splits an escape.
-  - Text output is for people. The JSON outputs (`ls --json`, `show --json`, `diff --format json`) are the faithful form of the cassette's values.
+  - Text output is for people. The JSON outputs (`ls --json`, `show --json`, `diff --format json`, `check --format json`) are the faithful form of the cassette's values.
 
 ## 11. Acceptance criteria
 
@@ -713,6 +827,19 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-36** A cassette whose event `tool` and `arguments`, stored MCP URL and an interaction body hold ESC (`\x1b`), a C1 control (U+009B) and a bidi control (U+202E): `ls`, `show`, `show --raw`, `diff` text and the divergence report print none of them unescaped (§10), and neither does the usage error of `run --tools live` for a stored URL that also holds a redaction marker (§4.3). `show --raw` keeps the body's LF and TAB, a truncated `show` argument never ends inside an escape, and `show --json` emits the original values.
 - **AC-27** For a session with `dropped_events > 0`, `ls` shows `+gaps` after its status and `dropped_events` in `--json`, `show` warns with the count and marks each gap in its timeline, and `diff` warns in text output and reports `dropped_events` in `--format json`.
 
+### Corpus check
+
+- **AC-39** `check` with no ids replays every `completed` session in `--dir` with a null `parent_session_id`, and no replay. An exact check of an unchanged agent reports every session `identical` and exits `0`, writes its replays to `--out`, and leaves the files in `--dir` unchanged.
+- **AC-40** `check -- <cmd>` with an agent whose requests differ from the recording reports the affected sessions as `diverged`, with the step, event kind and tool of each divergence point, groups them by event kind and tool in the summary, and exits `3`.
+- **AC-41** `check --model <m> --repeat 3` against a fake Anthropic API that answers differently across calls runs 3 replays per session and reports per-session counts (e.g. `2/3 diverged`) and divergence points with replay counts.
+- **AC-42** `check --recorded-command --cwd <dir>` runs each session's recorded argv in `<dir>`. `check` with neither `--recorded-command` nor `-- <cmd>` is a usage error that prints each session's argv and cwd, escaped, and neither creates `--out` nor starts a process. A usage error found in one session of the corpus starts no replay.
+- **AC-43** `check --max-cost` whose estimate exceeds the budget exits `5` with no request to the fake API. A budget reached during the check marks the remaining replays `skipped` and exits `5`. `--max-cost` with a `--model` missing from the price table, or outside `swap-model`, is a usage error.
+- **AC-44** Exit codes follow §9.9.8: a corpus with both a `diverged` and an `error` replay exits `3`; with only an `error` exits `1`; a replay whose trajectory is identical but whose agent exit code differs from the source's is an `error`; an empty corpus exits `1`.
+- **AC-45** `check --format json` validates against `docs/schema/check.v1.json`. `--markdown <path>` appends to an existing file. A tool name holding control characters, a bidi control, `|`, `<` and `[x](y)` is escaped in the text and Markdown outputs.
+- **AC-46** Corpus and flag errors of §9.9: an id given twice, `--repeat 0`, an `--out` that holds a `.cassette` file and a replay id that does not fit the format are usage errors (exit `2`). An id that does not exist exits `1`. None of them starts a replay or creates `--out`.
+- **AC-47** In `live-tools`, an `--mcp` name that no session in the corpus has, and a session with a redacted stored URL and no `--mcp` for it, are usage errors. An `--mcp` override reaches every session that has a server with that name.
+- **AC-48** A replay whose agent outlives `--timeout` is stopped and reported as `error`, and the next replay starts. `SIGINT` during a check stops the running replay, reports the rest as `skipped`, prints the summary and exits `1`, or `3` when a replay already diverged.
+
 ### Demo (manual)
 
 - **AC-23** The repo contains a demo agent that uses two MCP servers. The README GIF shows record → exact replay → swap-model with divergence → diff.
@@ -725,5 +852,5 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - MCP stdio transport (wrapper process), replay of server-initiated messages (`GET` stream, sampling, elicitation).
 - User-defined matching ignore rules (`--ignore <jsonpath>`).
 - `retrace proxy` (proxy without a child process), `retrace export` (JSONL), `retrace scan` (secret detection), OpenTelemetry export.
-- CI mode: replay a corpus of cassettes against a candidate model and summarize divergences.
+- `check` (§9.9): parallel replays (`--jobs`), a failure threshold on divergence rates, starting and stopping MCP servers for `live-tools`, and `--cwd` for `run`.
 - A `retrace.yaml` configuration file for MCP servers, the listen address, redaction rules and the Anthropic upstream. Reading YAML needs a new dependency and an ADR. In the MVP, configuration is given with flags.
