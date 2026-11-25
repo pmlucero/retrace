@@ -8,7 +8,7 @@
 
 **Record, replay and diff AI agent sessions. Swap the model, freeze the tools, see exactly where behavior diverges.**
 
-> **Status: MVP complete.** retrace records sessions of agents that talk to the LLM and to MCP servers, replays them in all three modes, and inspects and diffs them. The first release is v0.1.0. See [Project status](#project-status).
+> **Status: MVP complete.** retrace records sessions of agents that talk to the LLM and to MCP servers, replays them in all three modes, inspects and diffs them, and checks a whole corpus as a CI gate. The latest release is v0.2.0. See [Project status](#project-status).
 
 ![Terminal recording of the retrace demo: record a session with Haiku and two MCP servers, replay it exactly and diff it (trajectories identical), then replay it against a changed shipping server and diff it (first divergence at step 2: the track_package result changed from in_transit to delayed).](docs/assets/demo.gif)
 
@@ -141,7 +141,7 @@ jobs:
         run: retrace --dir cassettes check --recorded-command --cwd . --markdown "$GITHUB_STEP_SUMMARY"
 ```
 
-- `check` is on `main` but not in a release yet (see [Project status](#project-status)). Until it is, build retrace from source in this step.
+- `check` needs retrace v0.2.0 or later.
 - `--format json` prints one JSON document that validates against [docs/schema/check.v1.json](docs/schema/check.v1.json).
 - `--cwd .` reruns each recorded argv inside the checkout under test, so record with relative paths and commands on `PATH`. An argv with an absolute path still needs that path on the runner.
 - `swap-model` calls the real API: pass `ANTHROPIC_API_KEY` as a secret and set `--max-cost`. `--repeat <n>` replays each session `n` times. The cost is an estimate from retrace's price table, and `--max-cost` limits what starts, not what the API bills.
@@ -152,7 +152,7 @@ jobs:
 
 ## Install
 
-Download the archive for your platform from the [releases page](https://github.com/pmlucero/retrace/releases) (the first release is v0.1.0; if the page lists no release yet, build from source). Each release has a `retrace_<version>_<os>_<arch>.tar.gz` archive (`.zip` on Windows) for Linux, macOS and Windows on amd64 and arm64, and a `checksums.txt` file. Unpack it and put the `retrace` binary on your `PATH`.
+Download the archive for your platform from the [releases page](https://github.com/pmlucero/retrace/releases) (`retrace check` needs v0.2.0 or later). Each release has a `retrace_<version>_<os>_<arch>.tar.gz` archive (`.zip` on Windows) for Linux, macOS and Windows on amd64 and arm64, and a `checksums.txt` file. Unpack it and put the `retrace` binary on your `PATH`.
 
 Before you run it, check that the archive was built by this repository's release workflow. With the [GitHub CLI](https://cli.github.com/):
 
@@ -212,10 +212,10 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 |---|---|---|
 | 0 | Vision, core spec, ADRs, repo conventions | Done |
 | MVP | Record (LLM + MCP), exact replay, swap-model with `strict`, terminal diff, demo agent with two MCP servers | **Done** (first release: v0.1.0) |
-| v0.2 | `retrace check`: replay a whole corpus against one change, as a CI gate | On `main`, not released yet |
+| v0.2 | `retrace check`: replay a whole corpus against one change, as a CI gate | **Done** (v0.2.0) |
 | Later | Web UI (sequence view, tool topology, model diff), more divergence strategies, more providers and transports | Planned |
 
-The MVP milestones (M0–M7) are done, and the first release is v0.1.0. retrace can record an agent that talks to the LLM and to MCP servers over Streamable HTTP with `retrace record`, and replay that session with `retrace run <id>` in any of the three modes:
+The MVP milestones (M0–M7) are done (v0.1.0), and v0.2.0 adds `retrace check`. retrace can record an agent that talks to the LLM and to MCP servers over Streamable HTTP with `retrace record`, and replay that session with `retrace run <id>` in any of the three modes:
 
 - `exact` serves every LLM and MCP answer from the cassette, offline.
 - `swap-model` (`--model`) forwards LLM requests with the model rewritten and serves MCP from the cassette.
@@ -264,7 +264,7 @@ The proxy answers `403` to a request whose `Host` does not name its listen addre
 - An agent that runs in a browser or in a desktop application's web view cannot be recorded or replayed, because it sends those headers. The same holds for any runtime that does.
 - `host.docker.internal` is rejected. An agent in a container uses the IP address that name resolves to instead (IP literals are accepted; no `--listen-unsafe` is needed for a loopback-bound proxy that Docker Desktop forwards to).
 
-The first release, v0.1.0, ships the MVP ([#22](https://github.com/pmlucero/retrace/issues/22)). See the [MVP plan](docs/plan/mvp.md).
+The first release, v0.1.0, ships the MVP ([#22](https://github.com/pmlucero/retrace/issues/22)). See the [MVP plan](docs/plan/mvp.md). v0.2.0 adds `retrace check` ([#181](https://github.com/pmlucero/retrace/issues/181)).
 
 ## Documentation
 
