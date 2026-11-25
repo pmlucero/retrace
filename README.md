@@ -109,6 +109,41 @@ retrace is **not** an observability or tracing tool. Langfuse, LangSmith, Phoeni
 
 When a replay hits something that was never recorded, retrace stops by default (`strict`) and reports the exact divergence point. It never invents a response silently.
 
+## Checking a corpus in CI
+
+`retrace check` replays every recorded session in the cassette directory against one change and answers: did my change alter my agent's behavior? The change is the agent's code, a different model (`--model`) or today's tools (`--tools live`). Each replay ends as `identical`, `diverged`, `error` or `skipped`, and the exit code can gate a pull request:
+
+| Exit | Meaning | Precedence |
+|---|---|---|
+| `3` | at least one replay `diverged` | first: a finding stands whatever else failed |
+| `1` | no divergence, but an `error` or a failed check (empty corpus, unwritable `--out` or `--markdown`, interruption) | second |
+| `5` | no divergence or error, but the budget `skipped` a replay (not a pass) | third |
+| `0` | every replay `identical` | |
+| `2` | usage error | |
+
+A minimal GitHub Actions job, with the corpus committed in `cassettes/`:
+
+```yaml
+jobs:
+  retrace:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install retrace
+        run: |
+          # download the release archive, verify it as in Install, put retrace on PATH
+      - name: Check the corpus
+        run: retrace --dir cassettes check --recorded-command --cwd . --markdown "$GITHUB_STEP_SUMMARY"
+```
+
+- `--format json` prints one JSON document that validates against [docs/schema/check.v1.json](docs/schema/check.v1.json).
+- `--cwd .` reruns each recorded argv inside the checkout under test, so record with relative paths and commands on `PATH`. An argv with an absolute path still needs that path on the runner.
+- `swap-model` calls the real API: pass `ANTHROPIC_API_KEY` as a secret and set `--max-cost`. `--repeat <n>` replays each session `n` times. The cost is an estimate from retrace's price table, and `--max-cost` limits what starts, not what the API bills.
+- `live-tools` needs the MCP servers started in an earlier step, reached with `--mcp name=url`.
+- `--timeout` is the longest one replay may run (default `10m`).
+
+> ⚠️ **A corpus is code.** `check --recorded-command` runs the command of every cassette in the corpus, so a pull request that adds or edits a cassette chooses what runs. Do not run it on untrusted pull requests (for example from forks, or under `pull_request_target`), and never with secrets available to them.
+
 ## Install
 
 Download the archive for your platform from the [releases page](https://github.com/pmlucero/retrace/releases) (the first release is v0.1.0; if the page lists no release yet, build from source). Each release has a `retrace_<version>_<os>_<arch>.tar.gz` archive (`.zip` on Windows) for Linux, macOS and Windows on amd64 and arm64, and a `checksums.txt` file. Unpack it and put the `retrace` binary on your `PATH`.
@@ -151,6 +186,10 @@ retrace run checkout --tools live --mcp orders=http://localhost:9001/mcp -- pyth
 # Where did the trajectories diverge?
 retrace diff checkout checkout.swap-model.1
 
+# Does a change alter the behavior of every recorded session? (see below)
+retrace check --recorded-command --cwd .
+retrace check --model <other-model> --repeat 3 --max-cost 2 -- python agent.py
+
 # What is recorded, and what is in one interaction?
 retrace ls
 retrace show checkout
@@ -167,6 +206,7 @@ retrace follows **Spec-Driven Development**: vision, spec and ADRs first, code a
 |---|---|---|
 | 0 | Vision, core spec, ADRs, repo conventions | Done |
 | MVP | Record (LLM + MCP), exact replay, swap-model with `strict`, terminal diff, demo agent with two MCP servers | **Done** (first release: v0.1.0) |
+| v0.2 | `retrace check`: replay a whole corpus against one change, as a CI gate | On `main`, not released yet |
 | Later | Web UI (sequence view, tool topology, model diff), more divergence strategies, more providers and transports | Planned |
 
 The MVP milestones (M0–M7) are done, and the first release is v0.1.0. retrace can record an agent that talks to the LLM and to MCP servers over Streamable HTTP with `retrace record`, and replay that session with `retrace run <id>` in any of the three modes:
@@ -224,6 +264,7 @@ The first release, v0.1.0, ships the MVP ([#22](https://github.com/pmlucero/retr
 
 - [Vision](docs/vision.md): the problem, principles, non-goals and positioning.
 - [Core spec](docs/spec/core.md): modes, matching, the cassette data model, diff, CLI and acceptance criteria.
+- [Spec §9.9, `retrace check`](docs/spec/core.md#99-retrace-check) and [ADR 0015](docs/adr/0015-corpus-check-command.md), with the [JSON schema](docs/schema/check.v1.json).
 - [Architecture decisions](docs/adr/README.md).
 - [MVP plan](docs/plan/mvp.md): milestones and the order of implementation.
 - [Architecture diagram](docs/architecture/README.md): the overview above, with its source.
