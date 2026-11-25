@@ -295,8 +295,9 @@ func TestMCPHandlerRewritesIDsAndSessions(t *testing.T) {
 	if got := m.blob(ins[1].ResponseBlob); got != fmtID(listResp, "42") {
 		t.Errorf("stored response %s, want the one served", got)
 	}
-	if got := storedHeader(t, ins[0]).Get(sessionHeader); got != first {
-		t.Errorf("stored Mcp-Session-Id %q, want the one served, %q", got, first)
+	// Spec §3.5: the stored copy masks the id the agent got.
+	if got := storedHeader(t, ins[0]).Get(sessionHeader); !strings.HasPrefix(got, "[REDACTED:") || strings.Contains(got, first) {
+		t.Errorf("stored Mcp-Session-Id %q, want the served %q redacted", got, first)
 	}
 }
 
@@ -717,5 +718,32 @@ func TestMCPHandlerClassifiesTheStoredBody(t *testing.T) {
 	}
 	if un := m.queues.Unconsumed(); len(un) != 0 {
 		t.Errorf("unconsumed %v, want none", un)
+	}
+}
+
+// AC-06, AC-11: a cassette whose stored Mcp-Session-Id is a redaction marker
+// still tells replay that the recorded response carried one: initialize gets
+// a fresh id, never the marker, and later responses echo that id (spec §3.5,
+// §5 step 3; ADR 0016).
+func TestMCPHandlerSessionWithRedactedRecordedID(t *testing.T) {
+	const (
+		initReq = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`
+		pingReq = `{"jsonrpc":"2.0","id":2,"method":"ping"}`
+	)
+	marked := http.Header{"Content-Type": {"application/json"}, sessionHeader: {"[REDACTED:4d407c4f]"}}
+	src := mcpSourceCassette(t,
+		mcpRecorded{request: initReq, body: `{"jsonrpc":"2.0","id":1,"result":{}}`, header: marked},
+		mcpRecorded{request: pingReq, body: `{"jsonrpc":"2.0","id":2,"result":{}}`, header: marked},
+	)
+	m := newMCPHarness(t, src, nil)
+
+	resp, _ := m.post("", initReq)
+	fresh := resp.header.Get(sessionHeader)
+	if fresh == "" || strings.HasPrefix(fresh, "[REDACTED:") {
+		t.Fatalf("initialize got Mcp-Session-Id %q, want a fresh one, not the marker", fresh)
+	}
+	resp, _ = m.post(fresh, pingReq)
+	if got := resp.header.Get(sessionHeader); got != fresh {
+		t.Errorf("ping got Mcp-Session-Id %q, want the issued %q", got, fresh)
 	}
 }

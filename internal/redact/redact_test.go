@@ -53,10 +53,10 @@ func TestRulesDenyList(t *testing.T) {
 		"Apikey", "Auth", "Key", "Password", "Secret", "Sig", "Signature", "Token",
 		"X-Mcp-Token", "X-Amz-Security-Token", "X-Client-Secret", "Anthropic-Key", "X-Auth", "Proxy-Auth",
 		"X-Db-Password", "X-Amz-Signature", "X-Goog-Signature", "X-Amz-Credential", "X-Goog-Credential",
-		"X-Apikey", "Xapikey", "X-Tenant",
+		"X-Apikey", "Xapikey", "X-Tenant", "Mcp-Session-Id",
 	}
 	kept := []string{
-		"Content-Type", "Anthropic-Version", "Anthropic-Beta", "Mcp-Session-Id", "Access-Control-Allow-Credentials",
+		"Content-Type", "Anthropic-Version", "Anthropic-Beta", "Access-Control-Allow-Credentials",
 		"X-Ratelimit-Remaining-Tokens", "Authority", "Monkey", "Tokens", "Location",
 	}
 	for _, name := range redacted {
@@ -140,7 +140,7 @@ func TestRulesHeadersRedactURLValues(t *testing.T) {
 func TestRulesHeaderNames(t *testing.T) {
 	got := strings.Join(NewRules([]string{"X-Tenant"}, nil).HeaderNames(), ",")
 	want := "*-auth,*-credential,*-key,*-password,*-secret,*-signature,*-token,*apikey," +
-		"apikey,auth,authorization,cookie,key,password,proxy-authorization,secret,set-cookie,sig,signature,token,x-api-key,x-tenant"
+		"apikey,auth,authorization,cookie,key,mcp-session-id,password,proxy-authorization,secret,set-cookie,sig,signature,token,x-api-key,x-tenant"
 	if got != want {
 		t.Errorf("HeaderNames() = %s, want %s", got, want)
 	}
@@ -189,7 +189,7 @@ func TestRulesFromMetadataAddsCurrentDefaults(t *testing.T) {
 		}
 	}
 	want := `{"body":["$..email"],"headers":["*-auth","*-credential","*-key","*-password","*-secret","*-signature","*-token","*apikey",` +
-		`"apikey","auth","authorization","cookie","key","password","proxy-authorization","secret","set-cookie","sig","signature","token","x-api-key","x-run-only","x-tenant"]}`
+		`"apikey","auth","authorization","cookie","key","mcp-session-id","password","proxy-authorization","secret","set-cookie","sig","signature","token","x-api-key","x-run-only","x-tenant"]}`
 	if got := string(r.Metadata()); got != want {
 		t.Errorf("Metadata() = %s, want %s", got, want)
 	}

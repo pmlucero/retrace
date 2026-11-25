@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -24,17 +25,19 @@ import (
 const (
 	secretAgentEnv = "RETRACE_TEST_SECRET_AGENT"
 
-	sessionToken  = "SESSION-TOKEN-SECRET"  // a *-token request header
-	queryToken    = "QUERY-TOKEN-SECRET"    // access_token in the LLM request's query
-	mcpAuth       = "MCP-AUTH-SECRET"       // the MCP Authorization header
-	locationPass  = "LOCATION-PASS-SECRET"  // userinfo of a response Location
-	locationToken = "LOCATION-TOKEN-SECRET" // a token in a response Location's query
-	fragmentToken = "FRAGMENT-TOKEN-SECRET" // a token in a response Location's fragment
-	routeToken    = "ROUTE-TOKEN-SECRET"    // a token in a fragment route, #/cb?access_token=…
-	rawQToken     = "RAWQ-TOKEN-SECRET"     // a fragment token followed by a raw "?"
-	setCookie     = "SET-COOKIE-SECRET"     // a response Set-Cookie
-	runOnly       = "RUN-ONLY-SECRET"       // a header redacted only with run --redact-header
-	runOnlyHeader = "X-Tenant-Ref"          // on no default deny-list
+	sessionToken   = "SESSION-TOKEN-SECRET"    // a *-token request header
+	queryToken     = "QUERY-TOKEN-SECRET"      // access_token in the LLM request's query
+	mcpAuth        = "MCP-AUTH-SECRET"         // the MCP Authorization header
+	locationPass   = "LOCATION-PASS-SECRET"    // userinfo of a response Location
+	locationToken  = "LOCATION-TOKEN-SECRET"   // a token in a response Location's query
+	fragmentToken  = "FRAGMENT-TOKEN-SECRET"   // a token in a response Location's fragment
+	routeToken     = "ROUTE-TOKEN-SECRET"      // a token in a fragment route, #/cb?access_token=…
+	rawQToken      = "RAWQ-TOKEN-SECRET"       // a fragment token followed by a raw "?"
+	setCookie      = "SET-COOKIE-SECRET"       // a response Set-Cookie
+	mcpReqSession  = "MCP-REQ-SESSION-SECRET"  // the Mcp-Session-Id the agent sends
+	mcpRespSession = "MCP-RESP-SESSION-SECRET" // the Mcp-Session-Id the MCP server issues
+	runOnly        = "RUN-ONLY-SECRET"         // a header redacted only with run --redact-header
+	runOnlyHeader  = "X-Tenant-Ref"            // on no default deny-list
 )
 
 func secretAgentCommand() []string {
@@ -78,7 +81,7 @@ func TestHelperSecretAgent(t *testing.T) {
 		http.Header{"X-Api-Key": {agentAPIKey}, "X-Session-Token": {sessionToken}})
 	send(os.Getenv(mcpEnvName("tools")),
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"helper","version":"1"}}}`,
-		http.Header{"Authorization": {"Bearer " + mcpAuth}})
+		http.Header{"Authorization": {"Bearer " + mcpAuth}, "Mcp-Session-Id": {mcpReqSession}})
 	os.Exit(0)
 }
 
@@ -109,6 +112,7 @@ func newSecretUpstream(t *testing.T) *secretUpstream {
 				`"content":[{"type":"text","text":"Hello."}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 			return
 		}
+		w.Header().Set("Mcp-Session-Id", mcpRespSession)
 		_, _ = io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18","capabilities":{},`+
 			`"serverInfo":{"name":"tools","version":"1"}}}`)
 	}))
@@ -152,12 +156,12 @@ func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 	t.Setenv(secretAgentEnv, "1")
 	dir := t.TempDir()
 	secrets := []string{agentAPIKey, sessionToken, queryToken, mcpAuth, locationPass, locationToken,
-		fragmentToken, routeToken, rawQToken, setCookie, runOnly}
+		fragmentToken, routeToken, rawQToken, setCookie, runOnly, mcpReqSession, mcpRespSession}
 	// What each cassette stores masked: header values whole, query and
 	// fragment values alone, a fragment value only up to a raw "?". The
 	// Location userinfo becomes REDACTED, with no hash.
 	masked := []string{agentAPIKey, sessionToken, queryToken, "Bearer " + mcpAuth, locationToken,
-		fragmentToken, routeToken, rawQToken, "session=" + setCookie + "; HttpOnly"}
+		fragmentToken, routeToken, rawQToken, "session=" + setCookie + "; HttpOnly", mcpReqSession, mcpRespSession}
 
 	llm, tools := newSecretUpstream(t), newSecretUpstream(t)
 	r := runRecordCmd(t, dir, append([]string{"--session", "s", "--listen", "127.0.0.1:0",
@@ -189,7 +193,13 @@ func TestRedactionKeepsCredentialsOutOfEveryCassette(t *testing.T) {
 			if !strings.Contains(string(s.Redaction), `"`+strings.ToLower(runOnlyHeader)+`"`) {
 				t.Errorf("stored redaction = %s, want it to include %s (spec §4.4)", s.Redaction, runOnlyHeader)
 			}
-			scanCassette(t, dir, id, secrets, append(masked, runOnly))
+			want := append(slices.Clone(masked), runOnly)
+			if tc.mode == "swap-model" {
+				// Replay serves MCP from the cassette with a fresh session id, so the
+				// recorded server's id is neither forwarded nor stored (AC-11).
+				want = slices.DeleteFunc(want, func(v string) bool { return v == mcpRespSession })
+			}
+			scanCassette(t, dir, id, secrets, want)
 		})
 	}
 }
