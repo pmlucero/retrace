@@ -1,6 +1,6 @@
 # 0015. Corpus check command
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-25
 
 ## Context

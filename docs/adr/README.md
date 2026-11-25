@@ -21,7 +21,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0012](0012-release-integrity.md) | Release integrity | Accepted |
 | [0013](0013-explicit-replay-command.md) | Explicit agent command for replay | Accepted |
 | [0014](0014-redaction-fragments-and-literal-names.md) | Redaction of URL fragments and literal `--redact-header` names | Accepted |
-| [0015](0015-corpus-check-command.md) | Corpus check command | Proposed |
+| [0015](0015-corpus-check-command.md) | Corpus check command | Accepted |
 
 ## Statuses
 
