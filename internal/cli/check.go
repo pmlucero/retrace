@@ -521,6 +521,8 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 
 // billed is the cost a replay was billed for: the totals of its live model
 // responses. Responses answered from the cassette cost nothing (spec §9.9.6).
+// Only the cost fields of the result are meaningful: callers read nothing else.
+// The filter follows the spec's "live" literally.
 func billed(s cassette.Session, events []cassette.Event) summary.Totals {
 	live := make([]cassette.Event, 0, len(events))
 	for _, e := range events {
