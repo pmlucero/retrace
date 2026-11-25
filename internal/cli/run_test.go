@@ -47,7 +47,8 @@ func TestHelperReplayAgent(t *testing.T) {
 	ignoreTerm()
 	if id := os.Getenv(replayStallEnv); id != "" && id == os.Getenv("RETRACE_SESSION_ID") {
 		if m := os.Getenv(replayStallMarkerEnv); m != "" {
-			_ = os.WriteFile(m, nil, 0o600)
+			// The path is a temp file the test itself chose.
+			_ = os.WriteFile(m, nil, 0o600) //nolint:gosec // G703
 		}
 		time.Sleep(time.Minute)
 	}
