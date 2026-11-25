@@ -3,6 +3,7 @@ package anthropic
 import (
 	"bytes"
 	"encoding/json"
+	"strconv"
 	"strings"
 )
 
@@ -45,10 +46,7 @@ func (s *Stream) Feed(event []byte) {
 	if json.Unmarshal(data, &ev) != nil {
 		return
 	}
-	var index *int
-	if n := 0; json.Unmarshal(ev.Index, &n) == nil {
-		index = &n
-	}
+	index := blockIndex(ev.Index)
 	switch stringValue(ev.Type) {
 	case "message_start":
 		var m struct {
@@ -99,6 +97,20 @@ func (s *Stream) Feed(event []byte) {
 	case "error":
 		s.msg.Error = apiError(ev.Error)
 	}
+}
+
+// blockIndex reads a content block index. Like decoding into an int, it
+// takes null as 0 and refuses a string, a fraction or an exponent.
+func blockIndex(raw json.RawMessage) *int {
+	raw = bytes.TrimSpace(raw)
+	if string(raw) == "null" {
+		return new(int)
+	}
+	n, err := strconv.Atoi(string(raw))
+	if err != nil {
+		return nil
+	}
+	return &n
 }
 
 // maxBlocks bounds the content block index a stream may use, so a malformed
