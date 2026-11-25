@@ -31,6 +31,9 @@ func (r *Rules) Body(data []byte) ([]byte, error) {
 	if len(r.body) == 0 {
 		return data, nil
 	}
+	if r.cannotMatch(data) {
+		return data, nil
+	}
 	v, err := jsonvalue.Decode(data)
 	if errors.Is(err, jsonvalue.ErrTooDeep) {
 		return nil, fmt.Errorf("%w: %w", ErrNotRedactable, err)
@@ -54,6 +57,9 @@ func (r *Rules) Body(data []byte) ([]byte, error) {
 // anything in it was masked.
 func (r *Rules) SSEEvent(event []byte) ([]byte, error) {
 	if len(r.body) == 0 {
+		return event, nil
+	}
+	if r.cannotMatchEvent(event) {
 		return event, nil
 	}
 	lines := splitLines(event)

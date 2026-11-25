@@ -41,12 +41,13 @@ type Rules struct {
 	suffixes map[string]bool // the patterns without their "*", lower-case
 	lengths  []int           // the distinct lengths of suffixes, ascending
 	body     []Path
+	literals [][]byte // the prefilter's names (prefilter.go); nil when it cannot be used
 }
 
 // NewRules returns the default header rules plus extra header names
 // (--redact-header) and body rules (--redact).
 func NewRules(extraHeaders []string, body []Path) *Rules {
-	r := &Rules{headers: map[string]bool{}, suffixes: map[string]bool{}, body: body}
+	r := &Rules{headers: map[string]bool{}, suffixes: map[string]bool{}, body: body, literals: literalNames(body)}
 	for _, n := range slices.Concat(DefaultHeaders, extraHeaders) {
 		r.headers[strings.ToLower(n)] = true
 	}

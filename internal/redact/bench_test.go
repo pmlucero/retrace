@@ -29,3 +29,44 @@ func BenchmarkRulesBody(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkBodyCases measures Body and SSEEvent on a 1 MB JSON body and on
+// one SSE event: no rules, a rule whose key is absent, and a rule that
+// matches.
+func BenchmarkBodyCases(b *testing.B) {
+	var msgs []string
+	for i := range 4000 {
+		msgs = append(msgs, fmt.Sprintf(`{"role":"user","content":[{"type":"text","text":%q}]}`, strings.Repeat("lorem ipsum ", 16)+fmt.Sprint(i)))
+	}
+	plain := []byte(`{"model":"m","max_tokens":1024,"messages":[` + strings.Join(msgs, ",") + `]}`)
+	withKey := []byte(`{"email":"a@b.c",` + string(plain[1:]))
+	plainEvent := []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"a few tokens\"}}\n\n")
+	keyEvent := []byte("event: x\ndata: {\"email\":\"a@b.c\",\"index\":0}\n\n")
+
+	none := NewRules(nil, nil)
+	rules := mustRules(&testing.T{}, "$..email")
+	for _, tt := range []struct {
+		name  string
+		r     *Rules
+		body  []byte
+		event []byte
+	}{
+		{"no-rules", none, plain, plainEvent},
+		{"rules-no-key", rules, plain, plainEvent},
+		{"rules-key-present", rules, withKey, keyEvent},
+	} {
+		b.Run("body-1MB/"+tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			b.SetBytes(int64(len(tt.body)))
+			for b.Loop() {
+				_, _ = tt.r.Body(tt.body)
+			}
+		})
+		b.Run("sse/"+tt.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				_, _ = tt.r.SSEEvent(tt.event)
+			}
+		})
+	}
+}
