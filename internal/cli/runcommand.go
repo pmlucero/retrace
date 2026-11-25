@@ -24,7 +24,7 @@ func replayCommand(opts runOptions, src cassette.Session) (command []string, rec
 		// --recorded-command would not help, so it is not suggested.
 		return nil, false, fmt.Errorf("session %q has no recorded command; give the agent command after '--'", opts.source)
 	case opts.recorded:
-		if !filepath.IsAbs(src.Cwd) || !isDir(src.Cwd) {
+		if opts.cwd == "" && (!filepath.IsAbs(src.Cwd) || !isDir(src.Cwd)) {
 			return nil, false, fmt.Errorf("the recorded working directory %s of session %q is not an absolute path, does not exist "+
 				"or is not a directory; give the agent command after '--'", strconv.Quote(src.Cwd), opts.source)
 		}

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
-	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/match"
 	"github.com/pmlucero/retrace/internal/mcp"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
@@ -76,6 +74,7 @@ type runOptions struct {
 	recorded     bool        // --recorded-command: run the source's recorded command
 	anthropic    *url.URL    // the LLM upstream of swap-model
 	mcp          []mcpServer // the --mcp overrides of live-tools
+	cwd          string      // runs the agent here and skips the recorded-cwd checks (check --cwd); run never sets it
 }
 
 // mode returns the replay mode the flags select (spec §9.3).
@@ -229,117 +228,23 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 		return ExitError
 	}
 
-	command, recorded, err := replayCommand(opts, srcSession)
-	if err != nil {
-		return usageError(env.Stderr, err.Error()) // before any cassette is created (spec §9.3)
+	plan, perr := prepareReplay(ctx, src, srcSession, opts)
+	if perr != nil {
+		return perr.report(env) // usage errors come before any cassette is created (spec §9.3)
 	}
-	cwd := srcSession.Cwd
-	if !recorded {
-		if cwd, err = os.Getwd(); err != nil {
-			log.Error("reading the working directory", "error", err)
-			return ExitError
-		}
-	}
-
-	rules, err := redact.RulesFromMetadata(srcSession.Redaction, opts.redactHeader...) // spec §4.4
-	if err != nil {
-		log.Error("cannot read the session's redaction rules", "session", opts.source, "error", err)
-		return ExitError
-	}
-	servers, err := mcpServerNames(srcSession.MCPServers)
-	if err != nil {
-		log.Error("cannot read the session's MCP servers", "session", opts.source, "error", err)
-		return ExitError
-	}
-	// A forwarded channel is not queued: its recorded interactions are not
-	// expected to be served (spec §4.4).
-	var live []liveServer
-	replayed := servers
-	if mode == "live-tools" {
-		if live, err = liveMCPServers(srcSession.MCPServers, opts.mcp); err != nil {
-			return usageError(env.Stderr, err.Error()) // before the new session exists (spec §9.3)
-		}
-		replayed = nil
-	}
-	queues, err := replayQueues(ctx, src, mode != "swap-model", replayed)
-	if err != nil {
-		log.Error("cannot read the recorded interactions", "session", opts.source, "error", err)
-		return ExitError
-	}
-
-	// Listen before creating the cassette, so a busy port leaves nothing behind.
-	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", opts.listen)
-	if err != nil {
-		log.Error("cannot start the proxy", "listen", opts.listen, "error", err)
-		return ExitError
-	}
-	defer ln.Close()
-
-	strategy := replay.Strict{} // the only one parseRunFlags accepts (spec §6.3)
-	var modelOverride *string
-	if mode == "swap-model" {
-		modelOverride = &opts.model
-	}
-	mcpServers := mcpServersCopy(srcSession.MCPServers)
-	var finish func(context.Context, *cassette.Cassette) error
-	if mode == "live-tools" {
-		// Completed from the replay's own exchanges, as in record (spec §9.3).
-		mcpServers, finish = liveMCPServersJSON(live, rules), storeMCPServerInfo
-	}
-	c, id, err := createReplayCassette(ctx, env.Globals.Dir, id, opts.as != "", cassette.Session{
-		Mode: mode, ModelOverride: modelOverride, ParentSessionID: &opts.source, Status: "recording", CreatedAt: time.Now(),
-		Command: command, Cwd: cwd, OnMiss: strategy.Name(),
-		MCPServers: mcpServers, Redaction: rules.Metadata(), RetraceVersion: Version(),
-		DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
-	})
-	if err != nil {
-		log.Error("cannot create the cassette", "error", err)
-		return ExitError
-	}
-	w, err := cassette.NewWriter(ctx, c, cassette.WriterOptions{Logger: log, Deriver: derive.New()})
-	if err != nil {
-		log.Error("cannot record into the cassette", "error", err)
-		if err := c.Close(); err != nil {
-			log.Error("closing the cassette", "path", c.Path(), "error", err)
-		}
-		return ExitError
-	}
-
-	divergence := replay.NewDivergence()
-	mux := replayHandler(replayRoutes{
-		mode: mode, src: src, queues: queues, rules: rules, writer: w, divergence: divergence,
-		strategy: strategy, log: log, opts: replay.Options{Realtime: opts.realtime},
-		anthropic: opts.anthropic, model: opts.model, live: live, replayed: replayed,
-	})
-	path := c.Path()
-	res, err := runSession(ctx, env, sessionConfig{
-		listener: ln,
-		listen:   opts.listen,
-		handler:  mux,
-		cassette: c,
-		writer:   w,
-		id:       id,
-		mode:     mode,
-		startMsg: "replaying " + opts.source,
-		mcp:      servers,
-		command:  command,
-		cwd:      cwd,
-		diverged: divergence.Done(),
-		grace:    opts.grace,
-		finish:   finish,
+	res, err := executeReplay(ctx, env, plan, replayTarget{
+		dir: env.Globals.Dir, id: id, explicit: opts.as != "", listen: opts.listen,
 	})
 	if err != nil {
 		return ExitError
 	}
-	if res.status == "diverged" {
-		if first, misses, ok := divergence.Report(); ok {
-			divergenceReport{source: opts.source, replay: id, first: first, misses: misses,
-				droppedEvents: res.stats.DroppedEvents}.write(env.Stderr)
-		}
+	if res.status == "diverged" && res.hasMiss {
+		divergenceReport{source: opts.source, replay: res.id, first: res.first, misses: res.misses,
+			droppedEvents: res.droppedEvents}.write(env.Stderr)
 	}
-	warnUnconsumed(env, queues.unconsumed())
-	log.Info("session replayed", "session", id, "source", opts.source, "status", res.status, "cassette", path)
-	return res.exitCode()
+	warnUnconsumed(env, res.unconsumed)
+	log.Info("session replayed", "session", res.id, "source", opts.source, "status", res.status, "cassette", res.path)
+	return res.exitCode
 }
 
 // replayRoutes is what replayHandler routes a replay's requests to.
