@@ -1,5 +1,6 @@
-// Package session runs a replay of a recorded session: the handler that
-// routes its requests and the helpers that choose its id.
+// Package session holds the parts of a replay of a recorded session that
+// compose the providers: the handler that routes its requests and the helper
+// that chooses its id. It will host the replay's run (#188).
 package session
 
 import (
