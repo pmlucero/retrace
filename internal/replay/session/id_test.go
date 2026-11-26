@@ -9,7 +9,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 )
 
-func TestNextReplayID(t *testing.T) {
+func TestNextID(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "a[1]") // not a pattern
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
