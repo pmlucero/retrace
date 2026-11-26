@@ -55,7 +55,7 @@ func routesFor(t *testing.T, mode string) Routes {
 
 func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -66,7 +66,7 @@ func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRec
 // forwarded are routed at both their prefix and prefix + "/".
 func TestHandlerRoutesMCPByServer(t *testing.T) {
 	var hits atomic.Int32
-	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	live := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		hits.Add(1)
 		_, _ = io.WriteString(w, `{}`)
 	}))
