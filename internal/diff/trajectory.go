@@ -42,6 +42,36 @@ type Trajectory struct {
 	Stop  *Stop // nil when there is no model_response
 }
 
+// StepOf returns the number of the step that holds divergence event e, or 0
+// when e is nil or not in t (spec §8.3). Compare returns a pointer into the
+// trajectory, so identity finds the event even if an untrusted cassette
+// repeats a seq.
+func (t Trajectory) StepOf(e *cassette.Event) int {
+	if e == nil {
+		return 0
+	}
+	for _, s := range t.Steps {
+		for i := range s.Divergences {
+			if &s.Divergences[i] == e {
+				return s.N
+			}
+		}
+	}
+	return 0
+}
+
+// MissUpstream returns the upstream a divergence event reports in its result
+// (spec §7.4), e.g. "mcp:orders". It returns "" when the result is absent,
+// unreadable or names no upstream: the cassette is untrusted, so a bad result
+// only loses the upstream. The value is not escaped for output.
+func MissUpstream(e cassette.Event) string {
+	var res struct{ Upstream string }
+	if json.Unmarshal(e.Result, &res) != nil {
+		return ""
+	}
+	return res.Upstream
+}
+
 // Build groups events into a trajectory (spec §8.2). The events may come in
 // any order, and events is not modified. Kinds other than model_response,
 // tool_use, tool_call, tool_result and divergence are ignored.
