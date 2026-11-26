@@ -9,9 +9,11 @@ import (
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
+	"github.com/pmlucero/retrace/internal/mcp"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/redact"
 	"github.com/pmlucero/retrace/internal/replay"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
 // The replay of one session is split in two so that a caller that replays
@@ -51,10 +53,10 @@ type replayPlan struct {
 	command  []string
 	cwd      string
 	rules    *redact.Rules
-	servers  []string     // every MCP server of the source, registered for the agent
-	live     []liveServer // the servers that live-tools forwards to
-	replayed []string     // the servers answered from the cassette
-	queues   queueSet
+	servers  []string             // every MCP server of the source, registered for the agent
+	live     []session.LiveServer // the servers that live-tools forwards to
+	replayed []string             // the servers answered from the cassette
+	queues   replay.QueueSet
 }
 
 // prepareReplay resolves the inputs of a replay of src, whose session row is
@@ -87,7 +89,7 @@ func prepareReplay(ctx context.Context, src *cassette.Cassette, sess cassette.Se
 	// A forwarded channel is not queued: its recorded interactions are not
 	// expected to be served (spec §4.4).
 	mode := opts.mode()
-	var live []liveServer
+	var live []session.LiveServer
 	replayed := servers
 	if mode == "live-tools" {
 		if live, err = liveMCPServers(sess.MCPServers, opts.mcp); err != nil {
@@ -95,7 +97,11 @@ func prepareReplay(ctx context.Context, src *cassette.Cassette, sess cassette.Se
 		}
 		replayed = nil
 	}
-	queues, err := replayQueues(ctx, src, mode != "swap-model", replayed)
+	var llm func([]byte) []byte
+	if mode != "swap-model" {
+		llm = anthropic.Canonicalize
+	}
+	queues, err := replay.BuildQueues(ctx, src, llm, replayed, mcp.Canonicalize)
 	if err != nil {
 		return nil, &prepareError{msg: "cannot read the recorded interactions", attrs: []any{"session", opts.source, "error", err}}
 	}
@@ -180,10 +186,10 @@ func executeReplay(ctx context.Context, env *Env, plan *replayPlan, target repla
 	}
 
 	divergence := replay.NewDivergence()
-	mux := replayHandler(replayRoutes{
-		mode: plan.mode, src: plan.src, queues: plan.queues, rules: plan.rules, writer: w, divergence: divergence,
-		strategy: strategy, log: log, opts: replay.Options{Realtime: opts.realtime},
-		anthropic: opts.anthropic, model: opts.model, live: plan.live, replayed: plan.replayed,
+	mux := session.Handler(session.Routes{
+		Mode: plan.mode, Src: plan.src, Queues: plan.queues, Rules: plan.rules, Writer: w, Divergence: divergence,
+		Strategy: strategy, Log: log, Opts: replay.Options{Realtime: opts.realtime},
+		Anthropic: opts.anthropic, Model: opts.model, Live: plan.live, Replayed: plan.replayed,
 	})
 	path := c.Path()
 	res, err := runSession(ctx, env, sessionConfig{
@@ -208,7 +214,7 @@ func executeReplay(ctx context.Context, env *Env, plan *replayPlan, target repla
 	}
 	out := replayResult{
 		id: id, path: path, status: res.status, agentExit: res.agent.exitCode, exitCode: res.exitCode(), timedOut: res.timedOut,
-		droppedEvents: res.stats.DroppedEvents, unconsumed: plan.queues.unconsumed(),
+		droppedEvents: res.stats.DroppedEvents, unconsumed: plan.queues.Unconsumed(),
 	}
 	out.first, out.misses, out.hasMiss = divergence.Report()
 	return out, nil
