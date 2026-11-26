@@ -1,6 +1,6 @@
 # Contributing to retrace
 
-Thanks for your interest. The design (phase 0) is approved and the **MVP is complete** (first release: v0.1.0). Feedback and contributions are very welcome.
+Thanks for your interest. The design (phase 0) is approved and the **MVP is complete** (first release: v0.1.0; latest: v0.2.0). Feedback and contributions are very welcome.
 
 By participating you agree to the [Code of Conduct](CODE_OF_CONDUCT.md).
 
