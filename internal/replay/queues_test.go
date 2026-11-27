@@ -118,9 +118,8 @@ func TestBuildQueues(t *testing.T) {
 
 // dropRequestBlob deletes the row of the request body of an interaction, as a
 // damaged or hand-made cassette may lack it.
-func dropRequestBlob(t *testing.T, src *cassette.Cassette, id int64) {
+func dropRequestBlob(ctx context.Context, t *testing.T, src *cassette.Cassette, id int64) {
 	t.Helper()
-	ctx := context.Background()
 	in, err := src.Interaction(ctx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -142,19 +141,18 @@ func TestBuildQueuesMissingRequestBlob(t *testing.T) {
 	ctx := context.Background()
 	identity := func(b []byte) []byte { return b }
 	mcpCanon := func(_ string, b []byte) []byte { return b }
+	queued, skipped := queuesSource(t), queuesSource(t)
+	dropRequestBlob(ctx, t, queued, 1)
+	dropRequestBlob(ctx, t, skipped, 1)
 
 	t.Run("queued interaction", func(t *testing.T) {
-		src := queuesSource(t)
-		dropRequestBlob(t, src, 1)
-		_, err := BuildQueues(ctx, src, identity, []string{"a"}, mcpCanon)
+		_, err := BuildQueues(ctx, queued, identity, []string{"a"}, mcpCanon)
 		if !errors.Is(err, cassette.ErrNotFound) || !strings.Contains(err.Error(), "interaction 1: reading blob ") {
 			t.Fatalf("err = %v, want interaction 1: reading blob ...: not found", err)
 		}
 	})
 	t.Run("skipped interaction", func(t *testing.T) {
-		src := queuesSource(t)
-		dropRequestBlob(t, src, 1)
-		qs, err := BuildQueues(ctx, src, nil, []string{"a"}, mcpCanon)
+		qs, err := BuildQueues(ctx, skipped, nil, []string{"a"}, mcpCanon)
 		if err != nil {
 			t.Fatal(err)
 		}
