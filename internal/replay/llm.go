@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/httpx"
 	"github.com/pmlucero/retrace/internal/match"
-	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
@@ -73,7 +73,7 @@ func (h *LLMHandler) Diverged() <-chan struct{} { return h.rc.divergence.Done() 
 // ServeHTTP answers r from the cassette, or as a cassette miss.
 func (h *LLMHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := h.rc.clock.Now()
-	body, ok := proxy.ReadBody(w, r, h.rc.log, llmChannel) // spec §3.6
+	body, ok := httpx.ReadBody(w, r, h.rc.log, llmChannel) // spec §3.6
 	if !ok {
 		return
 	}

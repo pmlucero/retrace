@@ -12,8 +12,8 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/divergence"
+	"github.com/pmlucero/retrace/internal/httpx"
 	"github.com/pmlucero/retrace/internal/match"
-	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
@@ -189,7 +189,7 @@ func (rc *recorder) serveTransportError(w http.ResponseWriter, ex exchange) {
 	rc.writer.CompleteInteraction(id, cassette.Completion{
 		DurationMillis: rc.clock.Now().Sub(ex.start).Milliseconds(), Error: ex.src.Error,
 	})
-	proxy.UpstreamFailed(w, *ex.src.Error)
+	httpx.UpstreamFailed(w, *ex.src.Error)
 }
 
 // serveRecorded answers ex with its recorded interaction and records the

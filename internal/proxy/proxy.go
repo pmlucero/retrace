@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/httpx"
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
@@ -50,7 +51,7 @@ type Config struct {
 	// MaxBodyBytes caps how much of one response, or of one SSE event, is
 	// held in memory to be recorded. Larger ones are still forwarded, and the
 	// interaction is recorded with an error instead. Zero selects
-	// MaxRequestBytes, the 64 MiB of spec §3.5.
+	// httpx.MaxRequestBytes, the 64 MiB of spec §3.5.
 	MaxBodyBytes int64
 }
 
@@ -78,7 +79,7 @@ func New(cfg Config) *Proxy {
 	if maxBody <= 0 {
 		// Not a mistake: spec §3.6 makes the request limit the same 64 MiB
 		// as this one for a stored response body or SSE event (spec §3.5).
-		maxBody = MaxRequestBytes
+		maxBody = httpx.MaxRequestBytes
 	}
 	p := &Proxy{writer: cfg.Writer, redact: cfg.Redact, log: log, maxBody: maxBody}
 	for _, r := range cfg.Routes {
@@ -117,7 +118,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Guard answers these first in a session; checking again here keeps the
 	// route a boundary however the Proxy is mounted (spec §3.4, §3.6).
 	if hasDotSegment(r.URL.Path) {
-		reject(w, p.log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
+		httpx.Reject(w, p.log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
 		return
 	}
 	rt, rest, ok := p.match(r.URL.Path)
@@ -127,7 +128,7 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	start := time.Now()
 
-	body, ok := ReadBody(w, r, p.log, rt.Channel) // spec §3.6
+	body, ok := httpx.ReadBody(w, r, p.log, rt.Channel) // spec §3.6
 	if !ok {
 		return
 	}
@@ -226,15 +227,7 @@ func (p *Proxy) onError(w http.ResponseWriter, r *http.Request, err error) {
 	}
 	ex.fail(msg)
 	p.log.Warn("upstream request failed", "interaction", ex.id, "error", err)
-	UpstreamFailed(w, err.Error())
-}
-
-// UpstreamFailed answers a request whose upstream request failed with no
-// response: 502 and a plain-text body that includes msg. Replay answers an
-// interaction recorded with a transport error the same way, so the agent gets
-// what it got while recording (spec §5 step 2).
-func UpstreamFailed(w http.ResponseWriter, msg string) {
-	http.Error(w, "retrace: upstream request failed: "+msg, http.StatusBadGateway)
+	httpx.UpstreamFailed(w, err.Error())
 }
 
 // exchange is the recording state of one request.

@@ -1,25 +1,18 @@
 package proxy
 
 import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
 	"log/slog"
 	"net/http"
 	"net/netip"
 	"slices"
 	"strings"
-)
 
-// MaxRequestBytes is the largest request body retrace accepts, 64 MiB (spec
-// §3.6). It is also the default limit for one stored response body or SSE
-// event (spec §3.5, Config.MaxBodyBytes), and is not configurable in the MVP.
-const MaxRequestBytes = 64 << 20
+	"github.com/pmlucero/retrace/internal/httpx"
+)
 
 // The routes a rejected request can be on, as its log warning names them.
 const (
-	routeLLM = "llm"
+	routeLLM = httpx.RouteLLM
 	routeMCP = "mcp"
 )
 
@@ -30,13 +23,11 @@ const (
 
 const reasonDotSegment = "the request path has a dot segment (. or ..), which could leave its route"
 
-var reasonTooLarge = fmt.Sprintf("the request body is larger than %d MiB (%d bytes)", MaxRequestBytes>>20, MaxRequestBytes)
-
 // Guard answers a request retrace refuses before any router sees it, and
 // passes every other request to next (spec §3.6). The checks run in this
 // order, and the first that fails decides the answer: the host (403), the
 // browser headers Origin and Sec-Fetch-Site (403), a path with a dot segment
-// (400). The body-size check (413) is ReadBody's. A rejected request is
+// (400). The body-size check (413) is httpx.ReadBody's. A rejected request is
 // neither forwarded nor recorded.
 //
 // listenHosts are the host parts, without brackets, that name the address
@@ -61,11 +52,11 @@ func Guard(next http.Handler, log *slog.Logger, listenHosts ...string) http.Hand
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case !hostAllowed(r.Host, names):
-			reject(w, log, routeOf(r.URL.Path), http.StatusForbidden, reasonHost)
+			httpx.Reject(w, log, routeOf(r.URL.Path), http.StatusForbidden, reasonHost)
 		case hasBrowserHeader(r.Header):
-			reject(w, log, routeOf(r.URL.Path), http.StatusForbidden, reasonBrowser)
+			httpx.Reject(w, log, routeOf(r.URL.Path), http.StatusForbidden, reasonBrowser)
 		case hasDotSegment(r.URL.Path):
-			reject(w, log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
+			httpx.Reject(w, log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
 		default:
 			next.ServeHTTP(w, r)
 		}
@@ -158,71 +149,4 @@ func routeOf(path string) string {
 		return routeMCP
 	}
 	return ""
-}
-
-// ReadBody reads r's body, up to MaxRequestBytes. When it cannot, it answers
-// r itself and returns false: 413 for a larger body (spec §3.6), whether or
-// not r has a Content-Length, and 400 when the body cannot be read. A
-// Content-Length above the limit is rejected before anything is read. channel
-// is the route r arrived on, "llm" or "mcp", and log must not be nil.
-func ReadBody(w http.ResponseWriter, r *http.Request, log *slog.Logger, channel string) ([]byte, bool) {
-	if r.ContentLength > MaxRequestBytes {
-		reject(w, log, channel, http.StatusRequestEntityTooLarge, reasonTooLarge)
-		return nil, false
-	}
-	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, MaxRequestBytes))
-	var tooLarge *http.MaxBytesError
-	switch {
-	case errors.As(err, &tooLarge):
-		reject(w, log, channel, http.StatusRequestEntityTooLarge, reasonTooLarge)
-		return nil, false
-	case err != nil:
-		// Not a rejection of spec §3.6: the agent sent a broken body or left,
-		// so plain text on every route, as before the limit existed.
-		http.Error(w, "retrace: reading request body: "+err.Error(), http.StatusBadRequest)
-		return nil, false
-	}
-	return body, true
-}
-
-// reject answers a request that retrace refuses to forward or match, and logs
-// why (spec §3.6). The warning leaves out the request's path and query: they
-// may carry a credential, and nothing redacts them because the request is not
-// recorded. On the LLM route the body has the Anthropic API's error shape, so
-// SDK clients show it; elsewhere it is plain text.
-func reject(w http.ResponseWriter, log *slog.Logger, route string, status int, reason string) {
-	attrs := []any{"status", status, "reason", reason}
-	if route != "" {
-		attrs = append([]any{"route", route}, attrs...)
-	}
-	log.Warn("request rejected", attrs...)
-
-	msg := "retrace: " + reason
-	if route != routeLLM {
-		http.Error(w, msg, status)
-		return
-	}
-	typ := "invalid_request_error"
-	switch status {
-	case http.StatusForbidden:
-		typ = "permission_error"
-	case http.StatusRequestEntityTooLarge:
-		typ = "request_too_large"
-	}
-	var body apiError
-	body.Type, body.Error.Type, body.Error.Message = "error", typ, msg
-	b, _ := json.Marshal(body) // strings always marshal
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.WriteHeader(status)
-	_, _ = w.Write(b) // the agent may be gone; nothing is recorded
-}
-
-// apiError is the Anthropic API's error shape.
-type apiError struct {
-	Type  string `json:"type"`
-	Error struct {
-		Type    string `json:"type"`
-		Message string `json:"message"`
-	} `json:"error"`
 }
