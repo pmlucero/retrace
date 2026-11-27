@@ -125,26 +125,9 @@ type diffReport struct {
 
 func newDiffReport(a, b diffSide, opts diff.Options) diffReport {
 	res := diff.Compare(a.trajectory, b.trajectory, opts)
-	a.diverged, a.divergedStep = res.DivergedA, stepOf(a.trajectory, res.DivergedA)
-	b.diverged, b.divergedStep = res.DivergedB, stepOf(b.trajectory, res.DivergedB)
+	a.diverged, a.divergedStep = res.DivergedA, a.trajectory.StepOf(res.DivergedA)
+	b.diverged, b.divergedStep = res.DivergedB, b.trajectory.StepOf(res.DivergedB)
 	return diffReport{a: a, b: b, result: res, textCompared: opts.Text}
-}
-
-// stepOf returns the number of the step that holds divergence event e, or 0.
-func stepOf(t diff.Trajectory, e *cassette.Event) int {
-	if e == nil {
-		return 0
-	}
-	for _, s := range t.Steps {
-		for i := range s.Divergences {
-			// Compare returns a pointer into the trajectory, so identity
-			// finds the event even if an untrusted cassette repeats a seq.
-			if &s.Divergences[i] == e {
-				return s.N
-			}
-		}
-	}
-	return 0
 }
 
 // writeText writes the text output (spec §8.4). Every value read from a
@@ -327,15 +310,15 @@ func eventTool(e cassette.Event, server string) string {
 	return printable(tool)
 }
 
-// missReason describes a divergence event from its result (spec §7.4), e.g.
-// "cassette miss on mcp:orders". The cassette is untrusted, so a result that
-// cannot be read only loses the upstream.
+// missReason describes a divergence event (spec §7.4), e.g. "cassette miss
+// on mcp:orders". The upstream comes from an untrusted cassette, so it is
+// escaped.
 func missReason(e cassette.Event) string {
-	var res struct{ Upstream string }
-	if json.Unmarshal(e.Result, &res) != nil || res.Upstream == "" {
+	up := diff.MissUpstream(e)
+	if up == "" {
 		return "cassette miss"
 	}
-	return "cassette miss on " + printable(res.Upstream)
+	return "cassette miss on " + printable(up)
 }
 
 func stopText(s *diff.Stop) string {
