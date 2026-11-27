@@ -17,9 +17,14 @@ import (
 
 func runCheckCmd(t *testing.T, dir string, args ...string) recordRun {
 	t.Helper()
-	r := recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}}
-	all := append([]string{"--dir", dir, "check"}, args...)
-	r.code = run(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands)
+	return runCheckInto(recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}}, dir, args...)
+}
+
+// runCheckInto is runCheckCmd with the output buffers and the signal
+// subscription of r.
+func runCheckInto(r recordRun, dir string, args ...string) recordRun {
+	t := append([]string{"--dir", dir, "check"}, args...)
+	r.code = runNotify(context.Background(), t, nil, r.stdout, r.stderr, fakeEnv(nil), commands, r.notify)
 	return r
 }
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pmlucero/retrace/internal/agentrun"
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
@@ -214,24 +215,25 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		routes = append(routes, proxy.Route{Prefix: "/mcp/" + s.Name, Channel: "mcp", Upstream: "mcp:" + s.Name, Target: target})
 		names[i] = s.Name
 	}
-	res, err := runSession(ctx, env, sessionConfig{
-		listener: ln,
-		listen:   opts.listen,
-		handler:  proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log}),
-		cassette: c,
-		writer:   w,
-		id:       id,
-		mode:     "record",
-		startMsg: "recording",
-		mcp:      names,
-		command:  opts.command,
-		finish:   storeMCPServerInfo,
+	res, err := agentrun.Run(ctx, agentrun.Config{
+		Logger: env.Logger, Stdin: env.Stdin, Stdout: env.Stdout, Stderr: env.Stderr, NotifySignals: env.notifySignals,
+		Listener: ln,
+		Listen:   opts.listen,
+		Handler:  proxy.New(proxy.Config{Routes: routes, Writer: w, Redact: rules, Logger: log}),
+		Cassette: c,
+		Writer:   w,
+		ID:       id,
+		Mode:     "record",
+		StartMsg: "recording",
+		MCP:      names,
+		Command:  opts.command,
+		Finish:   storeMCPServerInfo,
 	})
 	if err != nil {
 		return ExitError
 	}
-	log.Info("session recorded", "session", id, "status", res.status, "cassette", path, "records", res.stats.Written)
-	return res.exitCode()
+	log.Info("session recorded", "session", id, "status", res.Status, "cassette", path, "records", res.Stats.Written)
+	return sessionExitCode(res)
 }
 
 // createCassette creates the session's cassette and its session row.

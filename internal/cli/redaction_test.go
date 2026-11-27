@@ -79,7 +79,7 @@ func TestHelperSecretAgent(t *testing.T) {
 	send(os.Getenv("ANTHROPIC_BASE_URL")+"/v1/messages?access_token="+queryToken,
 		`{"model":"claude-sonnet-5-5","max_tokens":16,"messages":[{"role":"user","content":"Hi"}]}`,
 		http.Header{"X-Api-Key": {agentAPIKey}, "X-Session-Token": {sessionToken}})
-	send(os.Getenv(mcpEnvName("tools")),
+	send(os.Getenv(testMCPEnvName("tools")),
 		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"helper","version":"1"}}}`,
 		http.Header{"Authorization": {"Bearer " + mcpAuth}, "Mcp-Session-Id": {mcpReqSession}})
 	os.Exit(0)

@@ -1,37 +1,28 @@
-package cli
+// Package agentrun runs one agent session against a local proxy, for
+// recording or for replay: it serves the proxy, runs the agent with the
+// injected environment, handles signals and finalizes the cassette.
+package agentrun
 
 import (
 	"errors"
 	"log/slog"
 	"os"
 	"os/exec"
-	"os/signal"
 	"regexp"
 	"strings"
 	"syscall"
 	"time"
 )
 
-// ExitAgentFailed is returned when the agent exits with a non-zero code
-// (spec §9.7).
-const ExitAgentFailed = 4
-
 // interruptGrace is how long retrace waits after SIGINT before forwarding it:
 // a terminal's Ctrl+C has already reached the agent (spec §3.1).
 const interruptGrace = time.Second
 
-// notifySignals subscribes c to the signals that end a session and returns a
-// function that unsubscribes it. Tests replace it to send signals directly.
-var notifySignals = func(c chan<- os.Signal) (stop func()) {
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	return func() { signal.Stop(c) }
-}
-
-// agentResult is how the agent process ended.
-type agentResult struct {
-	exitCode    int
-	interrupted bool // retrace received a signal while the agent ran
-	timedOut    bool // retrace stopped the agent because the session's time ran out (check --timeout)
+// AgentResult is how the agent process ended.
+type AgentResult struct {
+	ExitCode    int
+	Interrupted bool // retrace received a signal while the agent ran
+	TimedOut    bool // retrace stopped the agent because the session's time ran out (check --timeout)
 }
 
 // waitAgent waits for cmd, which has started, while handling the signals that
@@ -43,7 +34,7 @@ type agentResult struct {
 // grace is 0 (spec §6.2 step 3). It happens once, and signals that arrive
 // during the grace period are still handled as above. A closed timeout stops
 // the agent the same way and sets timedOut. Nil channels never close.
-func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged, timeout <-chan struct{}, grace time.Duration, log *slog.Logger) agentResult {
+func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged, timeout <-chan struct{}, grace time.Duration, log *slog.Logger) AgentResult {
 	exited := make(chan struct{})
 	go func() {
 		_ = cmd.Wait() // the exit status is read from cmd.ProcessState
@@ -51,7 +42,7 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged, timeout <-chan st
 	}()
 
 	var (
-		res     agentResult
+		res     AgentResult
 		forward <-chan time.Time
 		pending os.Signal
 		kill    <-chan time.Time
@@ -78,17 +69,17 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged, timeout <-chan st
 			// may exit before select sees the signal (spec §3.1).
 			select {
 			case <-sigs:
-				res.interrupted = true
+				res.Interrupted = true
 			default:
 			}
-			res.exitCode = exitCodeOf(cmd.ProcessState)
+			res.ExitCode = exitCodeOf(cmd.ProcessState)
 			return res
 		case sig := <-sigs:
-			if res.interrupted {
+			if res.Interrupted {
 				_ = cmd.Process.Kill()
 				continue
 			}
-			res.interrupted = true
+			res.Interrupted = true
 			log.Info("stopping: waiting for the agent to exit; send the signal again to kill it", "signal", sig)
 			if sig == os.Interrupt {
 				pending, forward = sig, time.After(interruptGrace)
@@ -105,7 +96,7 @@ func waitAgent(cmd *exec.Cmd, sigs <-chan os.Signal, diverged, timeout <-chan st
 			}
 		case <-timeout:
 			timeout = nil
-			res.timedOut = true
+			res.TimedOut = true
 			if stop("timeout") {
 				kill = time.After(grace)
 			}

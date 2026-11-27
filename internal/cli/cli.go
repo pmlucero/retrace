@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
+
+	"github.com/pmlucero/retrace/internal/agentrun"
 )
 
 // Exit codes shared by all commands (spec §9.7). Command-specific codes
@@ -41,6 +44,10 @@ type Env struct {
 	Stderr  io.Writer
 	Logger  *slog.Logger
 	Getenv  func(string) string
+
+	// notifySignals replaces how sessions subscribe to SIGINT and SIGTERM;
+	// nil uses the default. Tests set it to send signals directly.
+	notifySignals func(c chan<- os.Signal) (stop func())
 }
 
 // command is one retrace subcommand. run returns the process exit code.
@@ -60,6 +67,11 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, cmds []command) int {
+	return runNotify(ctx, args, stdin, stdout, stderr, getenv, cmds, nil)
+}
+
+// runNotify is run with Env.notifySignals set to notify.
+func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, cmds []command, notify func(chan<- os.Signal) func()) int {
 	fs := flag.NewFlagSet("retrace", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors and help are printed by us, to the right stream
 	dir := fs.String("dir", envOr(getenv, "RETRACE_DIR", defaultDir), "cassette directory (env RETRACE_DIR)")
@@ -108,8 +120,20 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		Stderr:  stderr,
 		Logger:  slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: level})),
 		Getenv:  getenv,
+
+		notifySignals: notify,
 	}
 	return cmd.run(ctx, env, cmdArgs)
+}
+
+// subscribeSignals subscribes c to the signals that end a command, with
+// Env.notifySignals or, by default, SIGINT and SIGTERM. The returned function
+// unsubscribes it.
+func (e *Env) subscribeSignals(c chan<- os.Signal) (stop func()) {
+	if e.notifySignals != nil {
+		return e.notifySignals(c)
+	}
+	return agentrun.NotifyDefault(c)
 }
 
 func envOr(getenv func(string) string, key, fallback string) string {

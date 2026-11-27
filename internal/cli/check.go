@@ -263,7 +263,7 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	// does not kill retrace and is not lost (spec §9.9.4). Each replay also
 	// handles signals itself, to stop its agent.
 	sigs := make(chan os.Signal, 2)
-	stopSignals := notifySignals(sigs)
+	stopSignals := env.subscribeSignals(sigs)
 	defer stopSignals()
 	interrupted := false
 	report := checkReport{mode: mode, model: opts.run.model, repeat: opts.repeat, out: out, budgetMax: opts.maxCost}

@@ -11,7 +11,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -264,22 +263,5 @@ func TestRunRejectsRefusedRequests(t *testing.T) {
 	s, ins := sessionOf(t, dir, "replay")
 	if s.Status != "completed" || len(ins) != okCases() || ins[0].Provenance != "replayed" {
 		t.Errorf("replay session %q with interactions %+v, want completed with only the replayed ones", s.Status, ins)
-	}
-}
-
-// AC-37: guardHosts names the proxy by the --listen host and by the
-// listener's address.
-func TestGuardHosts(t *testing.T) {
-	ln, err := (&net.ListenConfig{}).Listen(t.Context(), "tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	got := guardHosts(sessionConfig{listener: ln, listen: "myhost.internal:4790"})
-	if want := []string{"myhost.internal", "127.0.0.1"}; !slices.Equal(got, want) {
-		t.Errorf("guardHosts = %q, want %q", got, want)
-	}
-	if got := guardHosts(sessionConfig{listener: ln}); !slices.Equal(got, []string{"127.0.0.1"}) {
-		t.Errorf("guardHosts without --listen = %q, want only the listener's host", got)
 	}
 }

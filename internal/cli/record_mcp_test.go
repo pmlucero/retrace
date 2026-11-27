@@ -58,7 +58,7 @@ func runMCPAgent() {
 		slices.Reverse(names)
 	}
 	for _, name := range names {
-		url := os.Getenv(mcpEnvName(name))
+		url := os.Getenv(testMCPEnvName(name))
 		var session, version string
 		send := func(method, body string) {
 			ex, err := mcpAgentCall(url, method, body, session, version)
@@ -307,4 +307,10 @@ func blobText(t *testing.T, c *cassette.Cassette, key *string) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// testMCPEnvName is the variable that carries an MCP server URL to the
+// helper agent (spec §3.2), spelled out apart from internal/agentrun.
+func testMCPEnvName(name string) string {
+	return "RETRACE_MCP_" + strings.NewReplacer("-", "_").Replace(strings.ToUpper(name)) + "_URL"
 }
