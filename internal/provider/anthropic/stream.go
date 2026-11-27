@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strconv"
 	"strings"
+
+	"github.com/pmlucero/retrace/internal/sse"
 )
 
 // Stream reassembles a Message from the SSE events of a streamed response
@@ -28,7 +30,7 @@ type streamBlock struct {
 
 // Feed adds one raw SSE event, with its framing, as stored in a chunk.
 func (s *Stream) Feed(event []byte) {
-	data, ok := sseData(event)
+	data, ok := sse.Data(event)
 	if !ok {
 		return
 	}
@@ -151,32 +153,4 @@ func (s *Stream) Message() Message {
 	}
 	msg.Text = text.String()
 	return msg
-}
-
-// sseData returns the data of one SSE event: its data lines joined with
-// "\n" (WHATWG HTML, Server-sent events). ok is false when it has none.
-func sseData(event []byte) ([]byte, bool) {
-	var data [][]byte
-	for len(event) > 0 {
-		line := event
-		i := bytes.IndexAny(event, "\r\n")
-		if i >= 0 {
-			line = event[:i]
-			n := 1
-			if event[i] == '\r' && i+1 < len(event) && event[i+1] == '\n' {
-				n = 2
-			}
-			event = event[i+n:]
-		} else {
-			event = nil
-		}
-		field, value, _ := bytes.Cut(line, []byte(":"))
-		if string(field) == "data" {
-			data = append(data, bytes.TrimPrefix(value, []byte(" ")))
-		}
-	}
-	if data == nil {
-		return nil, false
-	}
-	return bytes.Join(data, []byte("\n")), true
 }

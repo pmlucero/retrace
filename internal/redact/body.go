@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/pmlucero/retrace/internal/jsonvalue"
+	"github.com/pmlucero/retrace/internal/sse"
 )
 
 // BodyRules returns the body redaction rules as written, for the cassette's
@@ -62,21 +62,17 @@ func (r *Rules) SSEEvent(event []byte) ([]byte, error) {
 	if r.cannotMatchEvent(event) {
 		return event, nil
 	}
-	lines := splitLines(event)
-	var (
-		dataIdx []int
-		data    []string
-	)
+	lines := sse.Lines(event)
+	var dataIdx []int
 	for i, l := range lines {
-		if value, ok := dataValue(l.text); ok {
+		if _, ok := sse.DataPrefix(l.Text); ok {
 			dataIdx = append(dataIdx, i)
-			data = append(data, value)
 		}
 	}
-	if len(dataIdx) == 0 {
+	joined, ok := sse.LinesData(lines)
+	if !ok {
 		return event, nil
 	}
-	joined := []byte(strings.Join(data, "\n"))
 	red, err := r.Body(joined)
 	if err != nil {
 		return nil, err
@@ -91,51 +87,13 @@ func (r *Rules) SSEEvent(event []byte) ([]byte, error) {
 		case i == dataIdx[0]:
 			out.WriteString("data: ")
 			out.Write(red)
-			out.WriteString(l.eol)
+			out.Write(l.EOL)
 		case slices.Contains(dataIdx, i):
 			// merged into the first data line
 		default:
-			out.WriteString(l.text)
-			out.WriteString(l.eol)
+			out.Write(l.Text)
+			out.Write(l.EOL)
 		}
 	}
 	return out.Bytes(), nil
-}
-
-type sseLine struct {
-	text, eol string
-}
-
-// splitLines splits an SSE event into lines, keeping each line's ending
-// ("\n", "\r\n" or "\r").
-func splitLines(event []byte) []sseLine {
-	var lines []sseLine
-	s := string(event)
-	for s != "" {
-		i := strings.IndexAny(s, "\r\n")
-		if i < 0 {
-			lines = append(lines, sseLine{text: s})
-			break
-		}
-		eol := s[i : i+1]
-		if s[i] == '\r' && i+1 < len(s) && s[i+1] == '\n' {
-			eol = "\r\n"
-		}
-		lines = append(lines, sseLine{text: s[:i], eol: eol})
-		s = s[i+len(eol):]
-	}
-	return lines
-}
-
-// dataValue returns the value of a "data" field line: everything after the
-// colon, minus one leading space (SSE format).
-func dataValue(line string) (string, bool) {
-	if line == "data" {
-		return "", true
-	}
-	v, ok := strings.CutPrefix(line, "data:")
-	if !ok {
-		return "", false
-	}
-	return strings.TrimPrefix(v, " "), true
 }

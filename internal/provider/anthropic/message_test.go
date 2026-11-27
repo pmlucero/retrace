@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
-	"strings"
 	"testing"
 )
 
@@ -232,29 +231,5 @@ func TestStream(t *testing.T) {
 				t.Errorf("got  %+v\nwant %+v", got, tt.want)
 			}
 		})
-	}
-}
-
-func TestSSEData(t *testing.T) {
-	tests := []struct {
-		event string
-		data  string
-		ok    bool
-	}{
-		{"event: x\ndata: {}\n\n", "{}", true},
-		{"data:{}\r\n\r\n", "{}", true},
-		{"data: a\ndata: b\n\n", "a\nb", true},
-		{"data\n\n", "", true},
-		{": comment\n\n", "", false},
-		{"data: unterminated", "unterminated", true},
-	}
-	for _, tt := range tests {
-		data, ok := sseData([]byte(tt.event))
-		if string(data) != tt.data || ok != tt.ok {
-			t.Errorf("sseData(%q) = %q, %v; want %q, %v", tt.event, data, ok, tt.data, tt.ok)
-		}
-	}
-	if _, ok := sseData([]byte(strings.Repeat("x", 10))); ok {
-		t.Error("a line with no field name counted as data")
 	}
 }
