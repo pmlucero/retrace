@@ -12,7 +12,7 @@ import (
 	"slices"
 
 	"github.com/pmlucero/retrace/internal/cassette"
-	"github.com/pmlucero/retrace/internal/mcp"
+	"github.com/pmlucero/retrace/internal/derive"
 )
 
 // Server is an entry of the session's mcp_servers (spec §7.2).
@@ -90,7 +90,7 @@ func StoreServerInfo(ctx context.Context, c *cassette.Cassette) error {
 		if i < 0 || done[i] {
 			continue
 		}
-		res, ok, err := initializeResult(ctx, c, in)
+		res, ok, err := derive.InitializeResult(ctx, c, in)
 		if err != nil {
 			return err
 		}
@@ -108,62 +108,4 @@ func StoreServerInfo(ctx context.Context, c *cassette.Cassette) error {
 		return fmt.Errorf("encoding the session's MCP servers: %w", err)
 	}
 	return c.Write(ctx, func(tx *cassette.Tx) error { return tx.SetMCPServers(ctx, data) })
-}
-
-// initializeResult returns the result of the last initialize request that
-// interaction in carries and that its response answers, JSON or SSE, with a
-// protocol version. ok is false when there is none. Bodies that are not
-// JSON-RPC are opaque, not errors.
-func initializeResult(ctx context.Context, c *cassette.Cassette, in cassette.Interaction) (_ mcp.InitializeResult, ok bool, _ error) {
-	if in.RequestBlob == nil {
-		return mcp.InitializeResult{}, false, nil
-	}
-	data, err := c.Blob(ctx, *in.RequestBlob)
-	if err != nil {
-		return mcp.InitializeResult{}, false, err
-	}
-	req, err := mcp.ParseBody(data)
-	if err != nil || !slices.ContainsFunc(req.Messages, func(m mcp.Message) bool {
-		return m.Kind == mcp.Request && m.Method == mcp.MethodInitialize
-	}) {
-		return mcp.InitializeResult{}, false, nil
-	}
-
-	var resps []mcp.Message
-	switch {
-	case in.Streamed:
-		chunks, err := c.Chunks(ctx, in.ID)
-		if err != nil {
-			return mcp.InitializeResult{}, false, err
-		}
-		events := make([][]byte, len(chunks))
-		for i, ch := range chunks {
-			events[i] = ch.Data
-		}
-		resps = mcp.StreamMessages(events)
-	case in.ResponseBlob != nil:
-		data, err := c.Blob(ctx, *in.ResponseBlob)
-		if err != nil {
-			return mcp.InitializeResult{}, false, err
-		}
-		if body, err := mcp.ParseBody(data); err == nil {
-			resps = body.Messages
-		}
-	}
-
-	var res mcp.InitializeResult
-	for _, p := range mcp.PairMessages(req.Messages, resps).Pairs {
-		if p.Request.Method != mcp.MethodInitialize || p.Response == nil || p.Response.Result == nil {
-			continue
-		}
-		// A result without a protocol version does not replace a good one.
-		if r, err := mcp.ParseInitializeResult(p.Response.Result); err == nil && r.ProtocolVersion != "" {
-			res, ok = r, true
-		}
-	}
-	// server_info is the serverInfo object, or absent, never null (spec §7.2).
-	if len(res.ServerInfo) == 0 || res.ServerInfo[0] != '{' {
-		res.ServerInfo = nil
-	}
-	return res, ok, nil
 }
