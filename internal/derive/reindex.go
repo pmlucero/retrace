@@ -52,11 +52,15 @@ func Reindex(ctx context.Context, c *cassette.Cassette) (ReindexResult, error) {
 	if s.DeriverVersion > Version {
 		return ReindexResult{}, fmt.Errorf("reindexing %s (deriver v%d, this retrace has v%d): %w", s.ID, s.DeriverVersion, Version, ErrNewerDeriver)
 	}
-	interactions, err := c.Interactions(ctx)
+	reqs, err := c.InteractionsWithRequests(ctx, cassette.InteractionFilter{})
 	if err != nil {
 		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, err)
 	}
-	derived, err := deriveAll(ctx, c, interactions)
+	interactions := make([]cassette.Interaction, len(reqs))
+	for i, r := range reqs {
+		interactions[i] = r.Interaction
+	}
+	derived, err := deriveAll(ctx, c, interactions, reqs)
 	if err != nil {
 		return ReindexResult{}, fmt.Errorf("reindexing %s: %w", s.ID, err)
 	}
@@ -105,23 +109,29 @@ func incomplete(interactions []cassette.Interaction) int {
 }
 
 // deriveAll runs a Deriver over interactions of c in the order the recording
-// handled them, and returns the events in seq order from 1.
-func deriveAll(ctx context.Context, c *cassette.Cassette, interactions []cassette.Interaction) ([]cassette.Event, error) {
+// handled them, and returns the events in seq order from 1. reqs holds the
+// request bodies of interactions, in the same order.
+func deriveAll(ctx context.Context, c *cassette.Cassette, interactions []cassette.Interaction,
+	reqs []cassette.InteractionRequest) ([]cassette.Event, error) {
 	var events []cassette.Event
 	emit := func(e cassette.Event) int64 {
 		e.Seq = int64(len(events) + 1)
 		events = append(events, e)
 		return e.Seq
 	}
+	byID := make(map[int64]*cassette.InteractionRequest, len(reqs))
+	for i := range reqs {
+		byID[reqs[i].ID] = &reqs[i]
+	}
 	d := New()
 	for _, step := range recordingOrder(interactions) {
 		in := step.in
 		if !step.complete {
-			request, err := blob(ctx, c, in.RequestBlob)
-			if err != nil {
-				return nil, fmt.Errorf("interaction %d: %w", in.ID, err)
+			r := byID[in.ID]
+			if r.RequestErr != nil {
+				return nil, fmt.Errorf("interaction %d: %w", in.ID, r.RequestErr)
 			}
-			d.Begin(*in, request, emit)
+			d.Begin(*in, r.Request, emit)
 			continue
 		}
 		if in.Streamed {

@@ -72,7 +72,12 @@ func StoreServerInfo(ctx context.Context, c *cassette.Cassette) error {
 	if len(servers) == 0 {
 		return nil
 	}
-	all, err := c.Interactions(ctx)
+	upstreams := make([]string, len(servers))
+	for i, sv := range servers {
+		upstreams[i] = "mcp:" + sv.Name
+	}
+	all, err := c.InteractionsFiltered(ctx, cassette.InteractionFilter{
+		Channel: "mcp", Method: http.MethodPost, Upstreams: upstreams})
 	if err != nil {
 		return err
 	}
@@ -83,7 +88,7 @@ func StoreServerInfo(ctx context.Context, c *cassette.Cassette) error {
 		if resolved == len(servers) {
 			break
 		}
-		if in.Channel != "mcp" || in.HTTPMethod != http.MethodPost || in.Incomplete() {
+		if in.Incomplete() {
 			continue
 		}
 		i := slices.IndexFunc(servers, func(sv Server) bool { return "mcp:"+sv.Name == in.Upstream })
