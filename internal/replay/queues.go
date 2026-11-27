@@ -41,7 +41,7 @@ func (q QueueSet) Unconsumed() []cassette.Interaction {
 // unconsumed (spec §5 step 3, AC-32).
 func BuildQueues(ctx context.Context, src *cassette.Cassette, llm func(body []byte) []byte, servers []string,
 	mcpCanon func(server string, body []byte) []byte) (QueueSet, error) {
-	reqs, err := src.InteractionsWithRequests(ctx, cassette.InteractionFilter{})
+	reqs, err := routedRequests(ctx, src, llm != nil, servers)
 	if err != nil {
 		return QueueSet{}, fmt.Errorf("reading interactions: %w", err)
 	}
@@ -90,4 +90,32 @@ func BuildQueues(ctx context.Context, src *cassette.Cassette, llm func(body []by
 		qs.MCP[name] = queuesOf(name)
 	}
 	return qs, nil
+}
+
+// routedRequests reads, with their request bodies, only the interactions that
+// BuildQueues can queue: those of the LLM channel when withLLM, and those of
+// the MCP servers, so that the bodies of the others are never loaded. The
+// result is in id order.
+func routedRequests(ctx context.Context, src *cassette.Cassette, withLLM bool, servers []string) ([]cassette.InteractionWithRequest, error) {
+	var out []cassette.InteractionWithRequest
+	if withLLM {
+		reqs, err := src.InteractionsWithRequests(ctx, cassette.InteractionFilter{Channel: "llm"})
+		if err != nil {
+			return nil, err
+		}
+		out = reqs
+	}
+	if len(servers) > 0 { // an empty Upstreams does not filter
+		upstreams := make([]string, len(servers))
+		for i, name := range servers {
+			upstreams[i] = "mcp:" + name
+		}
+		reqs, err := src.InteractionsWithRequests(ctx, cassette.InteractionFilter{Channel: "mcp", Upstreams: upstreams})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, reqs...)
+	}
+	slices.SortFunc(out, func(a, b cassette.InteractionWithRequest) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
 }

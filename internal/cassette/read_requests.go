@@ -43,8 +43,8 @@ func (c *Cassette) InteractionsFiltered(ctx context.Context, f InteractionFilter
 	return out, nil
 }
 
-// InteractionRequest is an interaction together with its request body.
-type InteractionRequest struct {
+// InteractionWithRequest is an interaction together with its request body.
+type InteractionWithRequest struct {
 	Interaction
 	// Request is the body stored under RequestBlob. It is nil when the
 	// interaction has no request blob.
@@ -58,11 +58,11 @@ type InteractionRequest struct {
 // InteractionsWithRequests returns the interactions that match f, in arrival
 // order, with their request bodies, in one query instead of one Blob call
 // per interaction. It holds every returned body in memory at once.
-func (c *Cassette) InteractionsWithRequests(ctx context.Context, f InteractionFilter) ([]InteractionRequest, error) {
+func (c *Cassette) InteractionsWithRequests(ctx context.Context, f InteractionFilter) ([]InteractionWithRequest, error) {
 	return c.queryInteractions(ctx, f, true)
 }
 
-func (c *Cassette) queryInteractions(ctx context.Context, f InteractionFilter, withRequests bool) ([]InteractionRequest, error) {
+func (c *Cassette) queryInteractions(ctx context.Context, f InteractionFilter, withRequests bool) ([]InteractionWithRequest, error) {
 	query := `SELECT ` + interactionColumns + ` FROM interactions i` + filterClause
 	if withRequests {
 		query = `SELECT ` + interactionColumns + `, b.sha256, b.data FROM interactions i
@@ -78,12 +78,14 @@ func (c *Cassette) queryInteractions(ctx context.Context, f InteractionFilter, w
 	}
 	defer rows.Close()
 
-	var out []InteractionRequest
+	var out []InteractionWithRequest
 	for rows.Next() {
 		var (
 			key  sql.NullString
 			data []byte
 		)
+		// The blob columns follow interactionColumns, so scanInteraction is
+		// reused with two more destinations.
 		scan := rows.Scan
 		if withRequests {
 			scan = func(dest ...any) error { return rows.Scan(append(dest, &key, &data)...) }
@@ -95,7 +97,7 @@ func (c *Cassette) queryInteractions(ctx context.Context, f InteractionFilter, w
 		if err != nil {
 			return nil, fmt.Errorf("reading interactions of %s: %w", c.path, err)
 		}
-		r := InteractionRequest{Interaction: in}
+		r := InteractionWithRequest{Interaction: in}
 		if in.RequestBlob != nil {
 			if key.Valid {
 				r.Request = data

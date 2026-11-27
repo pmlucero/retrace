@@ -2,8 +2,11 @@ package replay
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +111,51 @@ func TestBuildQueues(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got, want := ids(qs.Unconsumed()), []int64{1, 2}; !slices.Equal(got, want) {
+			t.Errorf("unconsumed %v, want %v", got, want)
+		}
+	})
+}
+
+// A blob row that is missing from the cassette, an untrusted input, is an
+// error when BuildQueues needs the body, and is ignored when the interaction
+// is not queued.
+func TestBuildQueuesMissingRequestBlob(t *testing.T) {
+	ctx := context.Background()
+	identity := func(b []byte) []byte { return b }
+	mcpCanon := func(_ string, b []byte) []byte { return b }
+	// Interaction 1, an LLM request, loses its body.
+	dropFirstBody := func(t *testing.T) *cassette.Cassette {
+		t.Helper()
+		src := queuesSource(t)
+		in, err := src.Interaction(ctx, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		db, err := sql.Open("sqlite", src.Path()) // foreign keys are off on a new connection
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.ExecContext(ctx, `DELETE FROM blobs WHERE sha256 = ?`, *in.RequestBlob); err != nil {
+			t.Fatal(err)
+		}
+		return src
+	}
+
+	t.Run("queued interaction", func(t *testing.T) {
+		src := dropFirstBody(t)
+		_, err := BuildQueues(ctx, src, identity, []string{"a"}, mcpCanon)
+		if !errors.Is(err, cassette.ErrNotFound) || !strings.Contains(err.Error(), "interaction 1: reading blob ") {
+			t.Fatalf("err = %v, want interaction 1: reading blob ...: not found", err)
+		}
+	})
+	t.Run("skipped interaction", func(t *testing.T) {
+		src := dropFirstBody(t)
+		qs, err := BuildQueues(ctx, src, nil, []string{"a"}, mcpCanon)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := ids(qs.Unconsumed()), []int64{3, 5}; !slices.Equal(got, want) {
 			t.Errorf("unconsumed %v, want %v", got, want)
 		}
 	})

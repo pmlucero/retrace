@@ -112,14 +112,14 @@ func incomplete(interactions []cassette.Interaction) int {
 // handled them, and returns the events in seq order from 1. reqs holds the
 // request bodies of interactions, in the same order.
 func deriveAll(ctx context.Context, c *cassette.Cassette, interactions []cassette.Interaction,
-	reqs []cassette.InteractionRequest) ([]cassette.Event, error) {
+	reqs []cassette.InteractionWithRequest) ([]cassette.Event, error) {
 	var events []cassette.Event
 	emit := func(e cassette.Event) int64 {
 		e.Seq = int64(len(events) + 1)
 		events = append(events, e)
 		return e.Seq
 	}
-	byID := make(map[int64]*cassette.InteractionRequest, len(reqs))
+	byID := make(map[int64]*cassette.InteractionWithRequest, len(reqs))
 	for i := range reqs {
 		byID[reqs[i].ID] = &reqs[i]
 	}
@@ -127,7 +127,7 @@ func deriveAll(ctx context.Context, c *cassette.Cassette, interactions []cassett
 	for _, step := range recordingOrder(interactions) {
 		in := step.in
 		if !step.complete {
-			r := byID[in.ID]
+			r := byID[in.ID] // never nil: reqs and interactions come from the same read
 			if r.RequestErr != nil {
 				return nil, fmt.Errorf("interaction %d: %w", in.ID, r.RequestErr)
 			}
