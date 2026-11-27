@@ -107,11 +107,12 @@ func (b *checkBudget) allows(id string) bool {
 }
 
 // record adds a finished replay to the cost spent. A replay with a response
-// that has tokens but no cost counts with its estimate, so an unknown cost
-// never lowers what was spent (spec §9.9.6).
+// that has tokens but no cost, or whose cost cannot be read because it failed
+// after the agent started, counts with its estimate, so an unknown cost never
+// lowers what was spent (spec §9.9.6).
 func (b *checkBudget) record(id string, r replayOutcome) {
 	spent := r.totals.CostUSD
-	if r.totals.Unpriced > 0 {
+	if r.totals.Unpriced > 0 || r.costUnknown {
 		spent = max(spent, b.perRun[id])
 	}
 	b.spent += spent

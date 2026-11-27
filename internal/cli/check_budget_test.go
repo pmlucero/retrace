@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/summary"
 )
 
@@ -164,6 +166,55 @@ func TestCheckBudgetRecordCountsUnpricedAtItsEstimate(t *testing.T) {
 	}
 	if b.allows("a") { // 0.625 + 0.5 > 1
 		t.Error("the next replay was allowed over the budget")
+	}
+}
+
+// AC-43: a replay whose billed cost cannot be read counts with its estimate,
+// so the budget stops the next replay instead of undercounting.
+func TestCheckBudgetRecordCountsCostUnknownAtItsEstimate(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		out       replayOutcome
+		wantSpent float64
+		wantAllow bool
+	}{
+		{"failed replay with no totals", replayOutcome{outcome: outcomeError, costUnknown: true}, 0.5, false},
+		{"cost above the estimate is kept", replayOutcome{outcome: outcomeError, costUnknown: true, totals: summary.Totals{CostUSD: 0.75}}, 0.75, false},
+		{"failure before the agent ran costs nothing", replayOutcome{outcome: outcomeError}, 0, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &checkBudget{max: 0.9, perRun: map[string]float64{"a": 0.5}}
+			b.record("a", tt.out)
+			if b.spent != tt.wantSpent {
+				t.Errorf("spent %v, want %v", b.spent, tt.wantSpent)
+			}
+			if got := b.allows("a"); got != tt.wantAllow {
+				t.Errorf("allows = %v, want %v", got, tt.wantAllow)
+			}
+		})
+	}
+}
+
+// AC-43: a source session that cannot be priced after a priceable one makes
+// the estimate unknown without failing the check (spec §9.9.6).
+func TestNewCheckBudgetUnknownPriceMidCorpus(t *testing.T) {
+	dir := t.TempDir()
+	cheap, _ := usageUpstream(t, 100)
+	huge, _ := usageUpstream(t, 300000) // beyond the 200000-token tier of the model
+	recordHelperSession(t, dir, "a", cheap.URL)
+	recordHelperSession(t, dir, "b", huge.URL)
+
+	env := &Env{Globals: Globals{Dir: dir}}
+	corpus := []cassette.Session{{ID: "a"}, {ID: "b"}}
+	b, err := newCheckBudget(context.Background(), env, corpus, "claude-haiku-4-5", 1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b.known {
+		t.Error("known = true, want false when a later session cannot be priced")
+	}
+	if b.refuses() {
+		t.Error("an unknown estimate must not refuse the check")
 	}
 }
 
