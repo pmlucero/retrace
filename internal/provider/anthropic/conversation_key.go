@@ -32,6 +32,7 @@ func conversationKeyCached(cache *prefixCache, messages []json.RawMessage) (key 
 		last = prefixes[len(prefixes)-1]
 		for i := len(prefixes) - 1; i >= 0; i-- {
 			if state, hit := cache.get(prefixes[i]); hit {
+				// crypto/sha256 digests implement BinaryUnmarshaler and BinaryMarshaler.
 				if h.(encoding.BinaryUnmarshaler).UnmarshalBinary(state) == nil {
 					start = i + 1
 				} else {

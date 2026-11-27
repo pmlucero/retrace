@@ -77,6 +77,28 @@ func TestPrefixCacheBounded(t *testing.T) {
 	}
 }
 
+// A cached state that cannot be restored must fall back to a full run.
+func TestConversationKeyCachedCorruptState(t *testing.T) {
+	cache := newPrefixCache(4)
+	msgs := rawMessages(`{"a":1}`, `{"b":2}`)
+	cache.put(rawPrefixHashes(msgs)[1], []byte("not a sha256 state"))
+	got, gotOK := conversationKeyCached(cache, msgs)
+	want, wantOK := referenceConversationKey(msgs)
+	if got != want || gotOK != wantOK {
+		t.Fatalf("got %s %v, want %s %v", got, gotOK, want, wantOK)
+	}
+}
+
+func TestPrefixCachePutExistingKey(t *testing.T) {
+	cache := newPrefixCache(2)
+	k := [32]byte{1}
+	cache.put(k, []byte("a"))
+	cache.put(k, []byte("b"))
+	if s, _ := cache.get(k); string(s) != "b" || len(cache.order) != 1 {
+		t.Fatalf("state %q, %d in order", s, len(cache.order))
+	}
+}
+
 func TestConversationKeyCachedConcurrent(t *testing.T) {
 	cache := newPrefixCache(4)
 	var wg sync.WaitGroup
