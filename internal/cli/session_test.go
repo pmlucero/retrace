@@ -31,7 +31,7 @@ var errInsertFailed = errors.New("disk full (injected)")
 
 // failingInsert makes the session insert fail, as a full disk or a locked
 // database would. It is the insert of runs through recordRun.insert.
-func failingInsert(*cassette.Tx, context.Context, cassette.Session) error { return errInsertFailed }
+func failingInsert(context.Context, *cassette.Tx, cassette.Session) error { return errInsertFailed }
 
 // assertDirHolds fails the test unless dir holds exactly the named files: no
 // other cassette and no -wal or -shm file.

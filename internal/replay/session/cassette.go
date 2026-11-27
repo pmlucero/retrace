@@ -13,14 +13,12 @@ import (
 )
 
 // InsertFunc writes a new cassette's session row. Tests pass one that fails
-// to make the insert fail; nil means (*cassette.Tx).InsertSession. The
-// receiver comes first, and so ctx second, because it mirrors that method
-// expression.
-type InsertFunc func(tx *cassette.Tx, ctx context.Context, s cassette.Session) error
+// to make the insert fail; nil means (*cassette.Tx).InsertSession.
+type InsertFunc func(ctx context.Context, tx *cassette.Tx, s cassette.Session) error
 
 func (f InsertFunc) orDefault() InsertFunc {
 	if f == nil {
-		return (*cassette.Tx).InsertSession
+		return func(ctx context.Context, tx *cassette.Tx, s cassette.Session) error { return tx.InsertSession(ctx, s) }
 	}
 	return f
 }
@@ -36,7 +34,7 @@ func CreateCassette(ctx context.Context, path string, s cassette.Session, insert
 	if err != nil {
 		return nil, err
 	}
-	if err := c.Write(ctx, func(tx *cassette.Tx) error { return insert(tx, ctx, s) }); err != nil {
+	if err := c.Write(ctx, func(tx *cassette.Tx) error { return insert(ctx, tx, s) }); err != nil {
 		// Create made this file (it refuses an existing one), so removing it
 		// cannot touch another session's cassette.
 		return nil, errors.Join(err, c.Close(), cassette.Remove(path))
@@ -49,7 +47,7 @@ func CreateCassette(ctx context.Context, path string, s cassette.Session, insert
 // kept unless the new one gets its session row (#111).
 func ReplaceCassette(ctx context.Context, path string, s cassette.Session, insert InsertFunc) (*cassette.Cassette, error) {
 	insert = insert.orDefault()
-	return cassette.Replace(ctx, path, func(tx *cassette.Tx) error { return insert(tx, ctx, s) })
+	return cassette.Replace(ctx, path, func(tx *cassette.Tx) error { return insert(ctx, tx, s) })
 }
 
 // createReplayCassette creates the cassette of a replay with session row s.
