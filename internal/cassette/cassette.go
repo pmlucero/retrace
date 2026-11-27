@@ -38,12 +38,15 @@ var (
 
 // Cassette is an open cassette file.
 type Cassette struct {
-	db       *sql.DB
-	path     string
-	schema   int  // schema version of the file
-	walMode  bool // the file is in WAL mode: Close switches it back to a single file
-	writable bool // false when the file's schema is newer than this build's
-	readOnly bool // opened with OpenForRead
+	db     *sql.DB
+	path   string
+	schema int // schema version of the file
+	// beforeCheckpoint is a test seam: Close calls it after restoring
+	// synchronous and before checkpointing.
+	beforeCheckpoint func(context.Context)
+	walMode          bool // the file is in WAL mode: Close switches it back to a single file
+	writable         bool // false when the file's schema is newer than this build's
+	readOnly         bool // opened with OpenForRead
 }
 
 // Create creates a new cassette at path with the current schema. The file must
@@ -159,6 +162,13 @@ func (c *Cassette) enableWAL(ctx context.Context) error {
 		return fmt.Errorf("enabling WAL on %s: %w", c.path, err)
 	}
 	c.walMode = true
+	// NORMAL skips the fsync on each commit. In WAL mode it can lose only the
+	// last transactions on an OS crash or power loss, never on a process crash,
+	// and the file stays consistent. It is set here, not in the DSN, because
+	// outside WAL it is unsafe: Close restores FULL before leaving WAL.
+	if _, err := c.db.ExecContext(ctx, "PRAGMA synchronous = NORMAL"); err != nil {
+		return fmt.Errorf("relaxing synchronous on %s: %w", c.path, err)
+	}
 	return nil
 }
 
@@ -290,6 +300,12 @@ func (c *Cassette) Close() error {
 	var errs []error
 	if c.walMode {
 		ctx := context.Background()
+		if _, err := c.db.ExecContext(ctx, "PRAGMA synchronous = FULL"); err != nil {
+			errs = append(errs, fmt.Errorf("restoring synchronous on %s: %w", c.path, err))
+		}
+		if c.beforeCheckpoint != nil {
+			c.beforeCheckpoint(ctx)
+		}
 		if _, err := c.db.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
 			errs = append(errs, fmt.Errorf("checkpointing %s: %w", c.path, err))
 		}
