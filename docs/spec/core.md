@@ -551,7 +551,12 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>] [--lis
 - `--redact-header`: adds a header name to the deny-list (§3.5). Repeatable. The name is literal: a name that starts with `*` is a usage error (exit `2`) whose message says that `*` patterns are not accepted on the command line. A user who writes `*-x` expects a pattern and would silently get none. The stored redaction rules (§7.2) also mark patterns with a leading `*`, so a stored literal `*-x` could not be told apart from one.
 - `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`. Requests whose host does not name this address are rejected (§3.6).
 - `--listen-unsafe`: allows a non-loopback `--listen` address. The proxy has no authentication, so anyone who can reach that address can use it (§10).
-- `--anthropic-upstream`: the Anthropic API base URL. Default `https://api.anthropic.com`. A value that is not an absolute `http` or `https` URL is a usage error. An `http` URL MUST name a loopback host: `localhost` (in any case) or a loopback IP literal (`127.0.0.0/8`, `::1`). Any other `http` host is a usage error, because the requests carry the real API key in cleartext. Host names other than `localhost` are not resolved, so an `http` URL whose name resolves to loopback is refused too: use its IP literal or `https`. Fake upstreams in tests run on loopback, so they keep working.
+- `--anthropic-upstream`: the Anthropic API base URL. Default `https://api.anthropic.com`. A value that is not an absolute `http` or `https` URL is a usage error. An `http` URL MUST name a loopback host, because the requests carry the real API key in cleartext; any other `http` host is a usage error. `https` is accepted for any host. Fake upstreams in tests run on loopback, so they keep working.
+  - The host is the host of the parsed URL, never a substring of it: in `http://127.0.0.1@api.example.com` it is `api.example.com`, which is refused.
+  - Loopback hosts are `localhost`, in any case, and IP literals that are loopback: `127.0.0.0/8`, `::1`, and IPv4-mapped IPv6 addresses of `127.0.0.0/8` such as `[::ffff:127.0.0.1]`.
+  - Names are not resolved, and no other name is loopback: `localhost.` with a trailing dot, `api.localhost` and a name that resolves to `127.0.0.1` are refused. Use the IP literal or `https`.
+  - retrace does not follow redirects: the proxy forwards an upstream `3xx` to the agent as it is (§3.3), so a redirect to an `http` URL never makes retrace send the key. What the agent does with it is up to the agent.
+  - `--mcp` URLs are deliberately out of this rule. MCP servers are often the user's own, reached over plain `http` on a LAN or by a container service name, and retrace forwards whatever headers the agent sends to them. Use `https` for an MCP server that is not on your machine (§10).
 
 ### 9.3 `retrace run`
 
@@ -769,7 +774,7 @@ Usage errors in the flags and arguments are reported first, before `--dir` is re
 
 - Credentials in headers and URLs are redacted before storage, and body redaction is opt-in (§3.5, [ADR 0011](../adr/0011-secret-redaction-defaults.md)).
 - The proxy binds to loopback by default. It has no authentication, so a non-loopback address needs `--listen-unsafe` (§9.2).
-- The Anthropic upstream is `https`, or plain `http` only on loopback, so the API key is never sent in cleartext over a network (§9.2).
+- The Anthropic upstream is `https`, or plain `http` only on loopback, so retrace never sends the Anthropic API key in cleartext over a network (§9.2). MCP upstreams are not restricted: an MCP server reached over `http` off the machine receives the agent's headers, credentials included, in cleartext.
 - The proxy answers only requests whose host names its listen address and that carry no `Origin` or `Sec-Fetch-Site` header (§3.6). A web page cannot reach it through DNS rebinding or a cross-origin request on a loopback address. With `--listen-unsafe`, a page can still send it a `GET` without reading the response (§3.6).
 - In `exact` mode no outbound connection is made.
 - Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
@@ -849,7 +854,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-48** A replay whose agent outlives `--timeout` is stopped and reported as `error`, and the next replay starts. `SIGINT` during a check stops the running replay, reports the rest as `skipped`, prints the summary and exits `1`, or `3` when a replay already diverged.
 - **AC-49** `check` with an explicit id replays it when it names a `failed` session or a replay. While the agent writes to its stdout, `check`'s stdout holds only `check`'s own output, and the agent's output appears on stderr.
 - **AC-50** The billed cost of `check` (§9.9.6) counts only `live` responses: an `exact` and a `live-tools` check report $0 in text and JSON, a `swap-model` check reports the cost of its live responses, and the budget's spent cost ignores responses answered from the cassette.
-- **AC-51** `record`, a `swap-model` `run` and a `swap-model` `check` with an `--anthropic-upstream` of `http://api.example.com` or `http://10.0.0.5:8080` are usage errors (exit `2`) that create no cassette and send no request. `http://127.0.0.1:<port>`, `http://[::1]:<port>` and `http://LOCALHOST:<port>` are accepted, and so is `https` to any host.
+- **AC-51** `record`, a `swap-model` `run` and a `swap-model` `check` with an `--anthropic-upstream` of `http://api.example.com`, `http://10.0.0.5:8080`, `http://127.0.0.1@api.example.com`, `http://localhost.:8080` or `http://api.localhost:8080` are usage errors (exit `2`) that create no cassette and send no request. `http://127.0.0.1:<port>`, `http://127.0.0.2:<port>`, `http://[::1]:<port>`, `http://[::ffff:127.0.0.1]:<port>` and `http://LOCALHOST:<port>` are accepted, and so is `https` to any host.
 
 ### Demo (manual)
 
