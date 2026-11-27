@@ -17,20 +17,31 @@ import (
 // literalNames returns, for each rule, one member name the rule needs in a
 // body to select anything, or nil when the prefilter cannot be used. Any one
 // name of the path would be sound; the longest is taken because it is the
-// least likely to appear by chance. It returns nil if any rule has a
-// wildcard or an index step, or a name that JSON writes differently than the
-// rule does.
+// least likely to appear by chance. Index steps select by position and need
+// no name, so they are skipped. It returns nil if any rule has a wildcard
+// step, no name step at all (such as $[0]), or a name that JSON writes
+// differently than the rule does.
 func literalNames(rules []Path) [][]byte {
 	var out [][]byte
 	for _, p := range rules {
 		var longest string
 		for _, s := range p.steps {
-			if s.kind != stepChild && s.kind != stepRecursive || !plainName(s.name) {
+			switch s.kind {
+			case stepIndex:
+				continue
+			case stepChild, stepRecursive:
+				if !plainName(s.name) {
+					return nil
+				}
+			default:
 				return nil
 			}
 			if len(s.name) > len(longest) {
 				longest = s.name
 			}
+		}
+		if longest == "" {
+			return nil
 		}
 		out = append(out, []byte(longest))
 	}
