@@ -505,7 +505,8 @@ func TestRedactHeaderRejectsPatterns(t *testing.T) {
 // spec §10: record --help says what cassettes contain.
 func TestRecordHelpWarnsThatCassettesAreVerbatim(t *testing.T) {
 	r := runRecordCmd(t, t.TempDir(), "--help")
-	if r.code != ExitOK || !strings.Contains(r.stdout.String(), "verbatim") {
+	if r.code != ExitOK || !strings.Contains(r.stdout.String(), "verbatim") ||
+		!strings.Contains(r.stdout.String(), "Bodies are stored unredacted unless --redact is given") { // AC-52
 		t.Errorf("exit %d, help:\n%s", r.code, r.stdout)
 	}
 }
@@ -518,5 +519,53 @@ func waitUntil(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met in time")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// AC-52: record without --redact warns once, before the agent starts.
+func TestRecordWarnsThatBodiesAreStoredUnredacted(t *testing.T) {
+	// The wording is spelled out on purpose: it pins the spec's text (§9.2).
+	const msg = "bodies are stored unredacted; add --redact <jsonpath> to mask fields"
+	tests := []struct {
+		name   string
+		global []string // global flags, before the command
+		args   []string
+		want   int
+	}{
+		{"no rule", nil, nil, 1},
+		{"a rule that matches nothing", nil, []string{"--redact", "$.nothing.here"}, 0},
+		{"header rule only", nil, []string{"--redact-header", "x-secret"}, 1},
+		{"log level error", []string{"--log-level", "error"}, nil, 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(agentModeEnv, "call")
+			up := fakeAnthropic(t)
+			args := append([]string{"--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL}, tt.args...)
+			all := append(append([]string{"--dir", t.TempDir()}, tt.global...), "record")
+			all = append(append(all, args...), "--")
+			r := recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}}
+			r.code = runWith(context.Background(), append(all, agentCommand()...), nil, r.stdout, r.stderr, fakeEnv(nil), commands, nil, nil)
+			if r.code != ExitOK {
+				t.Fatalf("exit code %d, stderr:\n%s", r.code, r.stderr)
+			}
+			errOut := r.stderr.String()
+			if got := strings.Count(errOut, msg); got != tt.want {
+				t.Errorf("warning count = %d, want %d; stderr:\n%s", got, tt.want, errOut)
+			}
+			if tt.want == 1 {
+				if w, start := strings.Index(errOut, msg), strings.Index(errOut, "recording"); start < 0 || w > start {
+					t.Errorf("want the warning before the session start line; stderr:\n%s", errOut)
+				}
+			}
+		})
+	}
+}
+
+// AC-52: a usage error prints no warning.
+func TestRecordUsageErrorPrintsNoUnredactedWarning(t *testing.T) {
+	r := runRecordCmd(t, t.TempDir(), "--session", "s")
+	if r.code != ExitUsage || strings.Contains(r.stderr.String(), "unredacted") {
+		t.Errorf("exit %d, stderr %q", r.code, r.stderr)
 	}
 }

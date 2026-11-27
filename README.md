@@ -202,7 +202,7 @@ retrace show checkout
 retrace show checkout --raw 1
 ```
 
-> ⚠️ Cassettes store prompts and tool outputs verbatim. Auth headers are always redacted, but review a cassette before sharing it.
+> ⚠️ Cassettes store prompts and tool outputs verbatim. Auth headers are always redacted, but review a cassette before sharing it. Bodies are stored unredacted unless you pass `--redact <jsonpath>`; `record` warns when you do not.
 
 ## Project status
 
