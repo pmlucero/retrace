@@ -13,7 +13,7 @@ import (
 // The routes a rejected request can be on, as its log warning names them.
 const (
 	routeLLM = httpx.RouteLLM
-	routeMCP = "mcp"
+	routeMCP = httpx.RouteMCP
 )
 
 const (

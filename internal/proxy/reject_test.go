@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"bytes"
-	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -13,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/pmlucero/retrace/internal/httpx"
+	"github.com/pmlucero/retrace/internal/httpx/httpxtest"
 )
 
 // AC-34: the path check of spec §3.6, on the path as the HTTP server decodes
@@ -67,8 +67,8 @@ func TestGuardRejectsDotSegments(t *testing.T) {
 				}
 				return
 			}
-			checkRejection(t, rec, tt.wantRoute, "invalid_request_error")
-			checkRejectionLog(t, logs.String(), tt.wantRoute, token, strings.TrimPrefix(tt.target, "/"))
+			httpxtest.CheckRejection(t, rec, tt.wantRoute, "invalid_request_error")
+			httpxtest.CheckRejectionLog(t, logs.String(), tt.wantRoute, token, strings.TrimPrefix(tt.target, "/"))
 		})
 	}
 }
@@ -89,80 +89,8 @@ func TestProxyRejectsDotSegmentsWithoutGuard(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || calls.Load() != 0 {
 		t.Fatalf("status %d with %d upstream calls, want 400 and none", rec.Code, calls.Load())
 	}
-	checkRejection(t, rec, routeMCP, "invalid_request_error")
-	checkRejectionLog(t, logs.String(), routeMCP, "admin")
-}
-
-// checkRejection checks the body of a rejected request (spec §3.6): the
-// Anthropic error shape with errType on the LLM route, plain text elsewhere,
-// and a message starting with "retrace:" in both.
-func checkRejection(t *testing.T, rec *httptest.ResponseRecorder, route, errType string) {
-	t.Helper()
-	if loc := rec.Header().Get("Location"); loc != "" {
-		t.Errorf("Location = %q, want no redirect", loc)
-	}
-	if route != routeLLM {
-		if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/plain") {
-			t.Errorf("Content-Type = %q, want plain text", ct)
-		}
-		if !strings.HasPrefix(rec.Body.String(), "retrace: ") {
-			t.Errorf("body %q, want a message starting with retrace:", rec.Body)
-		}
-		return
-	}
-	var got struct {
-		Type  string `json:"type"`
-		Error struct {
-			Type    string `json:"type"`
-			Message string `json:"message"`
-		} `json:"error"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("body %q: %v", rec.Body, err)
-	}
-	if got.Type != "error" || got.Error.Type != errType || !strings.HasPrefix(got.Error.Message, "retrace: ") {
-		t.Errorf("body %s, want an Anthropic %s error whose message starts with retrace:", rec.Body, errType)
-	}
-	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
-		t.Errorf("Content-Type = %q, want application/json", ct)
-	}
-}
-
-// checkRejectionLog checks the warning of a rejected request: one line, with
-// its route if it has one, and none of the leaks given.
-func checkRejectionLog(t *testing.T, logs, route string, leaks ...string) {
-	t.Helper()
-	if strings.Count(logs, "\n") != 1 || !strings.Contains(logs, "level=WARN") || !strings.Contains(logs, `msg="request rejected"`) {
-		t.Errorf("logs %q, want one rejection warning", logs)
-	}
-	if route == "" && strings.Contains(logs, "route=") || route != "" && !strings.Contains(logs, "route="+route+" ") {
-		t.Errorf("logs %q, want route %q", logs, route)
-	}
-	for _, leak := range leaks {
-		if leak != "" && strings.Contains(logs, leak) {
-			t.Errorf("logs %q contain %q", logs, leak)
-		}
-	}
-}
-
-// zeros is an endless body.
-type zeros struct{}
-
-func (zeros) Read(p []byte) (int, error) {
-	clear(p)
-	return len(p), nil
-}
-
-// countingReader counts what is read from it.
-type countingReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
+	httpxtest.CheckRejection(t, rec, routeMCP, "invalid_request_error")
+	httpxtest.CheckRejectionLog(t, logs.String(), routeMCP, "admin")
 }
 
 // AC-37: the host and browser-header checks of spec §3.6, in the order host,
@@ -247,9 +175,9 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 				}
 				wantRoute := routeOf(path)
 				if tt.want == 403 {
-					checkRejection(t, rec, wantRoute, "permission_error")
+					httpxtest.CheckRejection(t, rec, wantRoute, "permission_error")
 				} else {
-					checkRejection(t, rec, wantRoute, "invalid_request_error")
+					httpxtest.CheckRejection(t, rec, wantRoute, "invalid_request_error")
 				}
 				leaks := []string{"AC37-TOKEN", "orders", "http://localhost", "user@"}
 				if tt.host != "" && tt.host != "localhost" {
@@ -258,7 +186,7 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 				if v := tt.header.Get("Origin"); v != "" {
 					leaks = append(leaks, v)
 				}
-				checkRejectionLog(t, logs.String(), wantRoute, leaks...)
+				httpxtest.CheckRejectionLog(t, logs.String(), wantRoute, leaks...)
 				for _, leak := range leaks {
 					if strings.Contains(rec.Body.String(), leak) {
 						t.Errorf("body %q contains %q", rec.Body, leak)
@@ -272,7 +200,7 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 // AC-37: the body-size check comes after the host check, and the body of a
 // request with a wrong host is never read.
 func TestGuardHostBeforeBody(t *testing.T) {
-	body := &countingReader{r: io.LimitReader(zeros{}, httpx.MaxRequestBytes+1)}
+	body := &httpxtest.CountingReader{R: io.LimitReader(httpxtest.Zeros{}, httpx.MaxRequestBytes+1)}
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/llm/anthropic/v1/messages", body)
 	r.Host, r.ContentLength = "rebind.example", httpx.MaxRequestBytes+1
 	rec := httptest.NewRecorder()
@@ -280,7 +208,7 @@ func TestGuardHostBeforeBody(t *testing.T) {
 		httpx.ReadBody(w, r, slog.New(slog.DiscardHandler), routeLLM)
 	})
 	Guard(next, slog.New(slog.DiscardHandler), "127.0.0.1").ServeHTTP(rec, r)
-	if rec.Code != http.StatusForbidden || body.n != 0 {
-		t.Errorf("status %d after reading %d bytes, want 403 and none", rec.Code, body.n)
+	if rec.Code != http.StatusForbidden || body.N != 0 {
+		t.Errorf("status %d after reading %d bytes, want 403 and none", rec.Code, body.N)
 	}
 }
