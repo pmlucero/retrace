@@ -342,13 +342,13 @@ func writeShowJSON(w io.Writer, events []cassette.Event) error {
 	enc.SetEscapeHTML(false)
 	for _, e := range events {
 		if err := enc.Encode(showEvent{
-			Seq: e.Seq, ParentSeq: e.ParentSeq, InteractionID: e.InteractionID, Kind: e.Kind,
-			Source: e.Source, Target: e.Target, StartedAt: e.StartedAt, DurationMillis: e.DurationMillis,
-			Model: e.Model, RequestedModel: e.RequestedModel, Tool: e.Tool,
+			Seq: e.Seq, ParentSeq: e.ParentSeq, InteractionID: e.InteractionID, Kind: validUTF8(e.Kind),
+			Source: validUTF8(e.Source), Target: validUTF8(e.Target), StartedAt: e.StartedAt, DurationMillis: e.DurationMillis,
+			Model: validUTF8Ptr(e.Model), RequestedModel: validUTF8Ptr(e.RequestedModel), Tool: validUTF8Ptr(e.Tool),
 			Arguments: jsonOrString(e.Arguments), Result: jsonOrString(e.Result),
 			TokensIn: e.TokensIn, TokensOut: e.TokensOut, TokensCacheRead: e.TokensCacheRead,
-			TokensCacheWrite: e.TokensCacheWrite, CostUSD: finite(e.CostUSD), Status: e.Status, Error: e.Error,
-			Provenance: e.Provenance, DeriverVersion: e.DeriverVersion,
+			TokensCacheWrite: e.TokensCacheWrite, CostUSD: finite(e.CostUSD), Status: validUTF8(e.Status), Error: validUTF8Ptr(e.Error),
+			Provenance: validUTF8(e.Provenance), DeriverVersion: e.DeriverVersion,
 		}); err != nil {
 			return err
 		}
@@ -366,16 +366,35 @@ func finite(f *float64) *float64 {
 	return f
 }
 
+// validUTF8 replaces each run of invalid UTF-8 in s with U+FFFD (spec §9.6).
+// encoding/json writes an invalid byte as the escape \ufffd up to Go 1.26 and
+// as a raw U+FFFD from Go 1.27, so the JSON outputs sanitize the strings
+// they marshal and write the same bytes on every Go version.
+func validUTF8(s string) string { return strings.ToValidUTF8(s, "\uFFFD") }
+
+// validUTF8Ptr is validUTF8 for an optional string. It does not modify *p.
+func validUTF8Ptr(p *string) *string {
+	if p == nil || utf8.ValidString(*p) {
+		return p
+	}
+	s := validUTF8(*p)
+	return &s
+}
+
 // jsonOrString returns raw when it is JSON, null when it is absent, and
 // otherwise raw as a JSON string, so that one bad value in an untrusted
-// cassette does not stop the stream.
+// cassette does not stop the stream. Invalid UTF-8 in raw JSON can only be
+// inside a string, so replacing it keeps the value JSON.
 func jsonOrString(raw json.RawMessage) json.RawMessage {
 	switch {
 	case len(raw) == 0:
 		return nil
 	case json.Valid(raw):
-		return raw
+		if utf8.Valid(raw) {
+			return raw
+		}
+		return json.RawMessage(validUTF8(string(raw)))
 	}
-	b, _ := json.Marshal(strings.ToValidUTF8(string(raw), "�"))
+	b, _ := json.Marshal(validUTF8(string(raw)))
 	return b
 }
