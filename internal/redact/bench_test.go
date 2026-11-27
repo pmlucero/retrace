@@ -45,6 +45,8 @@ func BenchmarkBodyCases(b *testing.B) {
 
 	none := NewRules(nil, nil)
 	rules := mustRules(&testing.T{}, "$..email")
+	indexRules := mustRules(&testing.T{}, "$.items[0].email")
+	indexBody := []byte(`{"items":[{"email":"a@b.c"}],` + string(plain[1:]))
 	for _, tt := range []struct {
 		name  string
 		r     *Rules
@@ -54,6 +56,8 @@ func BenchmarkBodyCases(b *testing.B) {
 		{"no-rules", none, plain, plainEvent},
 		{"rules-no-key", rules, plain, plainEvent},
 		{"rules-key-present", rules, withKey, keyEvent},
+		{"index-rules-no-key", indexRules, plain, plainEvent},
+		{"index-rules-key-present", indexRules, indexBody, keyEvent},
 	} {
 		b.Run("body-1MB/"+tt.name, func(b *testing.B) {
 			b.ReportAllocs()
