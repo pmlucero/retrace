@@ -2,8 +2,11 @@ package replay
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"net/http"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,6 +111,52 @@ func TestBuildQueues(t *testing.T) {
 			t.Fatal(err)
 		}
 		if got, want := ids(qs.Unconsumed()), []int64{1, 2}; !slices.Equal(got, want) {
+			t.Errorf("unconsumed %v, want %v", got, want)
+		}
+	})
+}
+
+// dropRequestBlob deletes the row of the request body of an interaction, as a
+// damaged or hand-made cassette may lack it.
+func dropRequestBlob(ctx context.Context, t *testing.T, src *cassette.Cassette, id int64) {
+	t.Helper()
+	in, err := src.Interaction(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", src.Path()) // foreign keys are off on a new connection
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `DELETE FROM blobs WHERE sha256 = ?`, *in.RequestBlob); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A blob row that is missing from the cassette, an untrusted input, is an
+// error when BuildQueues needs the body, and is ignored when the interaction
+// is not queued.
+func TestBuildQueuesMissingRequestBlob(t *testing.T) {
+	ctx := context.Background()
+	identity := func(b []byte) []byte { return b }
+	mcpCanon := func(_ string, b []byte) []byte { return b }
+	queued, skipped := queuesSource(t), queuesSource(t)
+	dropRequestBlob(ctx, t, queued, 1)
+	dropRequestBlob(ctx, t, skipped, 1)
+
+	t.Run("queued interaction", func(t *testing.T) {
+		_, err := BuildQueues(ctx, queued, identity, []string{"a"}, mcpCanon)
+		if !errors.Is(err, cassette.ErrNotFound) || !strings.Contains(err.Error(), "interaction 1: reading blob ") {
+			t.Fatalf("err = %v, want interaction 1: reading blob ...: not found", err)
+		}
+	})
+	t.Run("skipped interaction", func(t *testing.T) {
+		qs, err := BuildQueues(ctx, skipped, nil, []string{"a"}, mcpCanon)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := ids(qs.Unconsumed()), []int64{3, 5}; !slices.Equal(got, want) {
 			t.Errorf("unconsumed %v, want %v", got, want)
 		}
 	})

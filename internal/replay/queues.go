@@ -41,16 +41,21 @@ func (q QueueSet) Unconsumed() []cassette.Interaction {
 // unconsumed (spec §5 step 3, AC-32).
 func BuildQueues(ctx context.Context, src *cassette.Cassette, llm func(body []byte) []byte, servers []string,
 	mcpCanon func(server string, body []byte) []byte) (QueueSet, error) {
-	ins, err := src.Interactions(ctx)
+	reqs, err := routedRequests(ctx, src, llm != nil, servers)
 	if err != nil {
 		return QueueSet{}, fmt.Errorf("reading interactions: %w", err)
+	}
+	ins := make([]cassette.Interaction, len(reqs))
+	for i, r := range reqs {
+		ins[i] = r.Interaction
 	}
 	type key struct {
 		route string // "" for the LLM, or the MCP server name
 		fp    string
 	}
 	keys := make(map[int64]key, len(ins))
-	for _, in := range ins {
+	for _, r := range reqs {
+		in := r.Interaction
 		var route string
 		switch name, isMCP := strings.CutPrefix(in.Upstream, "mcp:"); {
 		case in.Channel == "llm" && llm != nil:
@@ -60,12 +65,10 @@ func BuildQueues(ctx context.Context, src *cassette.Cassette, llm func(body []by
 		default:
 			continue
 		}
-		var body []byte
-		if in.RequestBlob != nil {
-			if body, err = src.Blob(ctx, *in.RequestBlob); err != nil {
-				return QueueSet{}, fmt.Errorf("interaction %d: %w", in.ID, err)
-			}
+		if r.RequestErr != nil {
+			return QueueSet{}, fmt.Errorf("interaction %d: %w", in.ID, r.RequestErr)
 		}
+		body := r.Request
 		switch {
 		case in.Channel == "llm":
 			keys[in.ID] = key{route, match.Fingerprint(llm(body))}
@@ -87,4 +90,32 @@ func BuildQueues(ctx context.Context, src *cassette.Cassette, llm func(body []by
 		qs.MCP[name] = queuesOf(name)
 	}
 	return qs, nil
+}
+
+// routedRequests reads, with their request bodies, only the interactions that
+// BuildQueues can queue: those of the LLM channel when withLLM, and those of
+// the MCP servers, so that the bodies of the others are never loaded. The
+// result is in id order.
+func routedRequests(ctx context.Context, src *cassette.Cassette, withLLM bool, servers []string) ([]cassette.InteractionWithRequest, error) {
+	var out []cassette.InteractionWithRequest
+	if withLLM {
+		reqs, err := src.InteractionsWithRequests(ctx, cassette.InteractionFilter{Channel: "llm"})
+		if err != nil {
+			return nil, err
+		}
+		out = reqs
+	}
+	if len(servers) > 0 { // an empty Upstreams does not filter
+		upstreams := make([]string, len(servers))
+		for i, name := range servers {
+			upstreams[i] = "mcp:" + name
+		}
+		reqs, err := src.InteractionsWithRequests(ctx, cassette.InteractionFilter{Channel: "mcp", Upstreams: upstreams})
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, reqs...)
+	}
+	slices.SortFunc(out, func(a, b cassette.InteractionWithRequest) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
 }
