@@ -3,6 +3,8 @@ package anthropic
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"slices"
@@ -13,9 +15,34 @@ import (
 // conversation gets the same key however its JSON was formatted.
 // ok is false when a message is not valid JSON.
 func conversationKey(messages []json.RawMessage) (key string, ok bool) {
+	return conversationKeyCached(prefixStates, messages)
+}
+
+// conversationKeyCached is conversationKey with an explicit cache, which may
+// be nil. A turn repeats the history of the previous one, so the hash state
+// after a stored prefix is restored instead of canonicalizing it again. The
+// prefix is identified by the SHA-256 of its raw messages, so a hit implies
+// the same canonical bytes and the key never depends on the cache.
+func conversationKeyCached(cache *prefixCache, messages []json.RawMessage) (key string, ok bool) {
 	h := sha256.New()
+	start := 0
+	var last [sha256.Size]byte
+	if cache != nil && len(messages) > 0 {
+		prefixes := rawPrefixHashes(messages)
+		last = prefixes[len(prefixes)-1]
+		for i := len(prefixes) - 1; i >= 0; i-- {
+			if state, hit := cache.get(prefixes[i]); hit {
+				if h.(encoding.BinaryUnmarshaler).UnmarshalBinary(state) == nil {
+					start = i + 1
+				} else {
+					h.Reset()
+				}
+				break
+			}
+		}
+	}
 	var c canonicalizer
-	for _, m := range messages {
+	for _, m := range messages[start:] {
 		out, good := c.canonical(m)
 		if !good {
 			// Anything the scanner declines, such as malformed JSON, goes
@@ -28,7 +55,27 @@ func conversationKey(messages []json.RawMessage) (key string, ok bool) {
 		h.Write(out)
 		h.Write([]byte{'\n'})
 	}
+	if cache != nil && start < len(messages) {
+		if state, err := h.(encoding.BinaryMarshaler).MarshalBinary(); err == nil {
+			cache.put(last, state)
+		}
+	}
 	return hex.EncodeToString(h.Sum(nil)), true
+}
+
+// rawPrefixHashes returns, for each i, the SHA-256 of the length-prefixed
+// raw bytes of messages[:i+1].
+func rawPrefixHashes(messages []json.RawMessage) [][sha256.Size]byte {
+	h := sha256.New()
+	out := make([][sha256.Size]byte, len(messages))
+	var n [8]byte
+	for i, m := range messages {
+		binary.BigEndian.PutUint64(n[:], uint64(len(m)))
+		h.Write(n[:])
+		h.Write(m)
+		h.Sum(out[i][:0])
+	}
+	return out
 }
 
 // stdCanonicalJSON re-encodes raw with object keys sorted and no
