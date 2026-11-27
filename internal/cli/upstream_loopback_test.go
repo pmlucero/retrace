@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -63,8 +64,8 @@ func TestUpstreamLoopbackRefused(t *testing.T) {
 // AC-51: loopback http hosts and any https host pass the validation.
 func TestUpstreamLoopbackAccepted(t *testing.T) {
 	ipv6 := false
-	if ln, err := net.Listen("tcp6", "[::1]:0"); err == nil {
-		ln.Close()
+	if ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp6", "[::1]:0"); err == nil {
+		_ = ln.Close()
 		ipv6 = true
 	}
 	for _, up := range []string{

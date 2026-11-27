@@ -164,6 +164,8 @@ func upstreamURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// isLoopbackHost reports whether host is localhost or a loopback IP literal.
+// Names are never resolved, so no other name counts.
 func isLoopbackHost(host string) bool {
 	if strings.EqualFold(host, "localhost") {
 		return true
