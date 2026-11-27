@@ -21,13 +21,17 @@ const MaxRequestBytes = 64 << 20
 // it. Reject gives it the Anthropic API's error shape.
 const RouteLLM = "llm"
 
+// RouteMCP is the MCP route of a rejected request, as its log warning names
+// it. Reject answers it in plain text.
+const RouteMCP = "mcp"
+
 var reasonTooLarge = fmt.Sprintf("the request body is larger than %d MiB (%d bytes)", MaxRequestBytes>>20, MaxRequestBytes)
 
 // ReadBody reads r's body, up to MaxRequestBytes. When it cannot, it answers
 // r itself and returns false: 413 for a larger body (spec §3.6), whether or
 // not r has a Content-Length, and 400 when the body cannot be read. A
 // Content-Length above the limit is rejected before anything is read. channel
-// is the route r arrived on, "llm" or "mcp", and log must not be nil.
+// is the route r arrived on, RouteLLM or RouteMCP, and log must not be nil.
 func ReadBody(w http.ResponseWriter, r *http.Request, log *slog.Logger, channel string) ([]byte, bool) {
 	if r.ContentLength > MaxRequestBytes {
 		Reject(w, log, channel, http.StatusRequestEntityTooLarge, reasonTooLarge)
