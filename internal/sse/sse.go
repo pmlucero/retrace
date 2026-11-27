@@ -131,7 +131,9 @@ func DataPrefix(line []byte) (n int, ok bool) {
 
 // Data returns the data of an event: the values of its data lines joined with
 // "\n". ok is false when the event has no data line. Comment lines and other
-// fields are not data.
+// fields are not data. Data walks the event without splitting it into a slice
+// of lines first, which keeps the per-event path of Stream.Feed free of that
+// allocation; LinesData serves callers that need the lines too.
 func Data(event []byte) (data []byte, ok bool) {
 	var values [][]byte
 	for len(event) > 0 {
