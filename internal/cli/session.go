@@ -3,19 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
-	"net"
-	"net/http"
-	"os"
-	"os/exec"
-	"time"
 
+	"github.com/pmlucero/retrace/internal/agentrun"
 	"github.com/pmlucero/retrace/internal/cassette"
-	"github.com/pmlucero/retrace/internal/proxy"
 )
-
-// finishTimeout bounds each step of ending a session: waiting for in-flight
-// interactions, then writing what is queued (spec §3.1).
-const finishTimeout = 10 * time.Second
 
 // insertSession writes a new cassette's session row. It is a variable so that
 // tests can make the insert fail. Tests that replace it must not run in
@@ -47,159 +38,18 @@ func replaceSessionCassette(ctx context.Context, path string, s cassette.Session
 	return cassette.Replace(ctx, path, func(tx *cassette.Tx) error { return insertSession(tx, ctx, s) })
 }
 
-// sessionConfig is what runSession needs to run one agent session against a
-// local proxy, for recording or for replay.
-type sessionConfig struct {
-	listener net.Listener       // already listening on --listen
-	listen   string             // the --listen value, whose host also names the proxy
-	handler  http.Handler       // serves /llm/... and /mcp/<name>/...
-	cassette *cassette.Cassette // closed by runSession
-	writer   *cassette.Writer   // closed by runSession with the session's end
-	id       string             // RETRACE_SESSION_ID
-	mode     string             // RETRACE_MODE
-	startMsg string             // logged when the session starts, e.g. "recording"
-	mcp      []string           // registered MCP server names
-	command  []string           // the agent command; an empty one fails the session
-	cwd      string             // the agent's working directory; "" inherits retrace's
-	diverged <-chan struct{}    // closed at a cassette miss in a replay; nil when recording
-	timeout  time.Duration      // the longest the agent may run before it is stopped as on a miss; 0 for no limit
-	grace    time.Duration      // how long the agent has to exit after a miss's SIGTERM (spec §6.2)
-	// finish, if set, completes the session's metadata from what was
-	// recorded. It runs once the writer has written everything.
-	finish func(ctx context.Context, c *cassette.Cassette) error
-}
+// ExitAgentFailed is returned when the agent exits with a non-zero code
+// (spec §9.7).
+const ExitAgentFailed = 4
 
-// sessionResult is how a session ended.
-type sessionResult struct {
-	status   string // the session status written to the cassette (spec §3.1)
-	agent    agentResult
-	timedOut bool // the agent was stopped because cfg.timeout expired
-	stats    cassette.WriterStats
-}
-
-// guardHosts returns the hosts that name the proxy's address: the host of
-// --listen and the host of the listener's address (spec §3.6).
-func guardHosts(cfg sessionConfig) []string {
-	var hosts []string
-	for _, addr := range []string{cfg.listen, cfg.listener.Addr().String()} {
-		if host, _, err := net.SplitHostPort(addr); err == nil {
-			hosts = append(hosts, host)
-		}
-	}
-	return hosts
-}
-
-// runSession serves cfg.handler on cfg.listener, runs the agent with the
-// injected environment (spec §3.2) until it exits, then finalizes the
-// cassette. It returns an error, already logged, only when the cassette may be
-// incomplete.
-func runSession(ctx context.Context, env *Env, cfg sessionConfig) (sessionResult, error) {
-	log := env.Logger
-	// Rejected requests are answered before any routing, in every mode (spec §3.6).
-	srv := &http.Server{Handler: proxy.Guard(cfg.handler, log, guardHosts(cfg)...), ReadHeaderTimeout: 30 * time.Second}
-	go func() {
-		if err := srv.Serve(cfg.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("proxy stopped", "error", err)
-		}
-	}()
-
-	base := "http://" + cfg.listener.Addr().String()
-
-	// Signals are handled until the cassette is closed: one that arrives while
-	// the session is being finished must not kill retrace halfway.
-	sigs := make(chan os.Signal, 2)
-	stopSignals := notifySignals(sigs)
-	defer stopSignals()
-
-	path := cfg.cassette.Path()
-	log.Info(cfg.startMsg, "session", cfg.id, "cassette", path, "proxy", base)
-	res := sessionResult{status: "completed"}
-	if cmd := startAgent(ctx, env, cfg, base); cmd == nil {
-		res.status = "failed"
-	} else {
-		var timedOut <-chan struct{}
-		if cfg.timeout > 0 {
-			ch := make(chan struct{})
-			t := time.AfterFunc(cfg.timeout, func() { close(ch) })
-			defer t.Stop()
-			timedOut = ch
-		}
-		res.agent = waitAgent(cmd, sigs, cfg.diverged, timedOut, cfg.grace, log)
-		res.timedOut = res.agent.timedOut
-		// A session stopped for its time is cut short like one that a signal
-		// ended, so it has the same status; a miss outweighs both below.
-		if res.agent.interrupted || res.agent.timedOut {
-			res.status = "interrupted"
-		}
-	}
-
-	// The agent is gone; let in-flight exchanges finish, then write what is queued.
-	sctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
-	defer cancel()
-	if err := srv.Shutdown(sctx); err != nil {
-		log.Warn("in-flight requests did not finish in time; they are recorded as incomplete", "error", err)
-		_ = srv.Close()
-	}
-	// Checked after the shutdown, so a miss among the last requests counts. A
-	// miss outweighs how the agent then ended (spec §6.2, §9.3).
-	select {
-	case <-cfg.diverged:
-		if res.status != "failed" {
-			res.status = "diverged"
-		}
-	default:
-	}
-	end := cassette.SessionEnd{Status: res.status, EndedAt: time.Now()}
-	if res.status != "failed" {
-		end.AgentExitCode = &res.agent.exitCode
-	}
-	wctx, cancelW := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
-	defer cancelW()
-	werr := cfg.writer.Close(wctx, end)
-	if werr == nil && cfg.finish != nil {
-		// A step of its own, with its own deadline. The cassette is valid
-		// without it, so the session still succeeds.
-		fctx, cancelF := context.WithTimeout(context.WithoutCancel(ctx), finishTimeout)
-		defer cancelF()
-		if err := cfg.finish(fctx, cfg.cassette); err != nil {
-			log.Warn("cannot complete the session metadata", "path", path, "error", err)
-		}
-	}
-	if err := errors.Join(werr, cfg.cassette.Close()); err != nil {
-		log.Error("the cassette may be incomplete", "path", path, "error", err)
-		return res, err
-	}
-	res.stats = cfg.writer.Stats()
-	return res, nil
-}
-
-// startAgent starts cfg.command with the injected environment (spec §3.2), or
-// logs why it cannot and returns nil. The command may come from a cassette,
-// which is untrusted input, so an empty one is not assumed away.
-func startAgent(ctx context.Context, env *Env, cfg sessionConfig, base string) *exec.Cmd {
-	if len(cfg.command) == 0 {
-		env.Logger.Error("cannot start the agent: no agent command")
-		return nil
-	}
-	cmd := exec.CommandContext(ctx, cfg.command[0], cfg.command[1:]...) //nolint:gosec // G204: running the user's agent is the point
-	cmd.Dir = cfg.cwd
-	cmd.Env = withEnv(os.Environ(), agentEnv(base, cfg.id, cfg.mode, cfg.mcp))
-	cmd.Stdin, cmd.Stdout, cmd.Stderr = env.Stdin, env.Stdout, env.Stderr
-	if err := cmd.Start(); err != nil {
-		env.Logger.Error("cannot start the agent", "command", cfg.command[0], "error", err)
-		return nil
-	}
-	return cmd
-}
-
-// exitCode maps how the session ended to retrace's exit code (spec §9.7).
-func (r sessionResult) exitCode() int {
+// sessionExitCode maps how the session ended to retrace's exit code (spec §9.7).
+func sessionExitCode(r agentrun.Result) int {
 	switch {
-	case r.status == "failed":
+	case r.Status == "failed":
 		return ExitError
-	case r.status == "diverged":
+	case r.Status == "diverged":
 		return ExitDiverged
-	case r.agent.exitCode != 0:
+	case r.Agent.ExitCode != 0:
 		return ExitAgentFailed
 	}
 	return ExitOK

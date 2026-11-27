@@ -51,25 +51,18 @@ func TestCheckRejectsANegativeTimeout(t *testing.T) {
 	}
 }
 
-// signalFanout replaces notifySignals so that a test can deliver a signal to
+// signalFanout is the Env.notifySignals of a test, which delivers a signal to
 // every subscriber, as the kernel does.
 type signalFanout struct {
 	mu   sync.Mutex
 	subs []chan<- os.Signal
 }
 
-func newSignalFanout(t *testing.T) *signalFanout {
-	t.Helper()
-	f := &signalFanout{}
-	saved := notifySignals
-	notifySignals = func(c chan<- os.Signal) func() {
-		f.mu.Lock()
-		defer f.mu.Unlock()
-		f.subs = append(f.subs, c)
-		return func() {}
-	}
-	t.Cleanup(func() { notifySignals = saved })
-	return f
+func (f *signalFanout) notify(c chan<- os.Signal) func() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.subs = append(f.subs, c)
+	return func() {}
 }
 
 func (f *signalFanout) send(sig os.Signal) {
@@ -107,11 +100,11 @@ func TestCheckInterrupted(t *testing.T) {
 			t.Setenv(replayStallEnv, "b.exact.1")
 			marker := filepath.Join(t.TempDir(), "stalled")
 			t.Setenv(replayStallMarkerEnv, marker)
-			fan := newSignalFanout(t)
+			fan := &signalFanout{}
 
 			done := make(chan recordRun, 1)
 			go func() {
-				done <- runCheckCmd(t, dir, afterDash([]string{"--out", out, "--grace", "5s"}, replayAgentCommand())...)
+				done <- runCheckInto(recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}, notify: fan.notify}, dir, afterDash([]string{"--out", out, "--grace", "5s"}, replayAgentCommand())...)
 			}()
 			// b's agent runs, and so has its replay's subscription, once it
 			// has written the marker.

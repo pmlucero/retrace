@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/pmlucero/retrace/internal/agentrun"
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/mcp"
@@ -192,29 +193,30 @@ func executeReplay(ctx context.Context, env *Env, plan *replayPlan, target repla
 		Anthropic: opts.anthropic, Model: opts.model, Live: plan.live, Replayed: plan.replayed,
 	})
 	path := c.Path()
-	res, err := runSession(ctx, env, sessionConfig{
-		listener: ln,
-		listen:   target.listen,
-		handler:  mux,
-		cassette: c,
-		writer:   w,
-		id:       id,
-		mode:     plan.mode,
-		startMsg: "replaying " + plan.srcID,
-		mcp:      plan.servers,
-		command:  plan.command,
-		cwd:      plan.cwd,
-		diverged: divergence.Done(),
-		grace:    opts.grace,
-		timeout:  target.timeout,
-		finish:   finish,
+	res, err := agentrun.Run(ctx, agentrun.Config{
+		Logger: env.Logger, Stdin: env.Stdin, Stdout: env.Stdout, Stderr: env.Stderr, NotifySignals: env.notifySignals,
+		Listener: ln,
+		Listen:   target.listen,
+		Handler:  mux,
+		Cassette: c,
+		Writer:   w,
+		ID:       id,
+		Mode:     plan.mode,
+		StartMsg: "replaying " + plan.srcID,
+		MCP:      plan.servers,
+		Command:  plan.command,
+		Cwd:      plan.cwd,
+		Diverged: divergence.Done(),
+		Grace:    opts.grace,
+		Timeout:  target.timeout,
+		Finish:   finish,
 	})
 	if err != nil {
 		return replayResult{}, fmt.Errorf("running the session: %w", err)
 	}
 	out := replayResult{
-		id: id, path: path, status: res.status, agentExit: res.agent.exitCode, exitCode: res.exitCode(), timedOut: res.timedOut,
-		droppedEvents: res.stats.DroppedEvents, unconsumed: plan.queues.Unconsumed(),
+		id: id, path: path, status: res.Status, agentExit: res.Agent.ExitCode, exitCode: sessionExitCode(res), timedOut: res.TimedOut,
+		droppedEvents: res.Stats.DroppedEvents, unconsumed: plan.queues.Unconsumed(),
 	}
 	out.first, out.misses, out.hasMiss = divergence.Report()
 	return out, nil

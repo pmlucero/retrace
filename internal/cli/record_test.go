@@ -6,12 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
@@ -136,6 +134,7 @@ func fakeAnthropic(t *testing.T) *httptest.Server {
 type recordRun struct {
 	code           int
 	stdout, stderr *syncBuffer
+	notify         func(chan<- os.Signal) func() // Env.notifySignals; nil for the default
 }
 
 // runRecordCmd runs retrace with --dir dir, then record and args.
@@ -147,7 +146,7 @@ func runRecordCmd(t *testing.T, dir string, args ...string) recordRun {
 // runRecordInto is runRecordCmd with output buffers the caller can watch.
 func runRecordInto(r recordRun, dir string, args ...string) recordRun {
 	all := append([]string{"--dir", dir, "record"}, args...)
-	r.code = run(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands)
+	r.code = runNotify(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands, r.notify)
 	return r
 }
 
@@ -280,14 +279,10 @@ func TestRecordInterruptedBySIGINT(t *testing.T) {
 	up := fakeAnthropic(t)
 
 	sigs := make(chan chan<- os.Signal, 1)
-	saved := notifySignals
-	notifySignals = func(c chan<- os.Signal) func() {
+	r := recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}, notify: func(c chan<- os.Signal) func() {
 		sigs <- c
 		return func() {}
-	}
-	t.Cleanup(func() { notifySignals = saved })
-
-	r := recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}}
+	}}
 	result := make(chan recordRun, 1)
 	go func() {
 		result <- runRecordInto(r, dir, append([]string{"--session", "s", "--listen", "127.0.0.1:0",
@@ -515,27 +510,6 @@ func TestRecordHelpWarnsThatCassettesAreVerbatim(t *testing.T) {
 	}
 }
 
-func TestMCPEnvName(t *testing.T) {
-	for name, want := range map[string]string{
-		"orders":    "RETRACE_MCP_ORDERS_URL",
-		"orders-db": "RETRACE_MCP_ORDERS_DB_URL",
-		"a_b9":      "RETRACE_MCP_A_B9_URL",
-	} {
-		if got := mcpEnvName(name); got != want {
-			t.Errorf("mcpEnvName(%q) = %q, want %q", name, got, want)
-		}
-	}
-}
-
-func TestWithEnvReplacesInheritedValues(t *testing.T) {
-	got := withEnv([]string{"PATH=/bin", "ANTHROPIC_BASE_URL=https://api.anthropic.com"},
-		map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:1/llm/anthropic"})
-	want := []string{"PATH=/bin", "ANTHROPIC_BASE_URL=http://127.0.0.1:1/llm/anthropic"}
-	if fmt.Sprint(got) != fmt.Sprint(want) {
-		t.Errorf("withEnv = %v, want %v", got, want)
-	}
-}
-
 func waitUntil(t *testing.T, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(30 * time.Second)
@@ -544,20 +518,5 @@ func waitUntil(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met in time")
 		}
 		time.Sleep(10 * time.Millisecond)
-	}
-}
-
-// A terminal's Ctrl+C reaches the agent and retrace together. Even when the
-// agent's exit is seen first, the session counts as interrupted (spec §3.1).
-func TestWaitAgentCountsASignalThatRacesTheExit(t *testing.T) {
-	cmd := exec.CommandContext(context.Background(), os.Args[0], "-test.run=^$") //nolint:gosec // G204: this test binary, exiting at once
-	if err := cmd.Start(); err != nil {
-		t.Fatal(err)
-	}
-	sigs := make(chan os.Signal, 1)
-	sigs <- os.Interrupt
-	res := waitAgent(cmd, sigs, nil, nil, 0, slog.New(slog.DiscardHandler))
-	if !res.interrupted {
-		t.Error("the session was not marked as interrupted")
 	}
 }
