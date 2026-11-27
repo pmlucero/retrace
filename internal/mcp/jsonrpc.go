@@ -112,6 +112,8 @@ func ParseBody(body []byte) (Body, error) {
 // parseMessage parses one JSON-RPC message. Member names match exactly, as
 // in JSON-RPC and in jsonvalue, unlike encoding/json's struct decoding. With
 // duplicate members the last one counts. Unknown members are ignored.
+// classify applies the same rules to an already decoded value; keep both in
+// step (TestCanonicalizeMatchesReference checks they agree).
 func parseMessage(data []byte) (Message, error) {
 	data = bytes.TrimSpace(data)
 	m := Message{Raw: json.RawMessage(data)}

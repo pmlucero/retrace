@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"bytes"
+	"encoding/json"
 	"slices"
 
 	"github.com/pmlucero/retrace/internal/jsonvalue"
@@ -44,30 +45,29 @@ import (
 // collide with the form of a JSON body, which starts with a brace, and the
 // JSON string ends unambiguously, so two servers never share a form.
 func Canonicalize(server string, body []byte) []byte {
-	// Decoding the whole body first applies the depth limit to it as a
-	// whole, and lets canonicalMessage decode its parts without failing.
+	// One decode serves the depth limit, the classification and the form:
+	// the messages' parts are taken from this tree, not decoded again.
 	whole, err := jsonvalue.Decode(body)
 	if err != nil {
 		return rawForm(server, body)
 	}
 	form := &jsonvalue.Object{Members: []jsonvalue.Member{{Key: "server", Value: server}}}
-	parsed, err := ParseBody(body)
-	if err != nil {
-		form.Members = append(form.Members, jsonvalue.Member{Key: "body", Value: whole})
+	if arr, ok := whole.(jsonvalue.Array); ok && len(arr) > 0 {
+		msgs := make(jsonvalue.Array, len(arr))
+		for i, e := range arr {
+			msgs[i] = canonicalElement(e)
+		}
+		form.Members = append(form.Members, jsonvalue.Member{Key: "batch", Value: msgs})
 		return jsonvalue.EncodeCanonical(form)
 	}
-	msgs := make(jsonvalue.Array, len(parsed.Messages))
-	for i, m := range parsed.Messages {
-		v, err := canonicalMessage(m)
-		if err != nil {
-			return rawForm(server, body) // impossible: body decoded above
-		}
-		msgs[i] = v
-	}
-	if parsed.Batch {
-		form.Members = append(form.Members, jsonvalue.Member{Key: "batch", Value: msgs})
+	// classify mutates the tree only when it succeeds, so the body form below
+	// never sees params without its _meta.
+	// A single message, or a body that is none: an empty batch, or a value
+	// that is not a valid message.
+	if cm, ok := classify(whole); ok {
+		form.Members = append(form.Members, jsonvalue.Member{Key: "message", Value: cm})
 	} else {
-		form.Members = append(form.Members, jsonvalue.Member{Key: "message", Value: msgs[0]})
+		form.Members = append(form.Members, jsonvalue.Member{Key: "body", Value: whole})
 	}
 	return jsonvalue.EncodeCanonical(form)
 }
@@ -79,42 +79,99 @@ func rawForm(server string, body []byte) []byte {
 	return append(form, body...)
 }
 
-// canonicalMessage returns the part of m that identifies it for matching.
-func canonicalMessage(m Message) (jsonvalue.Value, error) {
-	var kind, key string
-	var raw []byte
-	switch m.Kind {
-	case Request:
-		kind, key, raw = "request", "params", m.Params
-	case Notification:
-		kind, key, raw = "notification", "params", m.Params
-	case Response:
-		kind, key, raw = "response", "result", m.Result
-		if m.Error != nil {
-			key, raw = "error", m.Error
+// canonicalElement is the canonical form of a batch element: that of the
+// message it is, or of an invalid element.
+func canonicalElement(e jsonvalue.Value) jsonvalue.Value {
+	if cm, ok := classify(e); ok {
+		return cm
+	}
+	return &jsonvalue.Object{Members: []jsonvalue.Member{
+		{Key: "kind", Value: "invalid"},
+		{Key: "element", Value: e},
+	}}
+}
+
+// classify applies the rules of parseMessage to a decoded value and returns
+// the part of the message that identifies it for matching. It reports false
+// when v is not a valid JSON-RPC message. With duplicate members the last one
+// counts, as in parseMessage; the values are taken from the tree, which keeps
+// the duplicates inside them. params._meta is removed from the tree in place.
+func classify(v jsonvalue.Value) (jsonvalue.Value, bool) {
+	o, ok := v.(*jsonvalue.Object)
+	if !ok {
+		return nil, false
+	}
+	var id, method, params, result, errv jsonvalue.Value
+	var hasID, hasMethod, hasParams, hasResult, hasErr bool
+	for _, m := range o.Members {
+		switch m.Key {
+		case "id":
+			id, hasID = m.Value, true
+		case "method":
+			method, hasMethod = m.Value, true
+		case "params":
+			params, hasParams = m.Value, true
+		case "result":
+			result, hasResult = m.Value, true
+		case "error":
+			errv, hasErr = m.Value, true
 		}
-	default:
-		kind, key, raw = "invalid", "element", m.Raw
 	}
-	isCall := m.Kind == Request || m.Kind == Notification
-	obj := &jsonvalue.Object{Members: []jsonvalue.Member{{Key: "kind", Value: kind}}}
-	if isCall {
-		obj.Members = append(obj.Members, jsonvalue.Member{Key: "method", Value: m.Method})
+	_, idString := id.(string)
+	_, idNumber := id.(json.Number)
+	idOK := idString || idNumber
+	switch {
+	case hasMethod:
+		// A null method reads as the empty string, as json.Unmarshal does
+		// into a string.
+		var name string
+		switch mv := method.(type) {
+		case string:
+			name = mv
+		case nil:
+		default:
+			return nil, false
+		}
+		if hasResult || hasErr {
+			return nil, false
+		}
+		kind := "notification"
+		if hasID {
+			// MCP request ids are strings or integers, never null.
+			if !idOK {
+				return nil, false
+			}
+			kind = "request"
+		}
+		obj := &jsonvalue.Object{Members: []jsonvalue.Member{
+			{Key: "kind", Value: kind},
+			{Key: "method", Value: name},
+		}}
+		if hasParams {
+			if p, ok := params.(*jsonvalue.Object); ok {
+				// Spec §5 step 1: params._meta carries per-call data, such
+				// as a progress token, that is not part of what is asked.
+				p.Members = slices.DeleteFunc(p.Members, func(mb jsonvalue.Member) bool { return mb.Key == "_meta" })
+			}
+			obj.Members = append(obj.Members, jsonvalue.Member{Key: "params", Value: params})
+		}
+		return obj, true
+	case hasID && hasResult != hasErr:
+		// An error response to a request whose id could not be read has a
+		// null id (JSON-RPC 2.0 §5).
+		if !idOK && id != nil {
+			return nil, false
+		}
+		key, val := "result", result
+		if hasErr {
+			key, val = "error", errv
+		}
+		return &jsonvalue.Object{Members: []jsonvalue.Member{
+			{Key: "kind", Value: "response"},
+			{Key: key, Value: val},
+		}}, true
 	}
-	if raw == nil {
-		return obj, nil // a request or notification without params
-	}
-	v, err := jsonvalue.Decode(raw)
-	if err != nil {
-		return nil, err
-	}
-	if p, ok := v.(*jsonvalue.Object); ok && isCall {
-		// Spec §5 step 1: params._meta carries per-call data, such as a
-		// progress token, that is not part of what is asked.
-		p.Members = slices.DeleteFunc(p.Members, func(mb jsonvalue.Member) bool { return mb.Key == "_meta" })
-	}
-	obj.Members = append(obj.Members, jsonvalue.Member{Key: key, Value: v})
-	return obj, nil
+	return nil, false
 }
 
 // DiffForm returns the part of a canonical form that a miss diff compares
