@@ -34,7 +34,7 @@ func markdownText(s string) string {
 // that come from flags, which are as free-form as a cassette's.
 func (r checkReport) writeMarkdown(buf *bytes.Buffer) {
 	md := markdownText
-	mode := r.mode
+	mode := string(r.mode)
 	if r.model != "" {
 		mode += " (" + r.model + ")"
 	}

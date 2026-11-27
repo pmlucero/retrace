@@ -66,14 +66,14 @@ type runOptions struct {
 }
 
 // mode returns the replay mode the flags select (spec §9.3).
-func (o runOptions) mode() string {
+func (o runOptions) mode() cassette.Mode {
 	switch {
 	case o.model != "":
-		return "swap-model"
+		return cassette.ModeSwapModel
 	case o.tools == "live":
-		return "live-tools"
+		return cassette.ModeLiveTools
 	}
-	return "exact"
+	return cassette.ModeExact
 }
 
 // reservedStrategies are accepted by the parser and rejected (spec §6.3).
@@ -145,9 +145,9 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 		return opts, usageError(env.Stderr, "--model with --tools live holds nothing constant; use record instead"), false
 	case set["model"] && opts.model == "":
 		return opts, usageError(env.Stderr, "--model: want a model name"), false
-	case set["anthropic-upstream"] && opts.mode() != "swap-model":
+	case set["anthropic-upstream"] && !opts.mode().ForwardsLLM():
 		return opts, usageError(env.Stderr, "--anthropic-upstream is only used with --model: the LLM is answered from the cassette"), false
-	case len(opts.mcp) > 0 && opts.mode() != "live-tools":
+	case len(opts.mcp) > 0 && !opts.mode().ForwardsMCP():
 		return opts, usageError(env.Stderr, "--mcp is only used with --tools live: MCP is answered from the cassette"), false
 	case reservedStrategies[opts.onMiss]:
 		return opts, usageError(env.Stderr, fmt.Sprintf("--on-miss %s is not implemented in this version", opts.onMiss)), false

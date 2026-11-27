@@ -237,7 +237,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		Cassette: c,
 		Writer:   w,
 		ID:       id,
-		Mode:     "record",
+		Mode:     string(cassette.ModeRecord),
 		StartMsg: "recording",
 		MCP:      names,
 		Command:  opts.command,
@@ -280,7 +280,7 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 		create = session.ReplaceCassette
 	}
 	c, err := create(ctx, path, cassette.Session{
-		ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
+		ID: id, Mode: cassette.ModeRecord, Status: "recording", CreatedAt: time.Now(),
 		Command: opts.command, Cwd: cwd, OnMiss: "strict",
 		MCPServers: serversJSON, Redaction: rules.Metadata(), RetraceVersion: Version(),
 		Labels: opts.labels, DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),

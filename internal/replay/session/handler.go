@@ -29,7 +29,7 @@ type LiveServer struct {
 //   - live-tools answers the LLM as exact does and forwards the MCP servers in
 //     Live. Replayed is empty.
 type Routes struct {
-	Mode       string
+	Mode       cassette.Mode
 	Src        *cassette.Cassette
 	Queues     replay.QueueSet
 	Rules      *redact.Rules
@@ -56,7 +56,7 @@ type Routes struct {
 // a channel served from the cassette ends the replay (spec §6.2).
 func Handler(rt Routes) http.Handler {
 	mux := http.NewServeMux()
-	if rt.Mode == "swap-model" {
+	if rt.Mode.ForwardsLLM() {
 		mux.Handle("/llm/anthropic/", proxy.New(proxy.Config{Routes: []proxy.Route{{
 			Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: rt.Anthropic,
 			Provenance: "live", Rewrite: anthropic.ModelRewriter(rt.Model),

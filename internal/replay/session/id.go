@@ -23,8 +23,8 @@ var ErrNoDefaultID = errors.New("no default replay id")
 // with n one more than the highest in use, or 1 (spec §9.3). Only an n in
 // decimal digits, without leading zeros and below math.MaxInt64, counts: a
 // crafted file name must not make n+1 overflow.
-func NextID(dir, source, mode string) (string, error) {
-	prefix := source + "." + mode + "."
+func NextID(dir, source string, mode cassette.Mode) (string, error) {
+	prefix := source + "." + string(mode) + "."
 	// Not filepath.Glob: --dir may hold pattern characters such as '['.
 	entries, err := os.ReadDir(dir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {

@@ -41,9 +41,9 @@ func UsagePrepareError(err error) *PrepareError { return &PrepareError{Usage: tr
 
 // Params are the resolved inputs of a replay of one source session.
 type Params struct {
-	Source        string // the id of the source session
-	Mode          string // exact, swap-model or live-tools
-	Model         string // the model of swap-model
+	Source        string        // the id of the source session
+	Mode          cassette.Mode // exact, swap-model or live-tools
+	Model         string        // the model of swap-model
 	Anthropic     *url.URL
 	Command       []string // the agent's command
 	Cwd           string   // where the agent runs
@@ -86,14 +86,14 @@ func Prepare(ctx context.Context, src *cassette.Cassette, sess cassette.Session,
 	// expected to be served (spec §4.4).
 	var live []LiveServer
 	replayed := servers
-	if p.Mode == "live-tools" {
+	if p.Mode.ForwardsMCP() {
 		if live, err = liveMCPServers(sess.MCPServers, p.MCP, p.ParseURL, p.Printable); err != nil {
 			return nil, UsagePrepareError(err)
 		}
 		replayed = nil
 	}
 	var llm func([]byte) []byte
-	if p.Mode != "swap-model" {
+	if p.Mode.QueuesLLM() {
 		llm = anthropic.Canonicalize
 	}
 	queues, err := replay.BuildQueues(ctx, src, llm, replayed, mcp.Canonicalize)
@@ -157,12 +157,12 @@ func Execute(ctx context.Context, env Env, plan *Plan, target Target) (Result, e
 
 	strategy := replay.Strict{} // the only one the flags accept (spec §6.3)
 	var modelOverride *string
-	if p.Mode == "swap-model" {
+	if p.Mode.ForwardsLLM() {
 		modelOverride = &p.Model
 	}
 	mcpServers := mcpServersCopy(plan.srcSess.MCPServers)
 	var finish func(context.Context, *cassette.Cassette) error
-	if p.Mode == "live-tools" {
+	if p.Mode.ForwardsMCP() {
 		// Completed from the replay's own exchanges, as in record (spec §9.3).
 		mcpServers, finish = liveMCPServersJSON(plan.live, plan.rules), mcpmeta.StoreServerInfo
 	}
@@ -202,7 +202,7 @@ func Execute(ctx context.Context, env Env, plan *Plan, target Target) (Result, e
 		Cassette: c,
 		Writer:   w,
 		ID:       id,
-		Mode:     p.Mode,
+		Mode:     string(p.Mode),
 		StartMsg: "replaying " + p.Source,
 		MCP:      plan.servers,
 		Command:  p.Command,

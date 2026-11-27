@@ -151,7 +151,7 @@ func writeLsTable(w io.Writer, sessions []listed) error {
 			duration = summary.FormatDuration(*t.Duration)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%d\t%s/%s\t%s\t%s\n",
-			printable(s.ID), s.CreatedAt.In(displayLocation).Format(createdLayout), printable(s.Mode),
+			printable(s.ID), s.CreatedAt.In(displayLocation).Format(createdLayout), printable(string(s.Mode)),
 			printable(parent), printable(status), t.Steps,
 			summary.FormatTokens(t.TokensIn), summary.FormatTokens(t.TokensOut), summary.FormatCost(t), duration)
 	}
@@ -199,7 +199,7 @@ type lsEntry struct {
 // each session with it too, so both documents name the totals alike.
 func newLsEntry(s cassette.Session, t summary.Totals) lsEntry {
 	e := lsEntry{
-		ID: s.ID, CreatedAt: s.CreatedAt, EndedAt: s.EndedAt, Mode: s.Mode,
+		ID: s.ID, CreatedAt: s.CreatedAt, EndedAt: s.EndedAt, Mode: string(s.Mode),
 		ParentSessionID: s.ParentSessionID, Status: s.Status, DroppedEvents: s.DroppedEvents,
 		Steps: t.Steps, ToolCalls: t.ToolCalls, TokensIn: t.TokensIn, TokensOut: t.TokensOut,
 		CostUSD: t.CostUSD, UnpricedResponses: t.Unpriced, Models: t.Models,
