@@ -1,7 +1,7 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.37
+- Version: 0.38
 - Last updated: 2026-11-27
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
@@ -114,6 +114,8 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 - A URL-carrying header that is itself on the deny-list is masked whole, as any other redacted header.
 
 **Body redaction** (`--redact <jsonpath>`, repeatable) is opt-in.
+
+- Without a body rule, `record` warns at startup that bodies are stored unredacted (§9.2), so a secret pasted into a prompt is not assumed safe.
 
 - Each rule is a JSONPath in this subset: it starts with `$`, followed by any of `.name`, `['name']`, `[n]` (array index), `.*` or `[*]` (every member or element), and `..name` (`name` at any depth). A dotted name has letters, digits, `_` and `-`; any other name is written `['name']`. Any other syntax is a usage error (exit `2`).
 - Rules apply to every JSON body retrace stores, on both channels: request bodies, non-streamed response bodies, and the `data` of each SSE event. A body that is not JSON is stored as it is.
@@ -548,6 +550,7 @@ retrace record [--session <id>] [--mcp <name>=<url>]... [--listen <addr>] [--lis
   - A generated id has the form `YYYYMMDD-HHMMSS-xxxx`: local time, then four random lowercase hexadecimal digits. If it already exists, a new random suffix is drawn.
 - `--force`: replaces the cassette of an existing session. The old cassette stays unchanged until the new one holds its session row (§7.2), and the new file then takes its place with an atomic rename. If `record` fails before that, for example because the session row cannot be written, the old session is left as it was. If a step right after the rename fails (removing the old cassette's SQLite log files, or reopening the new cassette), the new cassette is removed as well, and the id is left free.
 - `--mcp`: registers an MCP upstream. Repeatable.
+- `--redact`: adds a body redaction rule (§3.5). Repeatable. When `record` starts with no `--redact` rule, it logs one warning on stderr before the agent starts: `bodies are stored unredacted; add --redact <jsonpath> to mask fields`. It is a log line at level `warn`, so `--log-level error` hides it (§9.1); there is no flag of its own. Header redaction does not count: it is always on.
 - `--redact-header`: adds a header name to the deny-list (§3.5). Repeatable. The name is literal: a name that starts with `*` is a usage error (exit `2`) whose message says that `*` patterns are not accepted on the command line. A user who writes `*-x` expects a pattern and would silently get none. The stored redaction rules (§7.2) also mark patterns with a leading `*`, so a stored literal `*-x` could not be told apart from one.
 - `--listen`: default `127.0.0.1:4790`. Port `0` picks a free port. Non-loopback addresses require `--listen-unsafe`. Requests whose host does not name this address are rejected (§3.6).
 - `--listen-unsafe`: allows a non-loopback `--listen` address. The proxy has no authentication, so anyone who can reach that address can use it (§10).
@@ -777,7 +780,7 @@ Usage errors in the flags and arguments are reported first, before `--dir` is re
 - The Anthropic upstream is `https`, or plain `http` only on loopback, so retrace never sends the Anthropic API key in cleartext over a network (§9.2). MCP upstreams are not restricted: an MCP server reached over `http` off the machine receives the agent's headers, credentials included, in cleartext.
 - The proxy answers only requests whose host names its listen address and that carry no `Origin` or `Sec-Fetch-Site` header (§3.6). A web page cannot reach it through DNS rebinding or a cross-origin request on a loopback address. With `--listen-unsafe`, a page can still send it a `GET` without reading the response (§3.6).
 - In `exact` mode no outbound connection is made.
-- Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so.
+- Cassettes contain prompts and tool outputs verbatim. The README and `record --help` MUST say so, and `record --help` MUST also say that only `--redact` masks body fields. `record` without `--redact` warns about it at startup (§9.2).
 - A cassette from someone else is untrusted input. `run` and `check` never run its recorded command implicitly (§9.3, §9.9.3), and text that retrace prints from a cassette is escaped so that it cannot drive the terminal.
 - A corpus is code. `check --recorded-command` runs the command of every cassette in it, so a change that adds or edits a cassette changes what runs. A CI workflow that runs `check --recorded-command` on untrusted changes, such as pull requests from forks, runs code those changes chose. The README MUST say so.
 - **Escaped text output.** Every text output escapes each control character (C0 and C1) and each bidirectional control character that comes from a cassette. That covers `ls`, `show`, `show --raw`, `diff` in text format, `check` in text and Markdown (§9.9.7) and the divergence report of §6.4, and also the warnings, errors and log messages of any command that include a value read from a cassette, such as a stored MCP URL (§4.3) or command (§9.3). The one exception is the multi-line text of `show --raw` (bodies and SSE chunks), which keeps line feeds and tabs so it keeps its layout. They cannot drive the terminal.
@@ -855,6 +858,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-49** `check` with an explicit id replays it when it names a `failed` session or a replay. While the agent writes to its stdout, `check`'s stdout holds only `check`'s own output, and the agent's output appears on stderr.
 - **AC-50** The billed cost of `check` (§9.9.6) counts only `live` responses: an `exact` and a `live-tools` check report $0 in text and JSON, a `swap-model` check reports the cost of its live responses, and the budget's spent cost ignores responses answered from the cassette.
 - **AC-51** `record`, a `swap-model` `run` and a `swap-model` `check` with an `--anthropic-upstream` of `http://api.example.com`, `http://10.0.0.5:8080`, `http://127.0.0.1@api.example.com`, `http://localhost.:8080` or `http://api.localhost:8080` are usage errors (exit `2`) that create no cassette and send no request. `http://127.0.0.1:<port>`, `http://127.0.0.2:<port>`, `http://[::1]:<port>`, `http://[::ffff:127.0.0.1]:<port>` and `http://LOCALHOST:<port>` are accepted, and so is `https` to any host.
+- **AC-52** `record` without `--redact` logs exactly one warning on stderr, before the agent starts, that says bodies are stored unredacted and names `--redact`. With one `--redact` rule, or with `--log-level error`, it logs none. `--redact-header` rules alone do not silence it. `record --help` says that bodies are stored verbatim unless `--redact` is given.
 
 ### Demo (manual)
 
