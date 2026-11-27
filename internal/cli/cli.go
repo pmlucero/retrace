@@ -10,9 +10,9 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
 	"strings"
-	"syscall"
+
+	"github.com/pmlucero/retrace/internal/agentrun"
 )
 
 // Exit codes shared by all commands (spec §9.7). Command-specific codes
@@ -133,8 +133,7 @@ func (e *Env) subscribeSignals(c chan<- os.Signal) (stop func()) {
 	if e.notifySignals != nil {
 		return e.notifySignals(c)
 	}
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	return func() { signal.Stop(c) }
+	return agentrun.NotifyDefault(c)
 }
 
 func envOr(getenv func(string) string, key, fallback string) string {

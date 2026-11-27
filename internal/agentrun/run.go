@@ -60,13 +60,20 @@ type Result struct {
 	Stats    cassette.WriterStats
 }
 
+// NotifyDefault subscribes c to SIGINT and SIGTERM, the signals that end a
+// session, and returns a function that unsubscribes it. It is what a nil
+// Config.NotifySignals means, and what check uses for its own signal loop.
+func NotifyDefault(c chan<- os.Signal) (stop func()) {
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	return func() { signal.Stop(c) }
+}
+
 // notify subscribes c as cfg.NotifySignals says.
 func (cfg Config) notify(c chan<- os.Signal) (stop func()) {
 	if cfg.NotifySignals != nil {
 		return cfg.NotifySignals(c)
 	}
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	return func() { signal.Stop(c) }
+	return NotifyDefault(c)
 }
 
 // guardHosts returns the hosts that name the proxy's address: the host of
