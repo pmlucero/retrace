@@ -98,7 +98,7 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 	fs.StringVar(&ro.onMiss, "on-miss", "strict", "divergence strategy")
 	fs.DurationVar(&ro.grace, "grace", 5*time.Second, "how long the agent has to exit after SIGTERM on a cassette miss")
 	fs.Func("redact-header", "also redact the request or response header with this literal `name` (repeatable)", redactHeaderFlag(&ro.redactHeader))
-	upstream := fs.String("anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL (swap-model)")
+	upstream := fs.String("anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL (swap-model; plain http only for loopback hosts)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), checkUsage)
 		fs.PrintDefaults()
@@ -163,7 +163,7 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 	case set["cwd"] && !isDir(ro.cwd):
 		return usage(fmt.Sprintf("--cwd %s is not an existing directory", strconv.Quote(ro.cwd)))
 	}
-	u, err := absoluteHTTPURL(*upstream)
+	u, err := upstreamURL(*upstream)
 	if err != nil {
 		return usage("--anthropic-upstream: " + err.Error())
 	}
