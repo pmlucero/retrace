@@ -72,7 +72,7 @@ func TestDiffJSONInvalidUTF8(t *testing.T) {
 		}
 	}
 	diverged := &cassette.Event{Seq: 9, Result: json.RawMessage(`{"channel":"` + bad + `","upstream":"` + bad + `"}`)}
-	session := cassette.Session{ID: "id" + bad, Mode: "swap" + bad, Status: "ok" + bad, ParentSessionID: &bad}
+	session := cassette.Session{ID: "id" + bad, Mode: cassette.Mode("swap" + bad), Status: "ok" + bad, ParentSessionID: &bad}
 	side := diffSide{session: session, diverged: diverged, divergedStep: 1}
 	side.totals.Models = []string{bad}
 	rep := diffReport{a: side, b: side, result: diff.Result{Point: &diff.Point{
