@@ -166,14 +166,23 @@ func (c *canonicalizer) value(depth int) bool {
 	case ch == '-' || ch >= '0' && ch <= '9':
 		return c.number()
 	default:
-		for _, lit := range [...]string{"true", "false", "null"} {
-			if bytes.HasPrefix(c.src[c.pos:], []byte(lit)) {
-				c.out = append(c.out, lit...)
-				c.pos += len(lit)
-				return true
-			}
+		var lit string
+		switch ch {
+		case 't':
+			lit = "true"
+		case 'f':
+			lit = "false"
+		case 'n':
+			lit = "null"
+		default:
+			return false
 		}
-		return false
+		if !bytes.HasPrefix(c.src[c.pos:], []byte(lit)) {
+			return false
+		}
+		c.out = append(c.out, lit...)
+		c.pos += len(lit)
+		return true
 	}
 }
 
