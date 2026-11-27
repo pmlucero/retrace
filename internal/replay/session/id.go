@@ -1,6 +1,7 @@
-// Package session holds the parts of a replay of a recorded session that
-// compose the providers: the handler that routes its requests and the helper
-// that chooses its id. It will host the replay's run (#188).
+// Package session runs the replay of a recorded session: Prepare resolves its
+// inputs, Execute creates its cassette and runs the agent against the
+// handler that routes its requests, and NextID chooses its default id. It
+// knows nothing of flags, exit codes or the command line (#188).
 package session
 
 import (

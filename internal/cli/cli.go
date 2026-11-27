@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/pmlucero/retrace/internal/agentrun"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
 // Exit codes shared by all commands (spec §9.7). Command-specific codes
@@ -48,6 +49,10 @@ type Env struct {
 	// notifySignals replaces how sessions subscribe to SIGINT and SIGTERM;
 	// nil uses the default. Tests set it to send signals directly.
 	notifySignals func(c chan<- os.Signal) (stop func())
+
+	// insertSession replaces how a new cassette's session row is written; nil
+	// uses the default. Tests set it to make the insert fail.
+	insertSession session.InsertFunc
 }
 
 // command is one retrace subcommand. run returns the process exit code.
@@ -67,11 +72,16 @@ func Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, cmds []command) int {
-	return runNotify(ctx, args, stdin, stdout, stderr, getenv, cmds, nil)
+	return runWith(ctx, args, stdin, stdout, stderr, getenv, cmds, nil, nil)
 }
 
 // runNotify is run with Env.notifySignals set to notify.
 func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, cmds []command, notify func(chan<- os.Signal) func()) int {
+	return runWith(ctx, args, stdin, stdout, stderr, getenv, cmds, notify, nil)
+}
+
+// runWith is run with Env.notifySignals set to notify and Env.insertSession to insert.
+func runWith(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string, cmds []command, notify func(chan<- os.Signal) func(), insert session.InsertFunc) int {
 	fs := flag.NewFlagSet("retrace", flag.ContinueOnError)
 	fs.SetOutput(io.Discard) // errors and help are printed by us, to the right stream
 	dir := fs.String("dir", envOr(getenv, "RETRACE_DIR", defaultDir), "cassette directory (env RETRACE_DIR)")
@@ -122,6 +132,7 @@ func runNotify(ctx context.Context, args []string, stdin io.Reader, stdout, stde
 		Getenv:  getenv,
 
 		notifySignals: notify,
+		insertSession: insert,
 	}
 	return cmd.run(ctx, env, cmdArgs)
 }

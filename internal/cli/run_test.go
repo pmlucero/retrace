@@ -122,9 +122,13 @@ func recordAgainst(t *testing.T, dir, id string, n int, url string) string {
 
 func runRunCmd(t *testing.T, dir string, args ...string) recordRun {
 	t.Helper()
-	r := recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}}
+	return runRunInto(recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}}, dir, args...)
+}
+
+// runRunInto is runRunCmd with the buffers and hooks of r.
+func runRunInto(r recordRun, dir string, args ...string) recordRun {
 	all := append([]string{"--dir", dir, "run"}, args...)
-	r.code = run(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands)
+	r.code = runWith(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands, r.notify, r.insert)
 	return r
 }
 
@@ -284,8 +288,7 @@ func TestRunFailedSessionInsertLeavesNothingBehind(t *testing.T) {
 	dir := t.TempDir()
 	recordForReplay(t, dir, "s", 1)
 
-	failSessionInsert(t)
-	r := runRunCmd(t, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
+	r := runRunInto(recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}, insert: failingInsert}, dir, "s", "--recorded-command", "--listen", "127.0.0.1:0")
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), errInsertFailed.Error()) {
 		t.Errorf("exit %d, stderr %q; want %d and the insert's error", r.code, r.stderr, ExitError)
 	}
@@ -353,40 +356,5 @@ func TestRunUsageErrors(t *testing.T) {
 				t.Errorf("exit %d, stderr %q; want %d and %q", r.code, r.stderr, ExitUsage, tt.want)
 			}
 		})
-	}
-}
-
-// spec §9.3: a retry that would leave the id format or reach 2^63 - 1 asks
-// for --as.
-func TestCreateReplayCassetteGivesUp(t *testing.T) {
-	ctx := context.Background()
-	for _, id := range []string{"s.exact.9223372036854775806", strings.Repeat("a", 120) + ".exact.9"} {
-		dir := t.TempDir()
-		if err := os.WriteFile(cassette.Path(dir, id), nil, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		_, _, err := createReplayCassette(ctx, dir, id, false, cassette.Session{Mode: "exact", Status: "recording", OnMiss: "strict"})
-		if err == nil || !strings.Contains(err.Error(), "--as") || !strings.Contains(err.Error(), "after "+id+";") {
-			t.Errorf("%s: %v, want an error asking for --as", id, err)
-		}
-		if files, _ := os.ReadDir(dir); len(files) != 1 {
-			t.Errorf("%s: dir holds %d files, want only the existing one", id, len(files))
-		}
-	}
-}
-
-func TestCreateReplayCassetteTakesTheNextFreeDefaultID(t *testing.T) {
-	ctx := context.Background()
-	dir := t.TempDir()
-	if err := os.WriteFile(cassette.Path(dir, "s.exact.1"), nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c, id, err := createReplayCassette(ctx, dir, "s.exact.1", false, cassette.Session{Mode: "exact", Status: "recording", OnMiss: "strict"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = c.Close()
-	if id != "s.exact.2" {
-		t.Errorf("id %q, want s.exact.2", id)
 	}
 }

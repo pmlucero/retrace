@@ -18,6 +18,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/diff"
 	"github.com/pmlucero/retrace/internal/mcpmeta"
+	"github.com/pmlucero/retrace/internal/replay/session"
 	"github.com/pmlucero/retrace/internal/summary"
 )
 
@@ -207,10 +208,10 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 		_, perr := prepareReplay(ctx, src, s, ro)
 		_ = src.Close()
 		if perr != nil {
-			if perr.usage && !strings.Contains(perr.msg, strconv.Quote(s.ID)) {
-				perr.msg = printable(fmt.Sprintf("session %q: %s", s.ID, perr.msg))
+			if perr.Usage && !strings.Contains(perr.Msg, strconv.Quote(s.ID)) {
+				perr.Msg = printable(fmt.Sprintf("session %q: %s", s.ID, perr.Msg))
 			}
-			return perr.report(env)
+			return reportPrepare(env, perr)
 		}
 		if err := cassette.ValidateSessionID(replayID(s.ID, mode, opts.repeat)); err != nil {
 			return usageError(env.Stderr, fmt.Sprintf("session %q: %v; its replay ids <id>.<mode>.<k> must fit the id format", s.ID, err))
@@ -476,14 +477,16 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 	defer src.Close()
 	plan, perr := prepareReplay(ctx, src, s, ro)
 	if perr != nil {
-		return fail(perr.msg, perr)
+		return fail(perr.Msg, perr)
 	}
 	// The agents' output goes to stderr, so that stdout holds only the report.
-	agentEnv := *env
+	agentEnv := sessionEnv(env)
 	agentEnv.Stdout = env.Stderr
-	res, err := executeReplay(ctx, &agentEnv, plan, replayTarget{dir: out, id: id, explicit: true, listen: ro.listen, timeout: opts.timeout})
+	res, err := session.Execute(ctx, agentEnv, plan, session.Target{
+		Dir: out, ID: id, Explicit: true, Listen: ro.listen, Timeout: opts.timeout, Insert: env.insertSession,
+	})
 	if err != nil {
-		// executeReplay logged it. The agent may have run and made billed
+		// session.Execute logged it. The agent may have run and made billed
 		// calls, so the budget counts this replay at its estimate.
 		return replayOutcome{id: id, outcome: outcomeError, costUnknown: true}
 	}
@@ -493,7 +496,7 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 		r.costUnknown = true
 		return r
 	}
-	rs, events, err := readSession(ctx, res.path, env, (*cassette.Cassette).Events)
+	rs, events, err := readSession(ctx, res.Path, env, (*cassette.Cassette).Events)
 	if err != nil {
 		r := fail("reading the replay", err)
 		r.costUnknown = true
@@ -506,19 +509,19 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 		wantExit = *s.AgentExitCode
 	}
 	switch {
-	case res.status == "diverged":
+	case res.Run.Status == "diverged":
 		r.outcome = outcomeDiverged
-	case res.status != "completed":
+	case res.Run.Status != "completed":
 		// A replay that was stopped (timeout, signal) or never ran has a
 		// shorter trajectory than its source. That is no divergence: it would
 		// hide why the replay ended.
 		r.outcome = outcomeError
-		if res.timedOut {
+		if res.Run.TimedOut {
 			r.reason = "timed out after " + opts.timeout.String()
 		}
 	case cmpRes.Point != nil:
 		r.outcome = outcomeDiverged
-	case res.agentExit != wantExit:
+	case res.Run.Agent.ExitCode != wantExit:
 		r.outcome = outcomeError
 	default:
 		r.outcome = outcomeIdentical

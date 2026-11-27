@@ -26,17 +26,12 @@ func TestHelperCwdAgent(t *testing.T) {
 	os.Exit(0)
 }
 
-// errInsertFailed is what failSessionInsert makes the session insert return.
+// errInsertFailed is what failingInsert returns.
 var errInsertFailed = errors.New("disk full (injected)")
 
-// failSessionInsert makes every session insert fail until the test ends, as a
-// full disk or a locked database would.
-func failSessionInsert(t *testing.T) {
-	t.Helper()
-	orig := insertSession
-	insertSession = func(*cassette.Tx, context.Context, cassette.Session) error { return errInsertFailed }
-	t.Cleanup(func() { insertSession = orig })
-}
+// failingInsert makes the session insert fail, as a full disk or a locked
+// database would. It is the insert of runs through recordRun.insert.
+func failingInsert(context.Context, *cassette.Tx, cassette.Session) error { return errInsertFailed }
 
 // assertDirHolds fails the test unless dir holds exactly the named files: no
 // other cassette and no -wal or -shm file.
@@ -52,35 +47,6 @@ func assertDirHolds(t *testing.T, dir string, want ...string) {
 	}
 	if !slices.Equal(got, want) {
 		t.Errorf("%s holds %v, want %v", dir, got, want)
-	}
-}
-
-// #56: a cassette whose session row cannot be written is removed.
-func TestCreateSessionCassetteRemovesTheFileWhenTheInsertFails(t *testing.T) {
-	failSessionInsert(t)
-	dir := t.TempDir()
-	path := cassette.Path(dir, "s")
-	_, err := createSessionCassette(context.Background(), path, cassette.Session{ID: "s", Mode: "record", Status: "recording", OnMiss: "strict"})
-	if !errors.Is(err, errInsertFailed) {
-		t.Fatalf("err = %v, want the insert's error", err)
-	}
-	assertDirHolds(t, dir)
-}
-
-// The cassette of another session at the same path is never removed.
-func TestCreateSessionCassetteKeepsAnExistingFile(t *testing.T) {
-	failSessionInsert(t)
-	dir := t.TempDir()
-	path := cassette.Path(dir, "s")
-	if err := os.WriteFile(path, []byte("another session"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := createSessionCassette(context.Background(), path, cassette.Session{ID: "s"}); !errors.Is(err, cassette.ErrExists) {
-		t.Fatalf("err = %v, want ErrExists", err)
-	}
-	data, _ := os.ReadFile(path) //nolint:gosec // G304: the file this test created
-	if string(data) != "another session" {
-		t.Errorf("existing file now holds %q", data)
 	}
 }
 
