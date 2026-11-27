@@ -23,6 +23,7 @@ This directory records the significant architectural decisions of retrace, follo
 | [0014](0014-redaction-fragments-and-literal-names.md) | Redaction of URL fragments and literal `--redact-header` names | Accepted |
 | [0015](0015-corpus-check-command.md) | Corpus check command | Accepted |
 | [0016](0016-redact-mcp-session-ids.md) | Redact MCP session ids | Accepted |
+| [0017](0017-provider-seam-not-yet-extracted.md) | The Provider seam is planned, not yet extracted | Accepted |
 
 ## Statuses
 
