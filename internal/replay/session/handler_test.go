@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -123,12 +124,45 @@ func TestHandlerSwapModelForwardsTheLLM(t *testing.T) {
 	}
 }
 
-// spec §4.1, §6.2: in exact mode the LLM is answered from the cassette, and
-// a miss is not forwarded.
+// spec §4.1, §6.2, AC-28: in exact mode the LLM is answered from the cassette,
+// a miss gets 422 with the retrace_cassette_miss error, records a divergence,
+// and nothing is forwarded upstream.
 func TestHandlerExactAnswersTheLLMFromTheCassette(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("exact mode forwarded %s %s upstream", r.Method, r.URL.Path)
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	t.Cleanup(up.Close)
+	target, err := url.Parse(up.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
 	rt := routesFor(t, "exact")
+	rt.Anthropic = target
+	rt.Live = []LiveServer{{Name: "b", Target: target}}
 	rec := post(t, Handler(rt), "/llm/anthropic/v1/messages", `{"model":"m","messages":[]}`)
-	if rec.Code == http.StatusOK || rec.Code == http.StatusNotFound {
-		t.Errorf("status %d, want a cassette miss", rec.Code)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("status %d, want 422 for a cassette miss", rec.Code)
+	}
+	var body struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body %q is not JSON: %v", rec.Body.String(), err)
+	}
+	if body.Type != "error" || body.Error.Type != "retrace_cassette_miss" || body.Error.Message == "" {
+		t.Errorf("body %q, want an error of type retrace_cassette_miss with a message", rec.Body.String())
+	}
+	select {
+	case <-rt.Divergence.Done():
+	default:
+		t.Error("the miss did not signal a divergence")
+	}
+	if _, misses, ok := rt.Divergence.Report(); !ok || misses != 1 {
+		t.Errorf("divergence report: ok %v, misses %d, want one miss", ok, misses)
 	}
 }
