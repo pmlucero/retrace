@@ -28,7 +28,7 @@ Read these before changing anything non-trivial:
 ## Go conventions
 
 - **Layout:** `cmd/retrace/` (main, wiring only) and `internal/...` (all logic). Nothing goes in `pkg/` until there is an external consumer.
-  Expected packages: `proxy`, `provider/anthropic`, `mcp`, `cassette`, `match`, `replay`, `divergence`, `diff`, `cli`, `httpx` (HTTP helpers shared by recording and replay).
+  Expected packages: `proxy`, `provider/anthropic`, `mcp`, `cassette`, `match`, `replay`, `divergence`, `diff`, `cli`, `httpx` (HTTP helpers shared by recording and replay), `sse` (SSE framing and data parsing shared by proxy, mcp, redact and the provider).
 - **Build:** `CGO_ENABLED=0` must always work ([ADR 0001](docs/adr/0001-go-single-binary.md)).
 - **Dependencies:** prefer the standard library. Each new module dependency is justified in the PR, and in an ADR if it is significant.
 - **Errors:** wrap with `fmt.Errorf("doing X: %w", err)`. Error messages are lowercase with no trailing punctuation. Never panic outside `main` and impossible states.

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+
+	"github.com/pmlucero/retrace/internal/sse"
 )
 
 // IDRewriter gives the responses of a replayed POST the ids of the incoming
@@ -74,8 +76,8 @@ func (r *IDRewriter) Body(body []byte) []byte {
 // data split over several lines keeps its lines, and each line keeps its
 // field prefix and its ending.
 func (r *IDRewriter) Event(event []byte) []byte {
-	lines := splitLines(event)
-	data, ok := eventData(lines)
+	lines := sse.Lines(event)
+	data, ok := sse.LinesData(lines)
 	if !ok {
 		return event
 	}
@@ -86,16 +88,16 @@ func (r *IDRewriter) Event(event []byte) []byte {
 	values := bytes.Split(rewritten, []byte("\n"))
 	out := make([]byte, 0, len(event)+len(rewritten)-len(data))
 	for _, l := range lines {
-		n, ok := dataPrefix(l.text)
+		n, ok := sse.DataPrefix(l.Text)
 		if !ok {
-			out = append(append(out, l.text...), l.eol...)
+			out = append(append(out, l.Text...), l.EOL...)
 			continue
 		}
 		// Rewriting adds no line break, since a JSON id holds none, so there
 		// is one value per data line.
-		out = append(out, l.text[:n]...)
+		out = append(out, l.Text[:n]...)
 		out = append(out, values[0]...)
-		out = append(out, l.eol...)
+		out = append(out, l.EOL...)
 		values = values[1:]
 	}
 	return out

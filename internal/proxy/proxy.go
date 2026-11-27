@@ -22,6 +22,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/httpx"
 	"github.com/pmlucero/retrace/internal/redact"
+	"github.com/pmlucero/retrace/internal/sse"
 )
 
 // Route maps a path prefix of the local listener to an upstream.
@@ -242,7 +243,7 @@ type exchange struct {
 
 	// Read and Close of recordingBody run on the proxy's goroutine for this
 	// request, so the fields below need no lock; once guards completion.
-	sse      sseSplitter
+	sse      sse.Splitter
 	chunkIdx int
 	body     bytes.Buffer // the response body when not streamed
 	stopped  bool         // the rest of the response is forwarded but not recorded
@@ -265,7 +266,7 @@ func (ex *exchange) observe(b []byte) {
 		ex.body.Write(b)
 		return
 	}
-	for _, event := range ex.sse.feed(b) {
+	for _, event := range ex.sse.Feed(b) {
 		if int64(len(event)) > ex.p.maxBody {
 			ex.stop(fmt.Sprintf("an SSE event exceeded %d bytes; the rest of the stream was forwarded but not recorded", ex.p.maxBody))
 			return
@@ -275,7 +276,7 @@ func (ex *exchange) observe(b []byte) {
 			return
 		}
 	}
-	if int64(len(ex.sse.rest())) > ex.p.maxBody {
+	if int64(len(ex.sse.Rest())) > ex.p.maxBody {
 		// No event boundary in sight: a malformed or binary stream.
 		ex.stop(fmt.Sprintf("an SSE event exceeded %d bytes; the rest of the stream was forwarded but not recorded", ex.p.maxBody))
 	}
@@ -286,7 +287,7 @@ func (ex *exchange) observe(b []byte) {
 func (ex *exchange) stop(reason string) {
 	ex.stopped = true
 	ex.notes = append(ex.notes, reason)
-	ex.body, ex.sse = bytes.Buffer{}, sseSplitter{}
+	ex.body, ex.sse = bytes.Buffer{}, sse.Splitter{}
 }
 
 func (ex *exchange) appendChunk(event []byte) {
@@ -315,7 +316,7 @@ func (ex *exchange) finish() {
 		switch {
 		case ex.stopped:
 		case ex.streamed:
-			if rest := ex.sse.rest(); len(rest) > 0 {
+			if rest := ex.sse.Rest(); len(rest) > 0 {
 				ex.appendChunk(rest) // an unterminated last event, kept as received
 			}
 		default:
