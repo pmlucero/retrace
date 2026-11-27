@@ -3,8 +3,8 @@ package cassette
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
-	"strings"
 )
 
 // InteractionFilter selects interactions by what the cassette stores in the
@@ -15,30 +15,18 @@ type InteractionFilter struct {
 	Upstreams []string // any of these upstreams
 }
 
-// where returns the WHERE clause that selects f, with its arguments. Columns
-// are qualified with the alias i.
-func (f InteractionFilter) where() (string, []any) {
-	var conds []string
-	var args []any
-	if f.Channel != "" {
-		conds = append(conds, "i.channel = ?")
-		args = append(args, f.Channel)
+// filterClause selects the interactions that match an InteractionFilter,
+// with the arguments of filterArgs. It is constant, so that no SQL is built
+// from values.
+const filterClause = ` WHERE (? = '' OR i.channel = ?) AND (? = '' OR i.http_method = ?)
+	AND (? = 0 OR i.upstream IN (SELECT value FROM json_each(?))) ORDER BY i.id`
+
+func (f InteractionFilter) args() ([]any, error) {
+	upstreams, err := json.Marshal(f.Upstreams)
+	if err != nil {
+		return nil, fmt.Errorf("encoding upstreams: %w", err)
 	}
-	if f.Method != "" {
-		conds = append(conds, "i.http_method = ?")
-		args = append(args, f.Method)
-	}
-	if len(f.Upstreams) > 0 {
-		marks := strings.TrimSuffix(strings.Repeat("?,", len(f.Upstreams)), ",")
-		conds = append(conds, "i.upstream IN ("+marks+")")
-		for _, u := range f.Upstreams {
-			args = append(args, u)
-		}
-	}
-	if len(conds) == 0 {
-		return "", nil
-	}
-	return " WHERE " + strings.Join(conds, " AND "), args
+	return []any{f.Channel, f.Channel, f.Method, f.Method, len(f.Upstreams), string(upstreams)}, nil
 }
 
 // InteractionsFiltered returns the interactions that match f, in arrival
@@ -75,13 +63,16 @@ func (c *Cassette) InteractionsWithRequests(ctx context.Context, f InteractionFi
 }
 
 func (c *Cassette) queryInteractions(ctx context.Context, f InteractionFilter, withRequests bool) ([]InteractionRequest, error) {
-	cols, join := interactionColumns, ""
+	query := `SELECT ` + interactionColumns + ` FROM interactions i` + filterClause
 	if withRequests {
-		cols += ", b.sha256, b.data"
-		join = " LEFT JOIN blobs b ON b.sha256 = i.request_blob"
+		query = `SELECT ` + interactionColumns + `, b.sha256, b.data FROM interactions i
+			LEFT JOIN blobs b ON b.sha256 = i.request_blob` + filterClause
 	}
-	where, args := f.where()
-	rows, err := c.db.QueryContext(ctx, `SELECT `+cols+` FROM interactions i`+join+where+` ORDER BY i.id`, args...)
+	args, err := f.args()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := c.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("reading interactions of %s: %w", c.path, err)
 	}
