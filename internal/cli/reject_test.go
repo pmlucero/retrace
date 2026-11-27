@@ -15,7 +15,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/pmlucero/retrace/internal/proxy"
+	"github.com/pmlucero/retrace/internal/httpx"
 )
 
 // rejectAgentEnv makes TestHelperRejectAgent run.
@@ -43,10 +43,10 @@ var rejectCases = []rejectCase{
 	{target: "/mcp/../llm/anthropic/v1/messages?token=" + rejectToken, status: 400},
 	{target: "/mcp/orders/%2e%2e/x?token=" + rejectToken, status: 400},
 	{target: "/llm/anthropic/%2e%2e/llm/anthropic/v1/messages?token=" + rejectToken, status: 400, errType: "invalid_request_error"},
-	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, status: 413, errType: "request_too_large"},
-	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, noLen: true, status: 413, errType: "request_too_large"},
-	{target: "/mcp/orders?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, status: 413},
-	{target: "/mcp/orders?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, noLen: true, status: 413},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: httpx.MaxRequestBytes + 1, status: 413, errType: "request_too_large"},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: httpx.MaxRequestBytes + 1, noLen: true, status: 413, errType: "request_too_large"},
+	{target: "/mcp/orders?token=" + rejectToken, size: httpx.MaxRequestBytes + 1, status: 413},
+	{target: "/mcp/orders?token=" + rejectToken, size: httpx.MaxRequestBytes + 1, noLen: true, status: 413},
 	{target: "/llm/anthropic/v1/messages?next=../x", status: 200},
 	// AC-37: the host and browser headers, on both routes.
 	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, host: "rebind.example:%PORT%", status: 403, errType: "permission_error"},
@@ -58,7 +58,7 @@ var rejectCases = []rejectCase{
 	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, headers: "Sec-Fetch-Site: cross-site\r\n", status: 403, errType: "permission_error"},
 	{target: "/mcp/orders?token=" + rejectToken, headers: "Sec-Fetch-Site: cross-site\r\n", status: 403},
 	{target: "/mcp/orders/../x?token=" + rejectToken, host: "rebind.example:%PORT%", status: 403},
-	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: proxy.MaxRequestBytes + 1, host: "rebind.example:%PORT%", status: 403, errType: "permission_error"},
+	{target: "/llm/anthropic/v1/messages?token=" + rejectToken, size: httpx.MaxRequestBytes + 1, host: "rebind.example:%PORT%", status: 403, errType: "permission_error"},
 	{target: "/llm/anthropic/v1/messages?ok=1", headers: "Sec-Fetch-Mode: cors\r\n", status: 200},
 	{target: "/llm/anthropic/v1/messages?ok=2", host: "localhost:9000", status: 200},
 	{target: "/llm/anthropic/v1/messages?ok=3", host: "localhost:%PORT%", status: 200},

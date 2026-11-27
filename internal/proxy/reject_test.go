@@ -11,7 +11,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-	"testing/iotest"
+
+	"github.com/pmlucero/retrace/internal/httpx"
 )
 
 // AC-34: the path check of spec §3.6, on the path as the HTTP server decodes
@@ -90,83 +91,6 @@ func TestProxyRejectsDotSegmentsWithoutGuard(t *testing.T) {
 	}
 	checkRejection(t, rec, routeMCP, "invalid_request_error")
 	checkRejectionLog(t, logs.String(), routeMCP, "admin")
-}
-
-// AC-34: a body over 64 MiB is answered 413 with or without a Content-Length,
-// and one at the limit is read.
-func TestReadBodyLimit(t *testing.T) {
-	tests := []struct {
-		name     string
-		size     int64
-		withLen  bool
-		channel  string
-		wantRead bool
-	}{
-		{"llm with content length", MaxRequestBytes + 1, true, routeLLM, false},
-		{"llm chunked", MaxRequestBytes + 1, false, routeLLM, false},
-		{"mcp with content length", MaxRequestBytes + 1, true, routeMCP, false},
-		{"mcp chunked", MaxRequestBytes + 1, false, routeMCP, false},
-		{"at the limit", MaxRequestBytes, false, routeLLM, true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			body := &countingReader{r: io.LimitReader(zeros{}, tt.size)}
-			r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/messages", body)
-			r.ContentLength = -1
-			if tt.withLen {
-				r.ContentLength = tt.size
-			}
-			var logs bytes.Buffer
-			rec := httptest.NewRecorder()
-			got, ok := ReadBody(rec, r, slog.New(slog.NewTextHandler(&logs, nil)), tt.channel)
-
-			if ok != tt.wantRead {
-				t.Fatalf("read = %v, want %v (status %d)", ok, tt.wantRead, rec.Code)
-			}
-			if tt.wantRead {
-				if int64(len(got)) != tt.size {
-					t.Errorf("read %d bytes, want %d", len(got), tt.size)
-				}
-				return
-			}
-			if rec.Code != http.StatusRequestEntityTooLarge {
-				t.Fatalf("status %d, want 413", rec.Code)
-			}
-			if tt.withLen && body.n != 0 {
-				t.Errorf("read %d bytes of a body whose Content-Length is over the limit", body.n)
-			}
-			if !tt.withLen && body.n > MaxRequestBytes+1 {
-				t.Errorf("read %d bytes, want at most the limit and one more", body.n)
-			}
-			checkRejection(t, rec, tt.channel, "request_too_large")
-			checkRejectionLog(t, logs.String(), tt.channel, "", "")
-		})
-	}
-}
-
-// A body that cannot be read is not a rejection of spec §3.6: it gets the
-// plain-text 400 it got before the limit, and no rejection warning.
-func TestReadBodyFailure(t *testing.T) {
-	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/v1/messages",
-		io.MultiReader(strings.NewReader("{"), iotest.ErrReader(io.ErrUnexpectedEOF)))
-	var logs bytes.Buffer
-	rec := httptest.NewRecorder()
-	if _, ok := ReadBody(rec, r, slog.New(slog.NewTextHandler(&logs, nil)), routeLLM); ok {
-		t.Fatal("read a broken body")
-	}
-	if rec.Code != http.StatusBadRequest || !strings.HasPrefix(rec.Body.String(), "retrace: reading request body: ") {
-		t.Errorf("answer %d %q, want 400 with the read error", rec.Code, rec.Body)
-	}
-	if logs.Len() != 0 {
-		t.Errorf("logged %q, want no rejection warning", logs.String())
-	}
-}
-
-// The limit and the message the agent gets agree (spec §3.6).
-func TestTooLargeReasonNamesTheLimit(t *testing.T) {
-	if MaxRequestBytes != 1<<26 || !strings.Contains(reasonTooLarge, "64 MiB (67108864 bytes)") {
-		t.Errorf("limit %d, reason %q; want 64 MiB in both", MaxRequestBytes, reasonTooLarge)
-	}
 }
 
 // checkRejection checks the body of a rejected request (spec §3.6): the
@@ -348,11 +272,13 @@ func TestGuardHostAndBrowserHeaders(t *testing.T) {
 // AC-37: the body-size check comes after the host check, and the body of a
 // request with a wrong host is never read.
 func TestGuardHostBeforeBody(t *testing.T) {
-	body := &countingReader{r: io.LimitReader(zeros{}, MaxRequestBytes+1)}
+	body := &countingReader{r: io.LimitReader(zeros{}, httpx.MaxRequestBytes+1)}
 	r := httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/llm/anthropic/v1/messages", body)
-	r.Host, r.ContentLength = "rebind.example", MaxRequestBytes+1
+	r.Host, r.ContentLength = "rebind.example", httpx.MaxRequestBytes+1
 	rec := httptest.NewRecorder()
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { ReadBody(w, r, slog.New(slog.DiscardHandler), routeLLM) })
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		httpx.ReadBody(w, r, slog.New(slog.DiscardHandler), routeLLM)
+	})
 	Guard(next, slog.New(slog.DiscardHandler), "127.0.0.1").ServeHTTP(rec, r)
 	if rec.Code != http.StatusForbidden || body.n != 0 {
 		t.Errorf("status %d after reading %d bytes, want 403 and none", rec.Code, body.n)
