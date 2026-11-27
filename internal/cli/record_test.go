@@ -524,6 +524,7 @@ func waitUntil(t *testing.T, cond func() bool) {
 
 // AC-52: record without --redact warns once, before the agent starts.
 func TestRecordWarnsThatBodiesAreStoredUnredacted(t *testing.T) {
+	// The wording is spelled out on purpose: it pins the spec's text (§9.2).
 	const msg = "bodies are stored unredacted; add --redact <jsonpath> to mask fields"
 	tests := []struct {
 		name   string
@@ -553,8 +554,8 @@ func TestRecordWarnsThatBodiesAreStoredUnredacted(t *testing.T) {
 				t.Errorf("warning count = %d, want %d; stderr:\n%s", got, tt.want, errOut)
 			}
 			if tt.want == 1 {
-				if w, start := strings.Index(errOut, msg), strings.Index(errOut, "recording"); start >= 0 && w > start {
-					t.Errorf("warning after the session started; stderr:\n%s", errOut)
+				if w, start := strings.Index(errOut, msg), strings.Index(errOut, "recording"); start < 0 || w > start {
+					t.Errorf("want the warning before the session start line; stderr:\n%s", errOut)
 				}
 			}
 		})
