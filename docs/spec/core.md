@@ -115,7 +115,6 @@ Credentials can also travel in URLs, so the same rule covers every URL retrace s
 
 **Body redaction** (`--redact <jsonpath>`, repeatable) is opt-in.
 
-
 - Each rule is a JSONPath in this subset: it starts with `$`, followed by any of `.name`, `['name']`, `[n]` (array index), `.*` or `[*]` (every member or element), and `..name` (`name` at any depth). A dotted name has letters, digits, `_` and `-`; any other name is written `['name']`. Any other syntax is a usage error (exit `2`).
 - Rules apply to every JSON body retrace stores, on both channels: request bodies, non-streamed response bodies, and the `data` of each SSE event. A body that is not JSON is stored as it is.
 - Each matched value, whatever its type, is replaced by the string `[REDACTED:<sha256-prefix-8>]`. A string is hashed as it is, so it gets the same marker as the same value in a header. Any other value is hashed over its JSON text. A value selected by several rules, or nested inside another selected value, is masked once, over its original content.
