@@ -13,7 +13,9 @@ import (
 )
 
 // InsertFunc writes a new cassette's session row. Tests pass one that fails
-// to make the insert fail; nil means (*cassette.Tx).InsertSession.
+// to make the insert fail; nil means (*cassette.Tx).InsertSession. The
+// receiver comes first, and so ctx second, because it mirrors that method
+// expression.
 type InsertFunc func(tx *cassette.Tx, ctx context.Context, s cassette.Session) error
 
 func (f InsertFunc) orDefault() InsertFunc {
