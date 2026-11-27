@@ -9,7 +9,7 @@ import (
 	"github.com/pmlucero/retrace/internal/jsonvalue"
 )
 
-func mustRules(t *testing.T, paths ...string) *Rules {
+func mustRules(t testing.TB, paths ...string) *Rules {
 	t.Helper()
 	var ps []Path
 	for _, raw := range paths {

@@ -1,6 +1,7 @@
 package anthropic
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -34,6 +35,23 @@ func BenchmarkParseRequest(b *testing.B) {
 	for b.Loop() {
 		if _, err := ParseRequest(body); err != nil {
 			b.Fatal(err)
+		}
+	}
+}
+
+// BenchmarkConversationKey measures the canonicalization of a whole history,
+// without the prefix cache that makes ParseRequest skip it on a repeated body.
+func BenchmarkConversationKey(b *testing.B) {
+	var req struct {
+		Messages []json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(historyBody(), &req); err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, ok := conversationKeyCached(nil, req.Messages); !ok {
+			b.Fatal("not valid JSON")
 		}
 	}
 }

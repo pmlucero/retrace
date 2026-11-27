@@ -9,7 +9,7 @@ import (
 // BenchmarkRulesBody measures the cost --redact adds on the forwarding path
 // (spec §3.5): about 2.5 ms for a 1 MB request and 2 µs per SSE event.
 func BenchmarkRulesBody(b *testing.B) {
-	r := mustRules(&testing.T{}, "$..email")
+	r := mustRules(b, "$..email")
 	var msgs []string
 	for i := range 400 {
 		msgs = append(msgs, fmt.Sprintf(`{"role":"user","content":[{"type":"text","text":%q}]}`, strings.Repeat("lorem ipsum ", 200)+fmt.Sprint(i)))
@@ -44,8 +44,8 @@ func BenchmarkBodyCases(b *testing.B) {
 	keyEvent := []byte("event: x\ndata: {\"email\":\"a@b.c\",\"index\":0}\n\n")
 
 	none := NewRules(nil, nil)
-	rules := mustRules(&testing.T{}, "$..email")
-	indexRules := mustRules(&testing.T{}, "$.items[0].email")
+	rules := mustRules(b, "$..email")
+	indexRules := mustRules(b, "$.items[0].email")
 	indexBody := []byte(`{"items":[{"email":"a@b.c"}],` + string(plain[1:]))
 	for _, tt := range []struct {
 		name  string

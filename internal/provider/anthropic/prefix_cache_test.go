@@ -10,6 +10,8 @@ import (
 // A conversation grows turn by turn, so each key after the first restores a
 // cached prefix. Every key must still equal the reference, whatever the cache
 // holds, including a cache too small to keep the prefixes.
+//
+// AC-05: the key that identifies a user_message must not depend on the cache.
 func TestConversationKeyCachedGrowingHistory(t *testing.T) {
 	var valid []string
 	for _, s := range conversationKeySeeds {
