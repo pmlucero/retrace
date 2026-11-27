@@ -11,6 +11,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/mcp"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/redact"
 	"github.com/pmlucero/retrace/internal/replay"
@@ -83,7 +84,7 @@ func prepareReplay(ctx context.Context, src *cassette.Cassette, sess cassette.Se
 	if err != nil {
 		return nil, &prepareError{msg: "cannot read the session's redaction rules", attrs: []any{"session", opts.source, "error", err}}
 	}
-	servers, err := mcpServerNames(sess.MCPServers)
+	servers, err := mcpmeta.Names(sess.MCPServers)
 	if err != nil {
 		return nil, &prepareError{msg: "cannot read the session's MCP servers", attrs: []any{"session", opts.source, "error", err}}
 	}
@@ -164,7 +165,7 @@ func executeReplay(ctx context.Context, env *Env, plan *replayPlan, target repla
 	var finish func(context.Context, *cassette.Cassette) error
 	if plan.mode == "live-tools" {
 		// Completed from the replay's own exchanges, as in record (spec §9.3).
-		mcpServers, finish = liveMCPServersJSON(plan.live, plan.rules), storeMCPServerInfo
+		mcpServers, finish = liveMCPServersJSON(plan.live, plan.rules), mcpmeta.StoreServerInfo
 	}
 	source := plan.srcID
 	c, id, err := createReplayCassette(ctx, target.dir, target.id, target.explicit, cassette.Session{

@@ -17,6 +17,7 @@ import (
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/diff"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/summary"
 )
 
@@ -374,7 +375,7 @@ func refuseCheck(env *Env, corpus []cassette.Session, opts checkOptions, b *chec
 // source, and only the --mcp overrides for servers that it has (spec §9.9.2).
 func sessionOptions(ro runOptions, s cassette.Session) runOptions {
 	ro.source = s.ID
-	names, _ := mcpServerNames(s.MCPServers) // prepareReplay reports a bad list
+	names, _ := mcpmeta.Names(s.MCPServers) // prepareReplay reports a bad list
 	all := ro.mcp
 	ro.mcp = nil
 	for _, o := range all {
@@ -387,10 +388,10 @@ func sessionOptions(ro runOptions, s cassette.Session) runOptions {
 
 // checkMCPNames reports an --mcp whose name is no server of any session in
 // the corpus (spec §9.9.2).
-func checkMCPNames(corpus []cassette.Session, overrides []mcpServer) error {
+func checkMCPNames(corpus []cassette.Session, overrides []mcpmeta.Server) error {
 	for _, o := range overrides {
 		found := slices.ContainsFunc(corpus, func(s cassette.Session) bool {
-			names, _ := mcpServerNames(s.MCPServers)
+			names, _ := mcpmeta.Names(s.MCPServers)
 			return slices.Contains(names, o.Name)
 		})
 		if !found {

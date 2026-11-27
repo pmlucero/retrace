@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/redact"
 	"github.com/pmlucero/retrace/internal/replay/session"
 )
@@ -18,25 +19,25 @@ import (
 // override. A stored URL cannot be used when it holds a redaction marker, so
 // it is not the URL that was recorded, or when it is not an http or https
 // URL: the cassette is untrusted input.
-func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]session.LiveServer, error) {
+func liveMCPServers(stored json.RawMessage, overrides []mcpmeta.Server) ([]session.LiveServer, error) {
 	// Each name becomes a route: check them as for any replay.
-	if _, err := mcpServerNames(stored); err != nil {
+	if _, err := mcpmeta.Names(stored); err != nil {
 		return nil, err
 	}
-	var recorded []mcpServer
+	var recorded []mcpmeta.Server
 	if len(stored) > 0 {
 		if err := json.Unmarshal(stored, &recorded); err != nil {
 			return nil, fmt.Errorf("parsing mcp_servers: %w", err)
 		}
 	}
 	for _, o := range overrides {
-		if !slices.ContainsFunc(recorded, func(sv mcpServer) bool { return sv.Name == o.Name }) {
+		if !slices.ContainsFunc(recorded, func(sv mcpmeta.Server) bool { return sv.Name == o.Name }) {
 			return nil, fmt.Errorf("--mcp %s: the source session has no MCP server named %q", o.Name, o.Name)
 		}
 	}
 	servers := make([]session.LiveServer, 0, len(recorded))
 	for _, sv := range recorded {
-		if i := slices.IndexFunc(overrides, func(o mcpServer) bool { return o.Name == sv.Name }); i >= 0 {
+		if i := slices.IndexFunc(overrides, func(o mcpmeta.Server) bool { return o.Name == sv.Name }); i >= 0 {
 			u, err := absoluteHTTPURL(overrides[i].URL)
 			if err != nil {
 				return nil, fmt.Errorf("--mcp %s: %w", sv.Name, err) // validated by the flag; unreachable
@@ -60,9 +61,9 @@ func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]session.Li
 // its exchanges complete it (spec §9.3): each server under its name, with the
 // URL actually used, redacted (spec §3.5).
 func liveMCPServersJSON(servers []session.LiveServer, rules *redact.Rules) json.RawMessage {
-	out := make([]mcpServer, len(servers))
+	out := make([]mcpmeta.Server, len(servers))
 	for i, sv := range servers {
-		out[i] = mcpServer{Name: sv.Name, URL: rules.URL(sv.Target)}
+		out[i] = mcpmeta.Server{Name: sv.Name, URL: rules.URL(sv.Target)}
 	}
 	data, err := json.Marshal(out)
 	if err != nil {

@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/summary"
 )
 
@@ -142,7 +143,7 @@ func writeShowText(w io.Writer, s cassette.Session, events []cassette.Event) err
 	}
 	// A list that cannot be read only loses this line: show still has to
 	// show the rest of an untrusted cassette.
-	if names, err := mcpServerNames(s.MCPServers); err == nil && len(names) > 0 {
+	if names, err := mcpmeta.Names(s.MCPServers); err == nil && len(names) > 0 {
 		row("mcp servers", strings.Join(names, ", "))
 	}
 	if len(s.Labels) > 0 {

@@ -199,30 +199,3 @@ func TestRunEndsDivergedOnAnMCPMiss(t *testing.T) {
 		}
 	}
 }
-
-// The source's mcp_servers is untrusted input: each name becomes a route and
-// an environment variable, so it must be one that record accepts.
-func TestMCPServerNames(t *testing.T) {
-	long := strings.Repeat("a", 65)
-	for _, tc := range []struct {
-		stored  string
-		want    string // names joined with ","
-		wantErr bool
-	}{
-		{stored: ``, want: ""},
-		{stored: `[]`, want: ""},
-		{stored: `null`, want: ""},
-		{stored: `[{"name":"orders","url":"http://x"},{"name":"db_2-x"}]`, want: "orders,db_2-x"},
-		{stored: `{}`, wantErr: true},
-		{stored: `[{"name":""}]`, wantErr: true},
-		{stored: `[{"name":"../x"}]`, wantErr: true},
-		{stored: `[{"name":"a/b"}]`, wantErr: true},
-		{stored: `[{"name":"` + long + `"}]`, wantErr: true},
-		{stored: `[{"name":"a"},{"name":"a"}]`, wantErr: true},
-	} {
-		got, err := mcpServerNames(json.RawMessage(tc.stored))
-		if (err != nil) != tc.wantErr || strings.Join(got, ",") != tc.want {
-			t.Errorf("mcpServerNames(%s) = %v, %v; want %q, error %t", tc.stored, got, err, tc.want, tc.wantErr)
-		}
-	}
-}
