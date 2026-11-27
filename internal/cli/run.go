@@ -97,7 +97,7 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
 	fs.BoolVar(&opts.recorded, "recorded-command", false, "run the session's recorded command in its recorded directory")
-	upstream := fs.String("anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL (swap-model)")
+	upstream := fs.String("anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL (swap-model; plain http only for loopback hosts)")
 	fs.Usage = func() {
 		fmt.Fprint(fs.Output(), runUsage)
 		fs.PrintDefaults()
@@ -160,7 +160,7 @@ func parseRunFlags(env *Env, args []string) (runOptions, int, bool) {
 	case opts.grace < 0:
 		return opts, usageError(env.Stderr, fmt.Sprintf("--grace %s: want a duration of 0 or more", opts.grace)), false
 	}
-	u, err := absoluteHTTPURL(*upstream)
+	u, err := upstreamURL(*upstream)
 	if err != nil {
 		return opts, usageError(env.Stderr, "--anthropic-upstream: "+err.Error()), false
 	}

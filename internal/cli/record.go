@@ -61,7 +61,7 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 	fs.Func("mcp", "register an MCP server as `name=url` (repeatable)", mcpFlag(&opts.mcp))
 	fs.StringVar(&opts.listen, "listen", "127.0.0.1:4790", "proxy address; port 0 picks a free port")
 	fs.BoolVar(&opts.listenUnsafe, "listen-unsafe", false, "allow a non-loopback --listen address")
-	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL")
+	fs.StringVar(&anthropic, "anthropic-upstream", "https://api.anthropic.com", "Anthropic API base URL (plain http only for loopback hosts)")
 	fs.Func("redact-header", "also redact the request or response header with this literal `name` (repeatable)", redactHeaderFlag(&opts.redactHeader))
 	fs.Func("redact", "redact the values this `jsonpath` selects in stored JSON bodies (repeatable)", func(v string) error {
 		p, err := redact.ParsePath(v)
@@ -97,7 +97,7 @@ func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
 			return opts, usageError(env.Stderr, err.Error()), false
 		}
 	}
-	u, err := absoluteHTTPURL(anthropic)
+	u, err := upstreamURL(anthropic)
 	if err != nil {
 		return opts, usageError(env.Stderr, "--anthropic-upstream: "+err.Error()), false
 	}
@@ -148,6 +148,30 @@ func absoluteHTTPURL(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("%q is not an http or https URL", raw)
 	}
 	return u, nil
+}
+
+// upstreamURL validates an --anthropic-upstream value (spec §9.2): plain http
+// is refused unless the host is loopback, because the requests carry the real
+// API key. The host is the parsed one, and names are never resolved.
+func upstreamURL(raw string) (*url.URL, error) {
+	u, err := absoluteHTTPURL(raw)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "http" && !isLoopbackHost(u.Hostname()) {
+		return nil, fmt.Errorf("%q: plain http is allowed only for loopback hosts; use https", raw)
+	}
+	return u, nil
+}
+
+// isLoopbackHost reports whether host is localhost or a loopback IP literal.
+// Names are never resolved, so no other name counts.
+func isLoopbackHost(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // checkListen keeps the proxy on loopback unless the user opts out: it has no
