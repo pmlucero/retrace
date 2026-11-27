@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"io"
+	"slices"
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/diff"
@@ -126,10 +127,16 @@ func (r diffReport) writeJSON(w io.Writer) error {
 
 func sessionJSON(s diffSide) diffSessionJSON {
 	out := diffSessionJSON{lsEntry: newLsEntry(s.session, s.totals)}
+	out.ID, out.Mode, out.Status = validUTF8(out.ID), validUTF8(out.Mode), validUTF8(out.Status)
+	out.ParentSessionID = validUTF8Ptr(out.ParentSessionID)
+	out.Models = slices.Clone(out.Models)
+	for i, m := range out.Models {
+		out.Models[i] = validUTF8(m)
+	}
 	if e := s.diverged; e != nil {
 		var res struct{ Channel, Upstream *string }
 		_ = json.Unmarshal(e.Result, &res) // unreadable: both stay null
-		out.Divergence = &diffStopJSON{Step: s.divergedStep, Seq: e.Seq, Channel: res.Channel, Upstream: res.Upstream}
+		out.Divergence = &diffStopJSON{Step: s.divergedStep, Seq: e.Seq, Channel: validUTF8Ptr(res.Channel), Upstream: validUTF8Ptr(res.Upstream)}
 	}
 	return out
 }
@@ -139,16 +146,16 @@ func pointJSON(p *diff.Point) *diffPointJSON {
 		return nil
 	}
 	out := &diffPointJSON{
-		Step: p.Step, Kind: p.Kind, A: eventJSON(p.A), B: eventJSON(p.B),
+		Step: p.Step, Kind: validUTF8(p.Kind), A: eventJSON(p.A), B: eventJSON(p.B),
 		StopA: markerJSON(p.StopA), StopB: markerJSON(p.StopB),
 		Diff:          make([]diffEntryJSON, 0, len(p.Diff.Entries)),
 		DiffTruncated: p.Diff.Truncated, MorePaths: p.Diff.MorePaths,
 	}
 	if p.Field != "" {
-		out.Field = &p.Field
+		out.Field = validUTF8Ptr(&p.Field)
 	}
 	for _, e := range p.Diff.Entries {
-		out.Diff = append(out.Diff, diffEntryJSON{Path: e.Path, Expected: jsonOrString(e.Expected), Received: jsonOrString(e.Received)})
+		out.Diff = append(out.Diff, diffEntryJSON{Path: validUTF8(e.Path), Expected: jsonOrString(e.Expected), Received: jsonOrString(e.Received)})
 	}
 	return out
 }
@@ -158,8 +165,8 @@ func eventJSON(e *cassette.Event) *diffEventJSON {
 		return nil
 	}
 	return &diffEventJSON{
-		Seq: e.Seq, Kind: e.Kind, Source: e.Source, Target: e.Target, Tool: e.Tool,
-		Arguments: jsonOrString(e.Arguments), Result: jsonOrString(e.Result), Status: e.Status,
+		Seq: e.Seq, Kind: validUTF8(e.Kind), Source: validUTF8(e.Source), Target: validUTF8(e.Target), Tool: validUTF8Ptr(e.Tool),
+		Arguments: jsonOrString(e.Arguments), Result: jsonOrString(e.Result), Status: validUTF8(e.Status),
 	}
 }
 
@@ -169,10 +176,10 @@ func markerJSON(s *diff.Stop) *diffMarkerJSON {
 	}
 	out := &diffMarkerJSON{Failed: s.Failed}
 	if s.StopReason != "" {
-		out.StopReason = &s.StopReason
+		out.StopReason = validUTF8Ptr(&s.StopReason)
 	}
 	if s.Error != "" {
-		out.Error = &s.Error
+		out.Error = validUTF8Ptr(&s.Error)
 	}
 	return out
 }
