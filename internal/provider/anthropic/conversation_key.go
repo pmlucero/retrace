@@ -113,6 +113,7 @@ type canonicalizer struct {
 	out     []byte
 	members []member
 	bufs    [][]byte // one assembly buffer per nesting depth
+	scratch []byte   // decoded string values, which are copied to out at once, so one buffer serves them all
 }
 
 type member struct {
@@ -156,7 +157,8 @@ func (c *canonicalizer) value(depth int) bool {
 	case ch == '[':
 		return depth < maxScanDepth && c.array(depth)
 	case ch == '"':
-		s, ok := c.str()
+		// The decoded value is written to out before scratch is used again.
+		s, ok := c.str(true)
 		if ok {
 			c.out = appendString(c.out, s)
 		}
@@ -220,7 +222,7 @@ func (c *canonicalizer) object(depth int) bool {
 		if c.pos >= len(c.src) || c.src[c.pos] != '"' {
 			return false
 		}
-		key, ok := c.str()
+		key, ok := c.str(false) // members keep the key, so it needs its own bytes
 		if !ok {
 			return false
 		}
@@ -316,8 +318,10 @@ func (c *canonicalizer) number() bool {
 }
 
 // str reads the string at pos and returns its decoded bytes: a slice of the
-// input, or a new slice when the string has escapes.
-func (c *canonicalizer) str() ([]byte, bool) {
+// input, or, when the string has escapes, a new slice. With useScratch the
+// new slice is the scratch buffer, so the caller must be done with the result
+// before the next call that uses it.
+func (c *canonicalizer) str(useScratch bool) ([]byte, bool) {
 	s := c.src
 	i := c.pos + 1
 	start := i
@@ -342,7 +346,13 @@ func (c *canonicalizer) str() ([]byte, bool) {
 	if !escaped {
 		return body, true
 	}
-	dec := make([]byte, 0, len(body))
+	var dec []byte
+	if useScratch {
+		dec = c.scratch[:0]
+		defer func() { c.scratch = dec[:0] }() // keep the grown buffer
+	} else {
+		dec = make([]byte, 0, len(body))
+	}
 	for j := 0; j < len(body); j++ {
 		if body[j] != '\\' {
 			dec = append(dec, body[j])
