@@ -3,17 +3,11 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"slices"
 
 	"github.com/pmlucero/retrace/internal/redact"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
-
-// liveServer is an MCP server that a live-tools replay forwards to.
-type liveServer struct {
-	name   string
-	target *url.URL
-}
 
 // liveMCPServers returns where a live-tools replay forwards each MCP server
 // of the source session (spec §4.3): its --mcp URL in overrides, or else the
@@ -24,7 +18,7 @@ type liveServer struct {
 // override. A stored URL cannot be used when it holds a redaction marker, so
 // it is not the URL that was recorded, or when it is not an http or https
 // URL: the cassette is untrusted input.
-func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]liveServer, error) {
+func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]session.LiveServer, error) {
 	// Each name becomes a route: check them as for any replay.
 	if _, err := mcpServerNames(stored); err != nil {
 		return nil, err
@@ -40,14 +34,14 @@ func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]liveServer
 			return nil, fmt.Errorf("--mcp %s: the source session has no MCP server named %q", o.Name, o.Name)
 		}
 	}
-	servers := make([]liveServer, 0, len(recorded))
+	servers := make([]session.LiveServer, 0, len(recorded))
 	for _, sv := range recorded {
 		if i := slices.IndexFunc(overrides, func(o mcpServer) bool { return o.Name == sv.Name }); i >= 0 {
 			u, err := absoluteHTTPURL(overrides[i].URL)
 			if err != nil {
 				return nil, fmt.Errorf("--mcp %s: %w", sv.Name, err) // validated by the flag; unreachable
 			}
-			servers = append(servers, liveServer{name: sv.Name, target: u})
+			servers = append(servers, session.LiveServer{Name: sv.Name, Target: u})
 			continue
 		}
 		u, err := absoluteHTTPURL(sv.URL)
@@ -57,7 +51,7 @@ func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]liveServer
 		case redact.HasMarker(u):
 			return nil, fmt.Errorf("MCP server %s: the recorded URL %s was redacted; give the real one with --mcp %s=<url>", sv.Name, printable(sv.URL), sv.Name)
 		}
-		servers = append(servers, liveServer{name: sv.Name, target: u})
+		servers = append(servers, session.LiveServer{Name: sv.Name, Target: u})
 	}
 	return servers, nil
 }
@@ -65,10 +59,10 @@ func liveMCPServers(stored json.RawMessage, overrides []mcpServer) ([]liveServer
 // liveMCPServersJSON returns the mcp_servers of a live-tools replay before
 // its exchanges complete it (spec §9.3): each server under its name, with the
 // URL actually used, redacted (spec §3.5).
-func liveMCPServersJSON(servers []liveServer, rules *redact.Rules) json.RawMessage {
+func liveMCPServersJSON(servers []session.LiveServer, rules *redact.Rules) json.RawMessage {
 	out := make([]mcpServer, len(servers))
 	for i, sv := range servers {
-		out[i] = mcpServer{Name: sv.name, URL: rules.URL(sv.target)}
+		out[i] = mcpServer{Name: sv.Name, URL: rules.URL(sv.Target)}
 	}
 	data, err := json.Marshal(out)
 	if err != nil {

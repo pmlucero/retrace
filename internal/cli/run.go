@@ -1,15 +1,12 @@
 package cli
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"log/slog"
 	"math"
-	"net/http"
 	"net/url"
 	"os"
 	"slices"
@@ -18,12 +15,7 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
-	"github.com/pmlucero/retrace/internal/match"
-	"github.com/pmlucero/retrace/internal/mcp"
-	"github.com/pmlucero/retrace/internal/provider/anthropic"
-	"github.com/pmlucero/retrace/internal/proxy"
-	"github.com/pmlucero/retrace/internal/redact"
-	"github.com/pmlucero/retrace/internal/replay"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
 // ExitDiverged is returned when a replay stopped on a cassette miss
@@ -201,9 +193,9 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	id := opts.as
 	if id == "" {
 		var err error
-		id, err = nextReplayID(env.Globals.Dir, opts.source, mode)
+		id, err = session.NextID(env.Globals.Dir, opts.source, mode)
 		switch {
-		case errors.Is(err, errNoDefaultID):
+		case errors.Is(err, session.ErrNoDefaultID):
 			return usageError(env.Stderr, err.Error())
 		case err != nil:
 			log.Error("cannot choose the replay's id", "error", err)
@@ -247,72 +239,6 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	return res.exitCode
 }
 
-// replayRoutes is what replayHandler routes a replay's requests to.
-type replayRoutes struct {
-	mode       string
-	src        *cassette.Cassette
-	queues     queueSet
-	rules      *redact.Rules
-	writer     *cassette.Writer
-	divergence *replay.Divergence
-	strategy   replay.DivergenceStrategy
-	log        *slog.Logger
-	opts       replay.Options
-	anthropic  *url.URL     // the LLM upstream of swap-model
-	model      string       // the model of swap-model
-	live       []liveServer // the MCP servers that live-tools forwards to
-	replayed   []string     // the MCP servers answered from the cassette
-}
-
-// replayHandler returns the handler of a replay's proxy (spec §4). In exact
-// mode every channel answers from the cassette and nothing is forwarded
-// upstream (spec §4.1). swap-model forwards the LLM with the model rewritten
-// (spec §4.2), and live-tools forwards MCP unchanged (spec §4.3). A miss on
-// a channel served from the cassette ends the replay (spec §6.2).
-func replayHandler(rt replayRoutes) http.Handler {
-	mux := http.NewServeMux()
-	if rt.mode == "swap-model" {
-		mux.Handle("/llm/anthropic/", proxy.New(proxy.Config{Routes: []proxy.Route{{
-			Prefix: "/llm/anthropic", Channel: "llm", Upstream: "anthropic", Target: rt.anthropic,
-			Provenance: "live", Rewrite: anthropic.ModelRewriter(rt.model),
-		}}, Writer: rt.writer, Redact: rt.rules, Logger: rt.log}))
-	} else {
-		mux.Handle("/llm/anthropic/", http.StripPrefix("/llm/anthropic", replay.NewLLMHandler(replay.LLMConfig{
-			Source: rt.src, Queues: rt.queues.llm, Redact: rt.rules, Canonicalize: anthropic.Canonicalize, Writer: rt.writer,
-			Divergence: rt.divergence, Strategy: rt.strategy, Logger: rt.log, Options: rt.opts,
-		})))
-	}
-	if len(rt.live) > 0 {
-		routes := make([]proxy.Route, len(rt.live))
-		for i, sv := range rt.live {
-			routes[i] = proxy.Route{Prefix: "/mcp/" + sv.name, Channel: "mcp", Upstream: "mcp:" + sv.name,
-				Target: sv.target, Provenance: "live"}
-		}
-		forward := proxy.New(proxy.Config{Routes: routes, Writer: rt.writer, Redact: rt.rules, Logger: rt.log})
-		for _, r := range routes {
-			mux.Handle(r.Prefix, forward) // the URL the agent got (spec §3.2)
-			mux.Handle(r.Prefix+"/", forward)
-		}
-	}
-	for _, name := range rt.replayed {
-		prefix := "/mcp/" + name
-		h := http.StripPrefix(prefix, replay.NewMCPHandler(replay.MCPConfig{
-			Server: name, Source: rt.src, Queues: rt.queues.mcp[name], Redact: rt.rules,
-			Canonicalize: mcpCanonicalize(name), Writer: rt.writer, Divergence: rt.divergence, Strategy: rt.strategy,
-			Logger: rt.log, Options: rt.opts,
-		}))
-		mux.Handle(prefix, h) // the URL the agent got (spec §3.2)
-		mux.Handle(prefix+"/", h)
-	}
-	return mux
-}
-
-// mcpCanonicalize returns the canonical form of a request body sent to MCP
-// server name, after redaction (spec §5 step 1).
-func mcpCanonicalize(name string) func(body []byte) []byte {
-	return func(body []byte) []byte { return mcp.Canonicalize(name, body) }
-}
-
 // mcpServerNames returns the names of the source session's MCP servers
 // (spec §7.2). The cassette is untrusted input, so each name must be one
 // record accepts: it becomes a route and an environment variable.
@@ -344,120 +270,6 @@ func mcpServersCopy(stored json.RawMessage) json.RawMessage {
 		return json.RawMessage(`[]`)
 	}
 	return stored
-}
-
-// queueSet holds the queues of each route replayed from the cassette.
-type queueSet struct {
-	llm *match.Queues            // nil when the LLM is forwarded
-	mcp map[string]*match.Queues // by server name
-}
-
-// unconsumed returns the recorded interactions of every route that the
-// replay never served, in recorded order (spec §4.4).
-func (q queueSet) unconsumed() []cassette.Interaction {
-	var all []cassette.Interaction
-	if q.llm != nil {
-		all = q.llm.Unconsumed()
-	}
-	for _, mq := range q.mcp {
-		all = append(all, mq.Unconsumed()...)
-	}
-	slices.SortFunc(all, func(a, b cassette.Interaction) int { return cmp.Compare(a.ID, b.ID) })
-	return all
-}
-
-// replayQueues queues the recorded interactions of src by the fingerprint of
-// their stored request bodies, which are already redacted, so they match
-// incoming requests redacted with the same rules: one set of queues for the
-// LLM route, when llm is set, and one per MCP server in servers. MCP requests that replay
-// answers without matching are left out, so they are never reported as
-// unconsumed (spec §5 step 3, AC-32).
-func replayQueues(ctx context.Context, src *cassette.Cassette, llm bool, servers []string) (queueSet, error) {
-	ins, err := src.Interactions(ctx)
-	if err != nil {
-		return queueSet{}, fmt.Errorf("reading interactions: %w", err)
-	}
-	type key struct {
-		route string // "" for the LLM, or the MCP server name
-		fp    string
-	}
-	keys := make(map[int64]key, len(ins))
-	for _, in := range ins {
-		var route string
-		switch name, isMCP := strings.CutPrefix(in.Upstream, "mcp:"); {
-		case in.Channel == "llm" && llm:
-			route = ""
-		case in.Channel == "mcp" && isMCP && slices.Contains(servers, name):
-			route = name
-		default:
-			continue
-		}
-		var body []byte
-		if in.RequestBlob != nil {
-			if body, err = src.Blob(ctx, *in.RequestBlob); err != nil {
-				return queueSet{}, fmt.Errorf("interaction %d: %w", in.ID, err)
-			}
-		}
-		switch {
-		case in.Channel == "llm":
-			keys[in.ID] = key{route, match.Fingerprint(anthropic.Canonicalize(body))}
-		case !replay.AnsweredWithoutMatching(in.HTTPMethod, body):
-			keys[in.ID] = key{route, match.Fingerprint(mcp.Canonicalize(route, body))}
-		}
-	}
-	queuesOf := func(route string) *match.Queues {
-		return match.NewQueues(ins, func(in cassette.Interaction) (string, bool) {
-			k, ok := keys[in.ID]
-			return k.fp, ok && k.route == route
-		})
-	}
-	qs := queueSet{mcp: make(map[string]*match.Queues, len(servers))}
-	if llm {
-		qs.llm = queuesOf("")
-	}
-	for _, name := range servers {
-		qs.mcp[name] = queuesOf(name)
-	}
-	return qs, nil
-}
-
-// errNoDefaultID reports that the default replay id cannot be used, which is
-// a usage error (spec §9.3). Other nextReplayID errors are runtime errors.
-var errNoDefaultID = errors.New("no default replay id")
-
-// nextReplayID returns the default id of a replay of source: source.mode.n,
-// with n one more than the highest in use, or 1 (spec §9.3). Only an n in
-// decimal digits, without leading zeros and below math.MaxInt64, counts: a
-// crafted file name must not make n+1 overflow.
-func nextReplayID(dir, source, mode string) (string, error) {
-	prefix := source + "." + mode + "."
-	// Not filepath.Glob: --dir may hold pattern characters such as '['.
-	entries, err := os.ReadDir(dir)
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return "", fmt.Errorf("listing replays of %s: %w", source, err)
-	}
-	n := 0
-	for _, e := range entries {
-		s, hasPrefix := strings.CutPrefix(e.Name(), prefix)
-		s, hasSuffix := strings.CutSuffix(s, ".cassette")
-		if !hasPrefix || !hasSuffix {
-			continue
-		}
-		if s == "" || s[0] == '0' || strings.Trim(s, "0123456789") != "" {
-			continue // not "07", "+7" or "x"
-		}
-		if k, err := strconv.Atoi(s); err == nil && k > n && k < math.MaxInt64 {
-			n = k
-		}
-	}
-	if n >= math.MaxInt64-1 {
-		return "", fmt.Errorf("%w: the default replay number of %s would reach 2^63 - 1; name the replay with --as", errNoDefaultID, source)
-	}
-	id := fmt.Sprintf("%s%d", prefix, n+1)
-	if err := cassette.ValidateSessionID(id); err != nil {
-		return "", fmt.Errorf("%w: %w; name the replay with --as", errNoDefaultID, err)
-	}
-	return id, nil
 }
 
 // createReplayCassette creates the cassette of a replay with session row s.

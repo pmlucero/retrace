@@ -56,7 +56,7 @@ func TestLiveMCPServers(t *testing.T) {
 			}
 			var parts []string
 			for _, sv := range got {
-				parts = append(parts, sv.name+"="+sv.target.String())
+				parts = append(parts, sv.Name+"="+sv.Target.String())
 			}
 			if s := strings.Join(parts, " "); s != tc.want {
 				t.Errorf("servers %s, want %s", s, tc.want)
