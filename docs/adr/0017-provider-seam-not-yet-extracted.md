@@ -15,7 +15,7 @@ Only the Provider paragraph of ADR 0003 is wrong. Its other decisions stand. ADR
 
 1. **`Provider` is a planned seam, not yet extracted.** The Anthropic provider (`internal/provider/anthropic`) is wired directly, and no interface exists.
 2. **Extract it when a second provider arrives.** That needs an approved spec change first (spec §12). Then define a small struct or interface at the consumer, as CLAUDE.md requires.
-3. **These places name the Anthropic provider today** and are the ones to change at that point:
+3. **These places name the Anthropic provider (as of 2026-11-27)** and are the ones to change at that point:
    - `internal/cli` (`record.go`, `reindex.go`, `checkbudget.go`): the `/llm/anthropic` route with upstream `anthropic`, `anthropic.PricingVersion` and `anthropic.Cost`.
    - `internal/replay/session` (`replay.go`, `handler.go`): `anthropic.Canonicalize`, `anthropic.ModelRewriter`, `anthropic.PricingVersion` and the `/llm/anthropic/` mux route.
    - `internal/replay` (`llm.go`): the `llmUpstream = "anthropic"` constant.
