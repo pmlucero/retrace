@@ -161,6 +161,7 @@ func (c *Cassette) enableWAL(ctx context.Context) error {
 	if _, err := c.db.ExecContext(ctx, "PRAGMA journal_mode = WAL"); err != nil {
 		return fmt.Errorf("enabling WAL on %s: %w", c.path, err)
 	}
+	c.walMode = true
 	// NORMAL skips the fsync on each commit. In WAL mode it can lose only the
 	// last transactions on an OS crash or power loss, never on a process crash,
 	// and the file stays consistent. It is set here, not in the DSN, because
@@ -168,7 +169,6 @@ func (c *Cassette) enableWAL(ctx context.Context) error {
 	if _, err := c.db.ExecContext(ctx, "PRAGMA synchronous = NORMAL"); err != nil {
 		return fmt.Errorf("relaxing synchronous on %s: %w", c.path, err)
 	}
-	c.walMode = true
 	return nil
 }
 
