@@ -24,6 +24,7 @@ import (
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
 // The agent in these tests is this test binary, run again as
@@ -135,6 +136,7 @@ type recordRun struct {
 	code           int
 	stdout, stderr *syncBuffer
 	notify         func(chan<- os.Signal) func() // Env.notifySignals; nil for the default
+	insert         session.InsertFunc            // Env.insertSession; nil for the default
 }
 
 // runRecordCmd runs retrace with --dir dir, then record and args.
@@ -146,7 +148,7 @@ func runRecordCmd(t *testing.T, dir string, args ...string) recordRun {
 // runRecordInto is runRecordCmd with output buffers the caller can watch.
 func runRecordInto(r recordRun, dir string, args ...string) recordRun {
 	all := append([]string{"--dir", dir, "record"}, args...)
-	r.code = runNotify(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands, r.notify)
+	r.code = runWith(context.Background(), all, nil, r.stdout, r.stderr, fakeEnv(nil), commands, r.notify, r.insert)
 	return r
 }
 
@@ -362,8 +364,7 @@ func TestRecordFailedSessionInsertLeavesNothingBehind(t *testing.T) {
 	up := fakeAnthropic(t)
 	args := append([]string{"--session", "s", "--listen", "127.0.0.1:0", "--anthropic-upstream", up.URL, "--"}, agentCommand()...)
 
-	failSessionInsert(t)
-	r := runRecordCmd(t, dir, args...)
+	r := runRecordInto(recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}, insert: failingInsert}, dir, args...)
 	if r.code != ExitError || !strings.Contains(r.stderr.String(), errInsertFailed.Error()) {
 		t.Errorf("exit %d, stderr %q; want %d and the insert's error", r.code, r.stderr, ExitError)
 	}
@@ -382,10 +383,10 @@ func TestRecordForcedFailedStartKeepsTheOldCassette(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		listen string
-		inject func(*testing.T)
+		insert session.InsertFunc
 	}{
-		{"session insert fails", "127.0.0.1:0", failSessionInsert},
-		{"port is busy", busy.Addr().String(), func(*testing.T) {}},
+		{"session insert fails", "127.0.0.1:0", failingInsert},
+		{"port is busy", busy.Addr().String(), nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Setenv(agentModeEnv, "call")
@@ -403,8 +404,7 @@ func TestRecordForcedFailedStartKeepsTheOldCassette(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			tc.inject(t)
-			if r := runRecordCmd(t, dir, args(tc.listen)...); r.code != ExitError {
+			if r := runRecordInto(recordRun{stdout: &syncBuffer{}, stderr: &syncBuffer{}, insert: tc.insert}, dir, args(tc.listen)...); r.code != ExitError {
 				t.Errorf("exit %d, want %d\n%s", r.code, ExitError, r.stderr)
 			}
 			if after, _ := os.ReadFile(path); !bytes.Equal(after, before) { //nolint:gosec // G304: as above

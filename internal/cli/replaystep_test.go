@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
 // AC-42: the cwd override runs the agent there and skips the recorded-cwd
@@ -31,7 +32,7 @@ func TestReplayStepCwdOverride(t *testing.T) {
 	}
 	opts := runOptions{source: "s", recorded: true, tools: "frozen", onMiss: "strict", grace: time.Second}
 
-	if _, perr := prepareReplay(ctx, src, sess, opts); perr == nil || !perr.usage {
+	if _, perr := prepareReplay(ctx, src, sess, opts); perr == nil || !perr.Usage {
 		t.Fatalf("without the override: %v, want a usage error", perr)
 	}
 
@@ -41,16 +42,16 @@ func TestReplayStepCwdOverride(t *testing.T) {
 		t.Fatal(perr)
 	}
 	out := &syncBuffer{}
-	env := &Env{Stdout: out, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler)}
-	res, err := executeReplay(ctx, env, plan, replayTarget{dir: outDir, id: "s.check.1", listen: "127.0.0.1:0"})
+	env := session.Env{Stdout: out, Stderr: &syncBuffer{}, Logger: slog.New(slog.DiscardHandler), Version: Version()}
+	res, err := session.Execute(ctx, env, plan, session.Target{Dir: outDir, ID: "s.check.1", Listen: "127.0.0.1:0"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.exitCode != ExitOK || res.status != "completed" || res.id != "s.check.1" {
+	if sessionExitCode(res.Run) != ExitOK || res.Run.Status != "completed" || res.ID != "s.check.1" {
 		t.Errorf("result %+v", res)
 	}
-	if res.path != cassette.Path(outDir, "s.check.1") {
-		t.Errorf("cassette %q, want it in %s", res.path, outDir)
+	if res.Path != cassette.Path(outDir, "s.check.1") {
+		t.Errorf("cassette %q, want it in %s", res.Path, outDir)
 	}
 	want, _ := filepath.EvalSymlinks(override)
 	if got, err := filepath.EvalSymlinks(out.String()); err != nil || got != want {

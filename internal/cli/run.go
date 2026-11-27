@@ -2,15 +2,11 @@ package cli
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
-	"math"
 	"net/url"
 	"os"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
@@ -222,65 +218,21 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 
 	plan, perr := prepareReplay(ctx, src, srcSession, opts)
 	if perr != nil {
-		return perr.report(env) // usage errors come before any cassette is created (spec §9.3)
+		return reportPrepare(env, perr) // usage errors come before any cassette is created (spec §9.3)
 	}
-	res, err := executeReplay(ctx, env, plan, replayTarget{
-		dir: env.Globals.Dir, id: id, explicit: opts.as != "", listen: opts.listen,
+	res, err := session.Execute(ctx, sessionEnv(env), plan, session.Target{
+		Dir: env.Globals.Dir, ID: id, Explicit: opts.as != "", Listen: opts.listen, Insert: env.insertSession,
 	})
 	if err != nil {
 		return ExitError
 	}
-	if res.status == "diverged" && res.hasMiss {
-		divergenceReport{source: opts.source, replay: res.id, first: res.first, misses: res.misses,
-			droppedEvents: res.droppedEvents}.write(env.Stderr)
+	if res.Run.Status == "diverged" && res.HasMiss {
+		divergenceReport{source: opts.source, replay: res.ID, first: res.First, misses: res.Misses,
+			droppedEvents: res.Run.Stats.DroppedEvents}.write(env.Stderr)
 	}
-	warnUnconsumed(env, res.unconsumed)
-	log.Info("session replayed", "session", res.id, "source", opts.source, "status", res.status, "cassette", res.path)
-	return res.exitCode
-}
-
-// mcpServersCopy returns the mcp_servers of an exact replay: a copy of the
-// source's, since every MCP answer comes from its cassette (spec §9.3).
-func mcpServersCopy(stored json.RawMessage) json.RawMessage {
-	if len(stored) == 0 {
-		return json.RawMessage(`[]`)
-	}
-	return stored
-}
-
-// createReplayCassette creates the cassette of a replay with session row s.
-// An explicit id must be new (spec §9.3); a default one moves on to the next
-// n if another replay took it first, unless that n would not fit the id
-// format or would reach math.MaxInt64. It returns the id it used.
-func createReplayCassette(ctx context.Context, dir, id string, explicit bool, s cassette.Session) (*cassette.Cassette, string, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, "", fmt.Errorf("creating %s: %w", dir, err)
-	}
-	for range 100 {
-		s.ID = id
-		c, err := createSessionCassette(ctx, cassette.Path(dir, id), s)
-		if errors.Is(err, cassette.ErrExists) && !explicit {
-			prefix := strings.TrimRightFunc(id, func(r rune) bool { return r >= '0' && r <= '9' })
-			n, _ := strconv.Atoi(strings.TrimPrefix(id, prefix))
-			if n >= math.MaxInt64-1 {
-				break
-			}
-			next := prefix + strconv.Itoa(n+1)
-			if cassette.ValidateSessionID(next) != nil {
-				break
-			}
-			id = next
-			continue
-		}
-		if errors.Is(err, cassette.ErrExists) {
-			return nil, "", fmt.Errorf("session %q already exists in %s", id, dir)
-		}
-		if err != nil {
-			return nil, "", err
-		}
-		return c, id, nil
-	}
-	return nil, "", fmt.Errorf("no free default id after %s; name the replay with --as", id)
+	warnUnconsumed(env, res.Unconsumed)
+	log.Info("session replayed", "session", res.ID, "source", opts.source, "status", res.Run.Status, "cassette", res.Path)
+	return sessionExitCode(res.Run)
 }
 
 // warnUnconsumed reports recorded interactions that the replay never served

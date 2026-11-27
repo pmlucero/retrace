@@ -1,12 +1,26 @@
-package cli
+package session
 
 import (
+	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 
 	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/redact"
 )
+
+// parseHTTPURL and printableText stand in for the cli's, which the tests of
+// this package do not need to reproduce.
+func parseHTTPURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, fmt.Errorf("%q is not an http or https URL", raw)
+	}
+	return u, nil
+}
+
+func printableText(s string) string { return s }
 
 // AC-18: where a live-tools replay forwards each MCP server (spec §4.3).
 func TestLiveMCPServers(t *testing.T) {
@@ -45,7 +59,7 @@ func TestLiveMCPServers(t *testing.T) {
 			wantErr: "listed twice"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := liveMCPServers([]byte(tc.stored), tc.overrides)
+			got, err := liveMCPServers([]byte(tc.stored), tc.overrides, parseHTTPURL, printableText)
 			if tc.wantErr != "" {
 				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
 					t.Fatalf("error %v, want %q", err, tc.wantErr)
@@ -69,7 +83,8 @@ func TestLiveMCPServers(t *testing.T) {
 // spec §9.3: the stored URL is the one used, redacted.
 func TestLiveMCPServersJSON(t *testing.T) {
 	servers, err := liveMCPServers([]byte(`[{"name":"crm","url":"https://REDACTED@crm.example.com/mcp"}]`),
-		[]mcpmeta.Server{{Name: "crm", URL: "https://u:p@crm2.example.com/mcp?api_key=sk-1"}}) //nolint:gosec // G101: a fake credential the test looks for
+		[]mcpmeta.Server{{Name: "crm", URL: "https://u:p@crm2.example.com/mcp?api_key=sk-1"}}, //nolint:gosec // G101: a fake credential the test looks for
+		parseHTTPURL, printableText)
 	if err != nil {
 		t.Fatal(err)
 	}

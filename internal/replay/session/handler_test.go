@@ -50,7 +50,7 @@ func routesFor(t *testing.T, mode string) Routes {
 		t.Fatal(err)
 	}
 	return Routes{Mode: mode, Src: src, Queues: qs, Rules: redact.NewRules(nil, nil), Writer: w, Divergence: replay.NewDivergence(),
-		Strategy: replay.Strict{}}
+		Strategy: replay.Strict{}, LLMCanonicalize: anthropic.Canonicalize, MCPCanonicalize: mcp.Canonicalize}
 }
 
 func post(t *testing.T, h http.Handler, path, body string) *httptest.ResponseRecorder {

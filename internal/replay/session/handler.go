@@ -6,7 +6,6 @@ import (
 	"net/url"
 
 	"github.com/pmlucero/retrace/internal/cassette"
-	"github.com/pmlucero/retrace/internal/mcp"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
@@ -19,7 +18,16 @@ type LiveServer struct {
 	Target *url.URL
 }
 
-// Routes is what Handler routes a replay's requests to.
+// Routes is what Handler routes a replay's requests to. Every mode needs
+// Mode, Writer, Rules, Log and Src. The modes differ in the rest:
+//
+//   - exact answers the LLM and every MCP server from the cassette: Queues,
+//     LLMCanonicalize, MCPCanonicalize, Divergence, Strategy and Opts, with
+//     every server in Replayed.
+//   - swap-model forwards the LLM with Anthropic and Model, and answers MCP
+//     as exact does.
+//   - live-tools answers the LLM as exact does and forwards the MCP servers in
+//     Live. Replayed is empty.
 type Routes struct {
 	Mode       string
 	Src        *cassette.Cassette
@@ -34,6 +42,11 @@ type Routes struct {
 	Model      string       // the model of swap-model
 	Live       []LiveServer // the MCP servers that live-tools forwards to
 	Replayed   []string     // the MCP servers answered from the cassette
+
+	// LLMCanonicalize and MCPCanonicalize are the providers' canonical forms
+	// of a request body (spec §5 step 1), injected as in replay.BuildQueues.
+	LLMCanonicalize func(body []byte) []byte
+	MCPCanonicalize func(server string, body []byte) []byte
 }
 
 // Handler returns the handler of a replay's proxy (spec §4). In exact
@@ -50,7 +63,7 @@ func Handler(rt Routes) http.Handler {
 		}}, Writer: rt.Writer, Redact: rt.Rules, Logger: rt.Log}))
 	} else {
 		mux.Handle("/llm/anthropic/", http.StripPrefix("/llm/anthropic", replay.NewLLMHandler(replay.LLMConfig{
-			Source: rt.Src, Queues: rt.Queues.LLM, Redact: rt.Rules, Canonicalize: anthropic.Canonicalize, Writer: rt.Writer,
+			Source: rt.Src, Queues: rt.Queues.LLM, Redact: rt.Rules, Canonicalize: rt.LLMCanonicalize, Writer: rt.Writer,
 			Divergence: rt.Divergence, Strategy: rt.Strategy, Logger: rt.Log, Options: rt.Opts,
 		})))
 	}
@@ -70,7 +83,7 @@ func Handler(rt Routes) http.Handler {
 		prefix := "/mcp/" + name
 		h := http.StripPrefix(prefix, replay.NewMCPHandler(replay.MCPConfig{
 			Server: name, Source: rt.Src, Queues: rt.Queues.MCP[name], Redact: rt.Rules,
-			Canonicalize: mcpCanonicalize(name), Writer: rt.Writer, Divergence: rt.Divergence, Strategy: rt.Strategy,
+			Canonicalize: mcpCanonicalize(rt.MCPCanonicalize, name), Writer: rt.Writer, Divergence: rt.Divergence, Strategy: rt.Strategy,
 			Logger: rt.Log, Options: rt.Opts,
 		}))
 		mux.Handle(prefix, h) // the URL the agent got (spec §3.2)
@@ -81,6 +94,6 @@ func Handler(rt Routes) http.Handler {
 
 // mcpCanonicalize returns the canonical form of a request body sent to MCP
 // server name, after redaction (spec §5 step 1).
-func mcpCanonicalize(name string) func(body []byte) []byte {
-	return func(body []byte) []byte { return mcp.Canonicalize(name, body) }
+func mcpCanonicalize(canonical func(server string, body []byte) []byte, name string) func(body []byte) []byte {
+	return func(body []byte) []byte { return canonical(name, body) }
 }

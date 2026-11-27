@@ -20,6 +20,7 @@ import (
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
+	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
 var recordCommand = command{
@@ -250,16 +251,16 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 	}
 	serversJSON, _ := json.Marshal(servers)
 
-	create := createSessionCassette
+	create := session.CreateCassette
 	if opts.force {
-		create = replaceSessionCassette
+		create = session.ReplaceCassette
 	}
 	c, err := create(ctx, path, cassette.Session{
 		ID: id, Mode: "record", Status: "recording", CreatedAt: time.Now(),
 		Command: opts.command, Cwd: cwd, OnMiss: "strict",
 		MCPServers: serversJSON, Redaction: rules.Metadata(), RetraceVersion: Version(),
 		Labels: opts.labels, DeriverVersion: derive.Version, PricingVersion: anthropic.PricingVersion(),
-	})
+	}, env.insertSession)
 	if errors.Is(err, cassette.ErrExists) {
 		return nil, "", fmt.Errorf("session %q already exists in %s (use --force to replace it)", id, dir)
 	}
