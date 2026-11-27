@@ -65,6 +65,8 @@ func rawMessages(ss ...string) []json.RawMessage {
 	return out
 }
 
+// AC-05: the conversation key decides which user_message events a request
+// derives (spec §7.4), and it is persisted, so its form must not change.
 func TestConversationKeyMatchesReference(t *testing.T) {
 	for _, seed := range conversationKeySeeds {
 		got, gotOK := conversationKey(rawMessages(seed))
