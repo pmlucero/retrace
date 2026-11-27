@@ -34,7 +34,7 @@ Read these before changing anything non-trivial:
 - **Errors:** wrap with `fmt.Errorf("doing X: %w", err)`. Error messages are lowercase with no trailing punctuation. Never panic outside `main` and impossible states.
 - **Context:** every I/O-bound function takes `ctx context.Context` as its first parameter.
 - **Logging:** `log/slog`, to stderr, structured. Never log credentials or full payloads above `debug`.
-- **Interfaces:** define them at the consumer, keep them small, and do not create one until there are two implementations or a test needs a seam. The `Provider` and `DivergenceStrategy` extension points are specified in the docs.
+- **Interfaces:** define them at the consumer, keep them small, and do not create one until there are two implementations or a test needs a seam. `DivergenceStrategy` is specified (spec §6.1). `Provider` is a planned seam that is not yet extracted ([ADR 0017](docs/adr/0017-provider-seam-not-yet-extracted.md)).
 - **Concurrency:** the proxy hot path must never block on cassette writes beyond what the spec allows. Streaming must not be buffered (AC-03).
 - **Formatting and linting:** `gofmt`/`goimports`, `go vet` and `golangci-lint` clean.
 - **Comments:** document exported identifiers and non-obvious *why*. Do not narrate *what* the code does.
