@@ -60,6 +60,8 @@ func Canonicalize(server string, body []byte) []byte {
 		form.Members = append(form.Members, jsonvalue.Member{Key: "batch", Value: msgs})
 		return jsonvalue.EncodeCanonical(form)
 	}
+	// classify mutates the tree only when it succeeds, so the body form below
+	// never sees params without its _meta.
 	// A single message, or a body that is none: an empty batch, or a value
 	// that is not a valid message.
 	if cm, ok := classify(whole); ok {

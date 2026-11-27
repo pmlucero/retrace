@@ -180,7 +180,7 @@ func TestCanonicalizeMatchesReference(t *testing.T) {
 func TestCanonicalEdgeBodiesKeepEscapes(t *testing.T) {
 	found := false
 	for _, b := range canonicalEdgeBodies {
-		if strings.Contains(b, `params`) {
+		if strings.Contains(b, `\u0070arams`) {
 			found = true
 		}
 	}
