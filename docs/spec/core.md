@@ -1,8 +1,8 @@
 # retrace core specification
 
 - Status: Approved
-- Version: 0.35
-- Last updated: 2026-11-25
+- Version: 0.36
+- Last updated: 2026-11-27
 
 This document specifies the behavior of retrace's MVP: recording, replay modes, the cassette data model, diff and the CLI. Rationale for the main choices lives in the [ADRs](../adr/README.md). This spec references them instead of repeating them.
 
@@ -715,7 +715,7 @@ A session's outcome is the first of `diverged`, `error`, `skipped` and `identica
 - In `swap-model`, `check` prints the estimate on stderr before the first replay. When `--model` is not in the price table, the estimate is unknown: it says so, and with `--max-cost` that is a usage error, because a budget that cannot be checked guards nothing.
 - If the estimate exceeds `--max-cost`, `check` starts no replay: every replay is `skipped`, the output says that the budget refused the check, and it exits `5`.
 - A replay's **billed cost** is the sum of `cost_usd` over its `model_response` events whose `provenance` is `live`, in the format of §8.2: the known sum, plus the number of `live` responses that have tokens but a null `cost_usd`. Responses answered from the cassette (`replayed`) were not billed by this replay, so `exact` and `live-tools` replays have a billed cost of $0.
-- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of the billed costs of the previous replays. A previous replay with a `live` `model_response` that has tokens but a null `cost_usd` counts with its estimate instead, so an unknown cost never lowers what was spent. If the result exceeds `--max-cost`, that replay and every later one are `skipped`.
+- Before each replay, `check` adds the replay's estimate to the cost already spent: the sum of the billed costs of the previous replays. A previous replay with a `live` `model_response` that has tokens but a null `cost_usd` counts with its estimate instead, so an unknown cost never lowers what was spent. If the result exceeds `--max-cost`, that replay and every later one are `skipped`. A previous replay whose billed cost cannot be read, because running it or reading its cassette failed, also counts with its estimate.
 - The budget limits what `check` starts, not what the API bills: a replay can use more tokens than its source did. The output and the documentation MUST say that the cost is an estimate.
 
 #### 9.9.7 Output
@@ -840,7 +840,7 @@ Each criterion is verified by an automated test unless marked *(manual)*. "Fake 
 - **AC-40** `check -- <cmd>` with an agent whose requests differ from the recording reports the affected sessions as `diverged`, with the step, event kind and tool of each divergence point, groups them by event kind and tool in the summary, and exits `3`.
 - **AC-41** `check --model <m> --repeat 3` against a fake Anthropic API that answers differently across calls runs 3 replays per session and reports per-session counts (e.g. `2/3 diverged`) and divergence points with replay counts.
 - **AC-42** `check --recorded-command --cwd <dir>` runs each session's recorded argv in `<dir>`. `check` with neither `--recorded-command` nor `-- <cmd>` is a usage error that prints each session's argv and cwd, escaped, and neither creates `--out` nor starts a process. A usage error found in one session of the corpus starts no replay.
-- **AC-43** `check --max-cost` whose estimate exceeds the budget exits `5` with no request to the fake API. A budget reached during the check marks the remaining replays `skipped` and exits `5`. `--max-cost` with a `--model` missing from the price table, or outside `swap-model`, is a usage error.
+- **AC-43** `check --max-cost` whose estimate exceeds the budget exits `5` with no request to the fake API. A budget reached during the check marks the remaining replays `skipped` and exits `5`. `--max-cost` with a `--model` missing from the price table, or outside `swap-model`, is a usage error. A replay whose billed cost cannot be read counts toward the spent cost with its estimate.
 - **AC-44** Exit codes follow §9.9.8: a corpus with both a `diverged` and an `error` replay exits `3`; with only an `error` exits `1`; a replay whose trajectory is identical but whose agent exit code differs from the source's is an `error`; an empty corpus exits `1`.
 - **AC-45** `check --format json` validates against `docs/schema/check.v1.json`. `--markdown <path>` appends to an existing file. A `--markdown` path that cannot be opened exits `1` before any replay starts, also when the budget refused the check. A refused check writes its Markdown. A write that fails after the replays is reported on stderr and exits `1`, or `3` when a replay diverged. A tool name holding control characters, a bidi control, `|`, `<` and `[x](y)` is escaped in the text and Markdown outputs.
 - **AC-46** Corpus and flag errors of §9.9: an id given twice, `--repeat 0`, an `--out` that holds a `.cassette` file and a replay id that does not fit the format are usage errors (exit `2`). An id that does not exist exits `1`. None of them starts a replay or creates `--out`.
