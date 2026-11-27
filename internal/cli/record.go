@@ -37,9 +37,14 @@ RETRACE_MCP_<NAME>_URL pointing at it, and records every exchange into
 
 WARNING: cassettes store prompts, model outputs and tool results verbatim.
 Auth headers are always redacted, but review a cassette before sharing it.
+Bodies are stored unredacted unless --redact is given.
 
 Flags:
 `
+
+// unredactedBodiesWarning is logged once at startup when no --redact rule
+// is given (spec §9.2, AC-52).
+const unredactedBodiesWarning = "bodies are stored unredacted; add --redact <jsonpath> to mask fields"
 
 type recordOptions struct {
 	session      string
@@ -194,6 +199,9 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		return code
 	}
 	log := env.Logger
+	if len(opts.redactBody) == 0 {
+		log.Warn(unredactedBodiesWarning)
+	}
 
 	// Listen before creating the cassette, so a busy port leaves nothing behind.
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", opts.listen)
