@@ -48,6 +48,9 @@ type replayOutcome struct {
 	textSteps []int
 	totals    summary.Totals
 	reason    string // why it is an error, when retrace knows: a timeout
+	// costUnknown is set when the agent may have run but the billed cost
+	// cannot be read: running the replay or reading its cassette failed.
+	costUnknown bool
 }
 
 type checkSession struct {

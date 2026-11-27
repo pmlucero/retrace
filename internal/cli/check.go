@@ -482,15 +482,21 @@ func checkOne(ctx context.Context, env *Env, opts checkOptions, s cassette.Sessi
 	agentEnv.Stdout = env.Stderr
 	res, err := executeReplay(ctx, &agentEnv, plan, replayTarget{dir: out, id: id, explicit: true, listen: ro.listen, timeout: opts.timeout})
 	if err != nil {
-		return replayOutcome{id: id, outcome: outcomeError} // executeReplay logged it
+		// executeReplay logged it. The agent may have run and made billed
+		// calls, so the budget counts this replay at its estimate.
+		return replayOutcome{id: id, outcome: outcomeError, costUnknown: true}
 	}
 	srcEvents, err := src.Events(ctx)
 	if err != nil {
-		return fail("reading the source", err)
+		r := fail("reading the source", err)
+		r.costUnknown = true
+		return r
 	}
 	rs, events, err := readSession(ctx, res.path, env, (*cassette.Cassette).Events)
 	if err != nil {
-		return fail("reading the replay", err)
+		r := fail("reading the replay", err)
+		r.costUnknown = true
+		return r
 	}
 	cmpRes := diff.Compare(diff.Build(srcEvents), diff.Build(events), diff.Options{Text: opts.text})
 	r := replayOutcome{id: id, point: cmpRes.Point, totals: billed(rs, events), textSteps: cmpRes.TextDifferences}
