@@ -163,6 +163,30 @@ func (c *countingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
+func TestRejectShapes(t *testing.T) {
+	tests := []struct {
+		status  int
+		route   string
+		errType string
+	}{
+		{http.StatusForbidden, RouteLLM, "permission_error"},
+		{http.StatusBadRequest, RouteLLM, "invalid_request_error"},
+		{http.StatusRequestEntityTooLarge, RouteLLM, "request_too_large"},
+		{http.StatusForbidden, routeMCP, ""},
+		{http.StatusBadRequest, "", ""},
+	}
+	for _, tt := range tests {
+		var logs bytes.Buffer
+		rec := httptest.NewRecorder()
+		Reject(rec, slog.New(slog.NewTextHandler(&logs, nil)), tt.route, tt.status, "because")
+		if rec.Code != tt.status {
+			t.Errorf("status %d, want %d", rec.Code, tt.status)
+		}
+		checkRejection(t, rec, tt.route, tt.errType)
+		checkRejectionLog(t, logs.String(), tt.route)
+	}
+}
+
 func TestUpstreamFailed(t *testing.T) {
 	rec := httptest.NewRecorder()
 	UpstreamFailed(rec, "dial tcp: refused")
