@@ -32,7 +32,7 @@ func routesFor(t *testing.T, mode string) Routes {
 		}
 		t.Cleanup(func() { _ = c.Close() })
 		err = c.Write(ctx, func(tx *cassette.Tx) error {
-			return tx.InsertSession(ctx, cassette.Session{ID: name, Mode: mode, Status: "recording",
+			return tx.InsertSession(ctx, cassette.Session{ID: name, Mode: cassette.Mode(mode), Status: "recording",
 				CreatedAt: time.Now(), Command: []string{"agent"}, Cwd: "/", OnMiss: "strict", RetraceVersion: "dev"})
 		})
 		if err != nil {
@@ -50,7 +50,7 @@ func routesFor(t *testing.T, mode string) Routes {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return Routes{Mode: mode, Src: src, Queues: qs, Rules: redact.NewRules(nil, nil), Writer: w, Divergence: replay.NewDivergence(),
+	return Routes{Mode: cassette.Mode(mode), Src: src, Queues: qs, Rules: redact.NewRules(nil, nil), Writer: w, Divergence: replay.NewDivergence(),
 		Strategy: replay.Strict{}, LLMCanonicalize: anthropic.Canonicalize, MCPCanonicalize: mcp.Canonicalize}
 }
 
