@@ -9,12 +9,12 @@ import (
 	"math"
 	"net/url"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/pmlucero/retrace/internal/cassette"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/replay/session"
 )
 
@@ -61,12 +61,12 @@ type runOptions struct {
 	realtime     bool
 	listen       string
 	listenUnsafe bool
-	redactHeader []string    // added to the source's redaction rules
-	command      []string    // the command after "--", nil without one
-	recorded     bool        // --recorded-command: run the source's recorded command
-	anthropic    *url.URL    // the LLM upstream of swap-model
-	mcp          []mcpServer // the --mcp overrides of live-tools
-	cwd          string      // runs the agent here and skips the recorded-cwd checks (check --cwd); run never sets it
+	redactHeader []string         // added to the source's redaction rules
+	command      []string         // the command after "--", nil without one
+	recorded     bool             // --recorded-command: run the source's recorded command
+	anthropic    *url.URL         // the LLM upstream of swap-model
+	mcp          []mcpmeta.Server // the --mcp overrides of live-tools
+	cwd          string           // runs the agent here and skips the recorded-cwd checks (check --cwd); run never sets it
 }
 
 // mode returns the replay mode the flags select (spec §9.3).
@@ -237,30 +237,6 @@ func runRun(ctx context.Context, env *Env, args []string) int {
 	warnUnconsumed(env, res.unconsumed)
 	log.Info("session replayed", "session", res.id, "source", opts.source, "status", res.status, "cassette", res.path)
 	return res.exitCode
-}
-
-// mcpServerNames returns the names of the source session's MCP servers
-// (spec §7.2). The cassette is untrusted input, so each name must be one
-// record accepts: it becomes a route and an environment variable.
-func mcpServerNames(stored json.RawMessage) ([]string, error) {
-	if len(stored) == 0 {
-		return nil, nil
-	}
-	var servers []mcpServer
-	if err := json.Unmarshal(stored, &servers); err != nil {
-		return nil, fmt.Errorf("parsing mcp_servers: %w", err)
-	}
-	names := make([]string, 0, len(servers))
-	for _, sv := range servers {
-		if !mcpNamePattern.MatchString(sv.Name) {
-			return nil, fmt.Errorf("invalid MCP server name %q", sv.Name)
-		}
-		if slices.Contains(names, sv.Name) {
-			return nil, fmt.Errorf("MCP server %q is listed twice", sv.Name)
-		}
-		names = append(names, sv.Name)
-	}
-	return names, nil
 }
 
 // mcpServersCopy returns the mcp_servers of an exact replay: a copy of the

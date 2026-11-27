@@ -10,13 +10,13 @@ import (
 	"net"
 	"net/url"
 	"os"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/pmlucero/retrace/internal/agentrun"
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/derive"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/provider/anthropic"
 	"github.com/pmlucero/retrace/internal/proxy"
 	"github.com/pmlucero/retrace/internal/redact"
@@ -40,11 +40,9 @@ Auth headers are always redacted, but review a cassette before sharing it.
 Flags:
 `
 
-var mcpNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
-
 type recordOptions struct {
 	session      string
-	mcp          []mcpServer
+	mcp          []mcpmeta.Server
 	listen       string
 	listenUnsafe bool
 	anthropic    *url.URL
@@ -53,15 +51,6 @@ type recordOptions struct {
 	labels       map[string]string
 	force        bool
 	command      []string
-}
-
-// mcpServer is an entry of the session's mcp_servers (spec §7.2).
-type mcpServer struct {
-	Name string `json:"name"`
-	URL  string `json:"url"`
-	// From the server's initialize result (spec §3.4); absent until then.
-	ProtocolVersion string          `json:"protocol_version,omitempty"`
-	ServerInfo      json.RawMessage `json:"server_info,omitempty"`
 }
 
 func parseRecordFlags(env *Env, args []string) (recordOptions, int, bool) {
@@ -134,10 +123,10 @@ func redactHeaderFlag(names *[]string) func(string) error {
 }
 
 // mcpFlag parses one name=url value of --mcp into servers (spec §9.2).
-func mcpFlag(servers *[]mcpServer) func(string) error {
+func mcpFlag(servers *[]mcpmeta.Server) func(string) error {
 	return func(v string) error {
 		name, raw, ok := strings.Cut(v, "=")
-		if !ok || !mcpNamePattern.MatchString(name) {
+		if !ok || !mcpmeta.ValidName(name) {
 			return fmt.Errorf("want name=url, with a name of letters, digits, '_' or '-'")
 		}
 		if _, err := absoluteHTTPURL(raw); err != nil {
@@ -148,7 +137,7 @@ func mcpFlag(servers *[]mcpServer) func(string) error {
 				return fmt.Errorf("MCP server %q registered twice", name)
 			}
 		}
-		*servers = append(*servers, mcpServer{Name: name, URL: raw})
+		*servers = append(*servers, mcpmeta.Server{Name: name, URL: raw})
 		return nil
 	}
 }
@@ -227,7 +216,7 @@ func runRecord(ctx context.Context, env *Env, args []string) int {
 		StartMsg: "recording",
 		MCP:      names,
 		Command:  opts.command,
-		Finish:   storeMCPServerInfo,
+		Finish:   mcpmeta.StoreServerInfo,
 	})
 	if err != nil {
 		return ExitError
@@ -254,10 +243,10 @@ func createCassette(ctx context.Context, env *Env, opts recordOptions, rules *re
 	if err != nil {
 		return nil, "", fmt.Errorf("reading the working directory: %w", err)
 	}
-	servers := make([]mcpServer, len(opts.mcp))
+	servers := make([]mcpmeta.Server, len(opts.mcp))
 	for i, sv := range opts.mcp {
-		u, _ := absoluteHTTPURL(sv.URL)                          // validated by the flag
-		servers[i] = mcpServer{Name: sv.Name, URL: rules.URL(u)} // spec §3.5: no credentials from the URL
+		u, _ := absoluteHTTPURL(sv.URL)                               // validated by the flag
+		servers[i] = mcpmeta.Server{Name: sv.Name, URL: rules.URL(u)} // spec §3.5: no credentials from the URL
 	}
 	serversJSON, _ := json.Marshal(servers)
 

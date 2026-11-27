@@ -10,6 +10,7 @@ import (
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/mcp/mcptest"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 )
 
 // liveServers starts the MCP servers of the helper agent again, with lookup
@@ -56,7 +57,7 @@ func TestRunLiveTools(t *testing.T) {
 		if s.Mode != "live-tools" || s.Status != "completed" || s.ModelOverride != nil {
 			t.Errorf("session = %+v, want live-tools, completed and no model_override", s)
 		}
-		var servers []mcpServer
+		var servers []mcpmeta.Server
 		if err := json.Unmarshal(s.MCPServers, &servers); err != nil || len(servers) != 2 {
 			t.Fatalf("mcp_servers %s: %v", s.MCPServers, err)
 		}

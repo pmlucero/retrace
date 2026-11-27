@@ -10,6 +10,7 @@ import (
 
 	"github.com/pmlucero/retrace/internal/cassette"
 	"github.com/pmlucero/retrace/internal/diff"
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 )
 
 func toolPoint(step int, kind, tool string) *diff.Point {
@@ -99,14 +100,14 @@ func TestCheckText(t *testing.T) {
 // and a name no session has is a usage error.
 func TestCheckMCPOverrides(t *testing.T) {
 	has := func(names ...string) cassette.Session {
-		var servers []mcpServer
+		var servers []mcpmeta.Server
 		for _, n := range names {
-			servers = append(servers, mcpServer{Name: n, URL: "http://x"})
+			servers = append(servers, mcpmeta.Server{Name: n, URL: "http://x"})
 		}
 		b, _ := json.Marshal(servers)
 		return cassette.Session{MCPServers: b}
 	}
-	overrides := []mcpServer{{Name: "orders", URL: "http://o"}, {Name: "weather", URL: "http://w"}}
+	overrides := []mcpmeta.Server{{Name: "orders", URL: "http://o"}, {Name: "weather", URL: "http://w"}}
 
 	got := sessionOptions(runOptions{mcp: overrides}, has("weather", "billing"))
 	if len(got.mcp) != 1 || got.mcp[0].Name != "weather" {

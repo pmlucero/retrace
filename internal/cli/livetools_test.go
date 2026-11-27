@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/pmlucero/retrace/internal/mcpmeta"
 	"github.com/pmlucero/retrace/internal/redact"
 )
 
@@ -13,7 +14,7 @@ func TestLiveMCPServers(t *testing.T) {
 		`{"name":"crm","url":"https://REDACTED@crm.example.com/mcp"},` +
 		`{"name":"search","url":"https://search.example.com/mcp?key=[REDACTED:0a1b2c3d]"},` +
 		`{"name":"bad","url":"ftp://files.example.com"}]`
-	all := []mcpServer{
+	all := []mcpmeta.Server{
 		{Name: "crm", URL: "https://u:p@crm.example.com/mcp"}, //nolint:gosec // G101: a fake credential the test looks for
 		{Name: "search", URL: "https://search.example.com/mcp?key=sk-1"},
 		{Name: "bad", URL: "http://127.0.0.1:9002/mcp"},
@@ -21,7 +22,7 @@ func TestLiveMCPServers(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		stored    string
-		overrides []mcpServer
+		overrides []mcpmeta.Server
 		want      string // name=url, joined with " "
 		wantErr   string
 	}{
@@ -32,11 +33,11 @@ func TestLiveMCPServers(t *testing.T) {
 			want: "orders=http://127.0.0.1:9001/mcp crm=https://u:p@crm.example.com/mcp " +
 				"search=https://search.example.com/mcp?key=sk-1 bad=http://127.0.0.1:9002/mcp"},
 		{name: "override replaces a usable URL", stored: `[{"name":"orders","url":"http://127.0.0.1:9001/mcp"}]`,
-			overrides: []mcpServer{{Name: "orders", URL: "http://127.0.0.1:9003/mcp"}}, want: "orders=http://127.0.0.1:9003/mcp"},
+			overrides: []mcpmeta.Server{{Name: "orders", URL: "http://127.0.0.1:9003/mcp"}}, want: "orders=http://127.0.0.1:9003/mcp"},
 		{name: "redacted userinfo", stored: stored, overrides: all[1:], wantErr: "MCP server crm: the recorded URL https://REDACTED@crm.example.com/mcp was redacted"},
-		{name: "redacted query", stored: stored, overrides: []mcpServer{all[0], all[2]}, wantErr: "MCP server search"},
+		{name: "redacted query", stored: stored, overrides: []mcpmeta.Server{all[0], all[2]}, wantErr: "MCP server search"},
 		{name: "unusable URL", stored: stored, overrides: all[:2], wantErr: "MCP server bad: the recorded URL cannot be used"},
-		{name: "unknown name", stored: stored, overrides: []mcpServer{{Name: "billing", URL: "http://127.0.0.1:1"}},
+		{name: "unknown name", stored: stored, overrides: []mcpmeta.Server{{Name: "billing", URL: "http://127.0.0.1:1"}},
 			wantErr: `no MCP server named "billing"`},
 		{name: "invalid JSON", stored: `{`, wantErr: "parsing mcp_servers"},
 		{name: "invalid name", stored: `[{"name":"../x","url":"http://127.0.0.1:1"}]`, wantErr: "invalid MCP server name"},
@@ -68,7 +69,7 @@ func TestLiveMCPServers(t *testing.T) {
 // spec §9.3: the stored URL is the one used, redacted.
 func TestLiveMCPServersJSON(t *testing.T) {
 	servers, err := liveMCPServers([]byte(`[{"name":"crm","url":"https://REDACTED@crm.example.com/mcp"}]`),
-		[]mcpServer{{Name: "crm", URL: "https://u:p@crm2.example.com/mcp?api_key=sk-1"}}) //nolint:gosec // G101: a fake credential the test looks for
+		[]mcpmeta.Server{{Name: "crm", URL: "https://u:p@crm2.example.com/mcp?api_key=sk-1"}}) //nolint:gosec // G101: a fake credential the test looks for
 	if err != nil {
 		t.Fatal(err)
 	}

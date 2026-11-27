@@ -1,10 +1,11 @@
-package cli
+package mcpmeta
 
 import (
 	"context"
 	"encoding/json"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -78,7 +79,7 @@ func TestStoreMCPServerInfoReadsInitializeResults(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := storeMCPServerInfo(ctx, c); err != nil {
+	if err := StoreServerInfo(ctx, c); err != nil {
 		t.Fatal(err)
 	}
 	s, err := c.Session(ctx)
@@ -89,5 +90,32 @@ func TestStoreMCPServerInfoReadsInitializeResults(t *testing.T) {
 		`{"name":"c","url":"http://c","protocol_version":"2025-06-18"}]`
 	if string(s.MCPServers) != want {
 		t.Errorf("mcp_servers = %s\nwant %s", s.MCPServers, want)
+	}
+}
+
+// The source's mcp_servers is untrusted input: each name becomes a route and
+// an environment variable, so it must be one that record accepts.
+func TestNames(t *testing.T) {
+	long := strings.Repeat("a", 65)
+	for _, tc := range []struct {
+		stored  string
+		want    string // names joined with ","
+		wantErr bool
+	}{
+		{stored: ``, want: ""},
+		{stored: `[]`, want: ""},
+		{stored: `null`, want: ""},
+		{stored: `[{"name":"orders","url":"http://x"},{"name":"db_2-x"}]`, want: "orders,db_2-x"},
+		{stored: `{}`, wantErr: true},
+		{stored: `[{"name":""}]`, wantErr: true},
+		{stored: `[{"name":"../x"}]`, wantErr: true},
+		{stored: `[{"name":"a/b"}]`, wantErr: true},
+		{stored: `[{"name":"` + long + `"}]`, wantErr: true},
+		{stored: `[{"name":"a"},{"name":"a"}]`, wantErr: true},
+	} {
+		got, err := Names(json.RawMessage(tc.stored))
+		if (err != nil) != tc.wantErr || strings.Join(got, ",") != tc.want {
+			t.Errorf("Names(%s) = %v, %v; want %q, error %t", tc.stored, got, err, tc.want, tc.wantErr)
+		}
 	}
 }
