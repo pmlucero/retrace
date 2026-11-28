@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/pmlucero/retrace/internal/httpx"
 )
@@ -21,13 +22,19 @@ const (
 	reasonBrowser = "the request has an Origin or Sec-Fetch-Site header, which a browser sends"
 )
 
+// expiredDeadline is a read deadline that has always passed.
+var expiredDeadline = time.Unix(1, 0)
+
+const reasonBusy = "too many requests are in flight"
+
 const reasonDotSegment = "the request path has a dot segment (. or ..), which could leave its route"
 
 // Guard answers a request retrace refuses before any router sees it, and
 // passes every other request to next (spec §3.6). The checks run in this
 // order, and the first that fails decides the answer: the host (403), the
 // browser headers Origin and Sec-Fetch-Site (403), a path with a dot segment
-// (400). The body-size check (413) is httpx.ReadBody's. A rejected request is
+// (400), the in-flight limit (503). The body-size check (413) and the
+// body-read deadline (408) are httpx.ReadBody's. A rejected request is
 // neither forwarded nor recorded.
 //
 // listenHosts are the host parts, without brackets, that name the address
@@ -42,6 +49,17 @@ const reasonDotSegment = "the request path has a dot segment (. or ..), which co
 // server itself refuses a request line with an invalid percent-encoding. log
 // must not be nil.
 func Guard(next http.Handler, log *slog.Logger, listenHosts ...string) http.Handler {
+	return GuardLimits(next, log, Limits{}, listenHosts...)
+}
+
+// GuardLimits is Guard with the connection limits of spec §3.6: after the
+// path check, a request takes one of limits.MaxInFlight places until its
+// response ends, or it is answered 503 with Connection: close, without its
+// body being read. The body-read deadline travels with the request to
+// httpx.ReadBody.
+func GuardLimits(next http.Handler, log *slog.Logger, limits Limits, listenHosts ...string) http.Handler {
+	limits = limits.withDefaults()
+	slots := make(chan struct{}, limits.MaxInFlight)
 	names := make([]string, 0, len(listenHosts))
 	for _, h := range listenHosts {
 		if strings.Contains(h, ":") {
@@ -58,7 +76,19 @@ func Guard(next http.Handler, log *slog.Logger, listenHosts ...string) http.Hand
 		case hasDotSegment(r.URL.Path):
 			httpx.Reject(w, log, routeOf(r.URL.Path), http.StatusBadRequest, reasonDotSegment)
 		default:
-			next.ServeHTTP(w, r)
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			default:
+				// Bytes of the unread body may still arrive.
+				w.Header().Set("Connection", "close")
+				httpx.Reject(w, log, routeOf(r.URL.Path), http.StatusServiceUnavailable, reasonBusy)
+				// The body is not read, and the server would wait for the
+				// rest of it before closing: an expired deadline ends that.
+				_ = http.NewResponseController(w).SetReadDeadline(expiredDeadline)
+				return
+			}
+			next.ServeHTTP(w, r.WithContext(httpx.WithBodyReadTimeout(r.Context(), limits.BodyReadTimeout)))
 		}
 	})
 }

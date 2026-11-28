@@ -47,6 +47,9 @@ type Config struct {
 	Diverged <-chan struct{}    // closed at a cassette miss in a replay; nil when recording
 	Timeout  time.Duration      // the longest the agent may run before it is stopped as on a miss; 0 for no limit
 	Grace    time.Duration      // how long the agent has to exit after a miss's SIGTERM (spec §6.2)
+	// Limits shortens the connection limits of spec §3.6. It is an internal
+	// option for tests; the zero value selects the spec's values.
+	Limits proxy.Limits
 	// Finish, if set, completes the session's metadata from what was
 	// recorded. It runs once the writer has written everything.
 	Finish func(ctx context.Context, c *cassette.Cassette) error
@@ -94,7 +97,7 @@ func guardHosts(cfg Config) []string {
 func Run(ctx context.Context, cfg Config) (Result, error) {
 	log := cfg.Logger
 	// Rejected requests are answered before any routing, in every mode (spec §3.6).
-	srv := &http.Server{Handler: proxy.Guard(cfg.Handler, log, guardHosts(cfg)...), ReadHeaderTimeout: 30 * time.Second}
+	srv := proxy.NewServer(cfg.Handler, log, cfg.Limits, guardHosts(cfg)...)
 	go func() {
 		if err := srv.Serve(cfg.Listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Error("proxy stopped", "error", err)

@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -54,6 +55,9 @@ type harnessOptions struct {
 	// appended to its target URL (a path, a query or both).
 	prefix     string
 	targetPath string
+	// limits, if set, serves through NewServer: Guard with these limits.
+	limits *Limits
+	logger *slog.Logger
 }
 
 func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harness {
@@ -95,8 +99,13 @@ func newHarnessOpts(t *testing.T, upstream http.Handler, o harnessOptions) *harn
 		Redact:       o.rules,
 		Transport:    o.transport,
 		MaxBodyBytes: o.maxBody,
+		Logger:       o.logger,
 	})
-	server := httptest.NewServer(p)
+	server := httptest.NewUnstartedServer(p)
+	if o.limits != nil {
+		server.Config = NewServer(p, o.logger, *o.limits, "127.0.0.1")
+	}
+	server.Start()
 	t.Cleanup(server.Close)
 	return &harness{t: t, c: c, w: w, server: server}
 }
