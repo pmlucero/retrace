@@ -139,9 +139,9 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage("--model with --tools live holds nothing constant; use record instead")
 	case set["model"] && ro.model == "":
 		return usage("--model: want a model name")
-	case set["anthropic-upstream"] && ro.mode() != "swap-model":
+	case set["anthropic-upstream"] && !ro.mode().ForwardsLLM():
 		return usage("--anthropic-upstream is only used with --model: the LLM is answered from the cassette")
-	case len(ro.mcp) > 0 && ro.mode() != "live-tools":
+	case len(ro.mcp) > 0 && !ro.mode().ForwardsMCP():
 		return usage("--mcp is only used with --tools live: MCP is answered from the cassette")
 	case reservedStrategies[ro.onMiss]:
 		return usage(fmt.Sprintf("--on-miss %s is not implemented in this version", ro.onMiss))
@@ -157,7 +157,7 @@ func parseCheckFlags(env *Env, args []string) (checkOptions, int, bool) {
 		return usage("--markdown: want a file name")
 	case opts.repeat < 1:
 		return usage(fmt.Sprintf("--repeat %d: want a positive integer", opts.repeat))
-	case set["max-cost"] && ro.mode() != "swap-model":
+	case set["max-cost"] && !ro.mode().ForwardsLLM():
 		return usage("--max-cost is only used with --model: only the LLM channel is billed")
 	case set["max-cost"] && (opts.maxCost <= 0 || math.IsNaN(opts.maxCost) || math.IsInf(opts.maxCost, 0)):
 		return usage(fmt.Sprintf("--max-cost %v: want a positive number of US dollars", opts.maxCost))
@@ -220,7 +220,7 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 	// The budget comes after the corpus checks and before --out exists
 	// (spec §9.9.8).
 	var budget *checkBudget
-	if mode == "swap-model" {
+	if mode.ForwardsLLM() {
 		budget, err = newCheckBudget(ctx, env, corpus, opts.run.model, opts.repeat, opts.maxCost)
 		if err != nil {
 			log.Error("cannot estimate the cost", "error", err)
@@ -238,7 +238,7 @@ func runCheck(ctx context.Context, env *Env, args []string) int {
 			return refuseCheck(env, corpus, opts, budget)
 		}
 	}
-	if mode != "swap-model" {
+	if !mode.ForwardsLLM() {
 		if code := openMarkdownOut(env, &opts); code != 0 {
 			return code
 		}
@@ -402,7 +402,9 @@ func checkMCPNames(corpus []cassette.Session, overrides []mcpmeta.Server) error 
 	return nil
 }
 
-func replayID(source, mode string, k int) string { return fmt.Sprintf("%s.%s.%d", source, mode, k) }
+func replayID(source string, mode cassette.Mode, k int) string {
+	return fmt.Sprintf("%s.%s.%d", source, mode, k)
+}
 
 // globEscape escapes the pattern characters of a directory name.
 func globEscape(s string) string {

@@ -46,7 +46,7 @@ func newCassette(t *testing.T, mode string) *cassette.Cassette {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	err = c.Write(ctx, func(tx *cassette.Tx) error {
-		return tx.InsertSession(ctx, cassette.Session{ID: mode, Mode: mode, Status: "recording",
+		return tx.InsertSession(ctx, cassette.Session{ID: mode, Mode: cassette.Mode(mode), Status: "recording",
 			CreatedAt: time.Now(), Command: []string{"agent"}, Cwd: "/", OnMiss: "strict", RetraceVersion: "dev"})
 	})
 	if err != nil {

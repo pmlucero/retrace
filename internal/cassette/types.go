@@ -15,10 +15,35 @@ func FormatTime(t time.Time) string {
 	return t.UTC().Format(TimeLayout)
 }
 
+// Mode is the mode of a session: how it was recorded or replayed. Its string
+// values are stored in the cassette and printed by the CLI, so they are
+// stable.
+type Mode string
+
+// The modes of a session (spec §9.3).
+const (
+	ModeRecord    Mode = "record"
+	ModeExact     Mode = "exact"
+	ModeSwapModel Mode = "swap-model"
+	ModeLiveTools Mode = "live-tools"
+)
+
+// ForwardsLLM reports whether the mode sends LLM requests upstream instead of
+// serving them from the cassette.
+func (m Mode) ForwardsLLM() bool { return m == ModeSwapModel }
+
+// ForwardsMCP reports whether the mode sends MCP calls to live servers.
+func (m Mode) ForwardsMCP() bool { return m == ModeLiveTools }
+
+// QueuesLLM reports whether the mode serves recorded LLM responses. It is only
+// meaningful for replay modes: it is true for every mode but swap-model,
+// including record, which never calls it.
+func (m Mode) QueuesLLM() bool { return m != ModeSwapModel }
+
 // Session is the single session row of a cassette (spec §7.2).
 type Session struct {
 	ID              string
-	Mode            string // record, exact, swap-model or live-tools
+	Mode            Mode // record, exact, swap-model or live-tools
 	ParentSessionID *string
 	Status          string // recording, completed, diverged, failed or interrupted
 	CreatedAt       time.Time

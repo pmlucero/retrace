@@ -124,7 +124,7 @@ func writeShowText(w io.Writer, s cassette.Session, events []cassette.Event) err
 	row := func(name, value string) { fmt.Fprintf(tw, "%s\t%s\n", name, printable(value)) }
 
 	row("session", s.ID)
-	row("mode", s.Mode)
+	row("mode", string(s.Mode))
 	if s.ParentSessionID != nil {
 		row("parent", *s.ParentSessionID)
 	}

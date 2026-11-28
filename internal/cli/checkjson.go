@@ -116,7 +116,7 @@ func (r checkReport) writeJSON(w io.Writer) error {
 	sessions, replays, cost := r.tally()
 	doc := checkDocument{
 		FormatVersion: checkFormatVersion,
-		Mode:          r.mode,
+		Mode:          string(r.mode),
 		Repeat:        r.repeat,
 		CorpusSize:    len(r.sessions),
 		Interrupted:   r.interrupted,

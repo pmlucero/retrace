@@ -168,7 +168,8 @@ func (s checkSession) textSteps() []int {
 
 // checkReport is what `retrace check` reports.
 type checkReport struct {
-	mode, model string
+	mode        cassette.Mode
+	model       string
 	repeat      int
 	out         string
 	sessions    []checkSession
@@ -279,7 +280,7 @@ func (r checkReport) tally() (sessions, replays map[string]int, cost summary.Tot
 // cassette goes through printable.
 func (r checkReport) writeText(w io.Writer) error {
 	var buf bytes.Buffer
-	mode := r.mode
+	mode := string(r.mode)
 	if r.model != "" {
 		mode += " (" + printable(r.model) + ")"
 	}
