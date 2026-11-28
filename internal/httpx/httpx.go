@@ -29,7 +29,9 @@ type bodyTimeoutKey struct{}
 
 // WithBodyReadTimeout returns a context that makes ReadBody wait d, instead of
 // BodyReadTimeout, for each next part of a body. It is the internal option
-// tests use; d <= 0 keeps the default.
+// tests use; d <= 0 keeps the default. It travels in the context only because
+// ReadBody, called by record and by every replay route, has no configuration
+// parameter.
 func WithBodyReadTimeout(ctx context.Context, d time.Duration) context.Context {
 	return context.WithValue(ctx, bodyTimeoutKey{}, d)
 }

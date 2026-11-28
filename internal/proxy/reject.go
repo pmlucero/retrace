@@ -22,6 +22,9 @@ const (
 	reasonBrowser = "the request has an Origin or Sec-Fetch-Site header, which a browser sends"
 )
 
+// expiredDeadline is a read deadline that has always passed.
+var expiredDeadline = time.Unix(1, 0)
+
 const reasonBusy = "too many requests are in flight"
 
 const reasonDotSegment = "the request path has a dot segment (. or ..), which could leave its route"
@@ -82,7 +85,7 @@ func GuardLimits(next http.Handler, log *slog.Logger, limits Limits, listenHosts
 				httpx.Reject(w, log, routeOf(r.URL.Path), http.StatusServiceUnavailable, reasonBusy)
 				// The body is not read, and the server would wait for the
 				// rest of it before closing: an expired deadline ends that.
-				_ = http.NewResponseController(w).SetReadDeadline(time.Unix(1, 0))
+				_ = http.NewResponseController(w).SetReadDeadline(expiredDeadline)
 				return
 			}
 			next.ServeHTTP(w, r.WithContext(httpx.WithBodyReadTimeout(r.Context(), limits.BodyReadTimeout)))

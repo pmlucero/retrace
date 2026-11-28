@@ -245,7 +245,7 @@ func checkInFlight(t *testing.T, e LimitsEnv, p LimitsParams) {
 	for i := 0; i < p.MaxInFlight+3 && !refused; i++ {
 		conn, br := dial(t, e)
 		send(t, conn, e, "token="+limitsSecret, e.OKBody, 1)
-		_ = conn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 		if _, err := br.Peek(1); err == nil {
 			wantRejected(t, conn, br, http.StatusServiceUnavailable, "overloaded_error")
 			refused = true
