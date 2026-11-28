@@ -121,7 +121,7 @@ const limitsSecret = "s3cr3t-token"
 // dial opens a connection that fails the test if it stays silent too long.
 func dial(t *testing.T, e LimitsEnv) (net.Conn, *bufio.Reader) {
 	t.Helper()
-	conn, err := net.Dial("tcp", e.Addr)
+	conn, err := (&net.Dialer{}).DialContext(t.Context(), "tcp", e.Addr)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -143,8 +143,14 @@ func send(t *testing.T, conn net.Conn, e LimitsEnv, query, body string, n int) {
 	}
 }
 
+// reply is what a test needs of a response.
+type reply struct {
+	status int
+	close  bool // the server announced Connection: close
+}
+
 // answer reads the response to the last request, within 10 seconds.
-func answer(t *testing.T, conn net.Conn, br *bufio.Reader) (*http.Response, string) {
+func answer(t *testing.T, conn net.Conn, br *bufio.Reader) (reply, string) {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
 	resp, err := http.ReadResponse(br, nil)
@@ -156,7 +162,7 @@ func answer(t *testing.T, conn net.Conn, br *bufio.Reader) (*http.Response, stri
 	if err != nil {
 		t.Fatalf("reading the response body: %v", err)
 	}
-	return resp, string(b)
+	return reply{resp.StatusCode, resp.Close}, string(b)
 }
 
 // wantRejected checks a 408 or 503 of spec §3.6: the status, the Anthropic
@@ -164,8 +170,8 @@ func answer(t *testing.T, conn net.Conn, br *bufio.Reader) (*http.Response, stri
 func wantRejected(t *testing.T, conn net.Conn, br *bufio.Reader, status int, errType string) {
 	t.Helper()
 	resp, body := answer(t, conn, br)
-	if resp.StatusCode != status || !resp.Close {
-		t.Errorf("got %d, close %v; want %d with Connection: close", resp.StatusCode, resp.Close, status)
+	if resp.status != status || !resp.close {
+		t.Errorf("got %d, close %v; want %d with Connection: close", resp.status, resp.close, status)
 	}
 	var got struct {
 		Type  string `json:"type"`
@@ -193,8 +199,8 @@ func wantClosed(t *testing.T, conn net.Conn, br *bufio.Reader) {
 
 func wantOK(t *testing.T, conn net.Conn, br *bufio.Reader) {
 	t.Helper()
-	if resp, body := answer(t, conn, br); resp.StatusCode != http.StatusOK || body == "" {
-		t.Errorf("got %d %q, want 200 and a body", resp.StatusCode, body)
+	if resp, body := answer(t, conn, br); resp.status != http.StatusOK || body == "" {
+		t.Errorf("got %d %q, want 200 and a body", resp.status, body)
 	}
 }
 
@@ -260,11 +266,11 @@ func checkInFlight(t *testing.T, e LimitsEnv, p LimitsParams) {
 		conn, br := dial(t, e)
 		send(t, conn, e, "", e.OKBody, len(e.OKBody))
 		resp, body := answer(t, conn, br)
-		if resp.StatusCode == http.StatusOK && body != "" {
+		if resp.status == http.StatusOK && body != "" {
 			return
 		}
-		if resp.StatusCode != http.StatusServiceUnavailable || time.Now().After(deadline) {
-			t.Fatalf("after a rejection got %d %q, want 200", resp.StatusCode, body)
+		if resp.status != http.StatusServiceUnavailable || time.Now().After(deadline) {
+			t.Fatalf("after a rejection got %d %q, want 200", resp.status, body)
 		}
 		time.Sleep(20 * time.Millisecond) // the holder's handler is still returning
 	}

@@ -64,8 +64,8 @@ func ReadBody(w http.ResponseWriter, r *http.Request, log *slog.Logger, channel 
 		Reject(w, log, channel, http.StatusRequestEntityTooLarge, reasonTooLarge)
 		return nil, false
 	}
-	var src io.ReadCloser = r.Body
-	clear := func() {}
+	src := r.Body
+	liftDeadline := func() {}
 	if r.Body != nil && r.Body != http.NoBody {
 		// The deadline is for inactivity: it is renewed before each read, and
 		// lifted once the body is read, so a long response is never cut
@@ -73,11 +73,11 @@ func ReadBody(w http.ResponseWriter, r *http.Request, log *slog.Logger, channel 
 		// tests, reads without one.
 		rc := http.NewResponseController(w)
 		src = readCloser{&deadlineReader{r: r.Body, rc: rc, d: bodyReadTimeout(r.Context())}, r.Body}
-		clear = func() { _ = rc.SetReadDeadline(time.Time{}) }
+		liftDeadline = func() { _ = rc.SetReadDeadline(time.Time{}) }
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, src, MaxRequestBytes))
 	if !errors.Is(err, os.ErrDeadlineExceeded) {
-		clear()
+		liftDeadline()
 	}
 	var tooLarge *http.MaxBytesError
 	switch {
